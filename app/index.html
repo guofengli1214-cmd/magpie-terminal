@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>终端</title>
+<!-- 内联 data URI 图标：避免浏览器自己请求 /favicon.ico 造成控制台 404。
+     必须是 data URI（不发网络请求），不要改成外部文件。 -->
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNiIgZmlsbD0iIzFhMWQyMyIvPjxwYXRoIGQ9Ik03IDlsNyA3LTcgNyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjN2RkM2ZjIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjxwYXRoIGQ9Ik0xNyAyM2g4IiBzdHJva2U9IiNlNWU3ZWIiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+">
+<!-- 服务端在此处注入 <style>:root{…tokens…}</style> -->
+<link rel="stylesheet" href="/vendor/xterm/xterm.css">
+<link rel="stylesheet" href="/styles/tokens.css">
+<link rel="stylesheet" href="/styles/layout.css">
+<link rel="stylesheet" href="/styles/components.css">
+</head>
+<body>
+  <div id="root" data-role="app">
+    <div data-role="tabbar"></div>
+    <div data-role="main">
+      <div data-role="terminal-host"></div>
+      <aside data-role="ai-panel"></aside>
+    </div>
+    <div data-role="statusbar"></div>
+  </div>
+  <script src="/vendor/xterm/xterm.js"></script>
+  <script src="/vendor/xterm/addon-fit.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -245,7 +245,7 @@ F:191：哨兵法拿不到 TTY，因此
 |---|---|---|
 | `name` | `'xterm-256color'` | xterm.js 支持 256 色；`TERM` 不对会导致 `less`/`vim` 退化成单色或报 `unknown terminal` |
 | `cols` / `rows` | 初始 `100` / `30`，下限 `20` / `5` | `30 100` 是实测默认值（F:102、F:351），与 xterm.js 首次 `fit()` 前的占位一致；下限防 0 或负数导致 ConPTY 异常 |
-| `cwd` | 新标签继承当前标签的 cwd；首个标签用 `os.homedir()` | 多标签「独立 cwd」是 BRIEF 4 的产品要求；继承当前 cwd 符合「开新标签继续在同一目录干活」的直觉 |
+| `cwd` | 新标签继承当前标签的 cwd；首个标签用 `os.homedir()`（**页面打开时自动建这一个首个标签**，见下） | 多标签「独立 cwd」是 BRIEF 4 的产品要求；继承当前 cwd 符合「开新标签继续在同一目录干活」的直觉 |
 | `env` | 继承 `process.env`，覆盖 `TERM`，**不注入 token** | 继承保证 PATH / 代理 / 语言环境可用；不注入 token 见 `docs/security.md` 5.2 |
 | `useConpty` | 不显式设置（用库默认） | 1.2.0-beta.15 默认走 ConPTY，全部实测都是在默认值下跑的。FINDINGS 标注该版本「无 winpty」（F:459），但预编译目录里同时存在 `winpty-agent.exe`（F:64），因此显式设 `useConpty: false` 会得到什么**未实测**，不要去试 |
 | shell 选择 | `bash.exe`（msys）优先，全部候选失败才回退 `powershell.exe` | 本机 msys bash 在 PATH 上，且 FINDINGS 全部 PTY 证据都是 bash；探测顺序见 `docs/architecture.md` 第 7 节 |

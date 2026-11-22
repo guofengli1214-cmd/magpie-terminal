@@ -63,7 +63,7 @@ T1 名上是骨架，实际含四件各自能独立失败的事：
 | 4 | 说「看看谁占着 3480」→ 只读命令自动执行、输出可见。 | 在 AI 栏输入该句 → 观察是否**未经点击**自动执行 → 断言输出含监听 3480 的进程信息 | AI 栏请求/响应（脱敏后）+ 终端输出 + 分级器判定记录（`auto` 分支） |
 | 5 | AI 给出删除类命令 → 弹确认卡，不点不动。 | 输入「删掉 ~/tmp/aaa」→ 断言出现确认卡 → **不点**，等 5 秒 → 断言目标文件仍存在、终端无新输出 | 确认卡截图（人眼项）+ 文件 `stat` 前后对照（可程序化） |
 | 6 | 伪造 `Origin` / 错 `Host` / 缺 token 全部 403。 | 三条 `curl`：`-H 'Origin: http://evil.example'`、`-H 'Host: evil.example'`、不带 token；再用正确 token + 无 Origin 做正对照得 200 | `curl -w '%{http_code}'` 输出；完整矩阵见 `docs/security.md` 第 7.1 节 S1–S8 |
-| 7 | 关标签、退 magpie 后无孤儿 shell（pid 核验，对应坑 2）。 | 关标签 → 等 ≥ 5 秒（直接 `kill()` 约 1.07s 才消失，shell 自退路径约 2.1–2.8s，1 秒内断言会假失败）→ 查 `bash.exe` 列表里无父进程为 `magpie-bun.exe` 的残留；退 magpie 后重复一次 | `Get-CimInstance Win32_Process` 的 pid/ppid 表；命令见 `docs/pty-notes.md` 第 8 节 |
+| 7 | 关标签、刷新页面、退 magpie 后无孤儿 shell（pid 核验，对应坑 2）。 | ①关标签 → 等 ≥ 5 秒（直接 `kill()` 约 1.07s 才消失，shell 自退路径约 2.1–2.8s，1 秒内断言会假失败）→ 查 `bash.exe` 列表里无残留；②**刷新页面** → 等 ≥ 12 秒（`ORPHAN_GRACE_MS = 10000` + 1.07s）→ `/api/health` 的 `sessions` 回到 0、无残留 bash；③**短暂断线**（socket destroy 后 2 秒内新连接发 `pty.attach`）→ 会话必须还在并收 `session.resumed`（证明 ② 的回收不是「一断就杀」）；④退 magpie 后重复一次 | `Get-CimInstance Win32_Process` 的 pid/ppid 表；`/api/health` 的 `sessions` 数字变化；命令见 `docs/pty-notes.md` 第 8 节 |
 
 **验收 5 的陷阱**：确认卡「不点不动」要断言**两件事**——文件还在，且终端没有该命令的任何输出。只断言文件还在不够，因为命令可能执行了但被 shell 拒绝（权限/路径不存在），文件同样还在。
 

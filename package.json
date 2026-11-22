@@ -1,0 +1,43 @@
+{
+  "name": "magpie-terminal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.mjs",
+  "scripts": {
+    "doctor": "node scripts/doctor.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "node-pty": "1.2.0-beta.15",
+    "ws": "8.22.0",
+    "zod": "4.6.7"
+  },
+  "engines": {
+    "magpie": ">=0.1.1340"
+  },
+  "magpie": {
+    "name": "magpie-terminal",
+    "summary": {
+      "en": "A real terminal with an AI command assistant",
+      "zh": "带 AI 助手的真终端"
+    },
+    "page": {
+      "title": "Terminal",
+      "titles": {
+        "zh": "终端",
+        "zh-TW": "終端",
+        "ja": "ターミナル"
+      },
+      "file": "page/index.html",
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4IiB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCI+PHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIHJ4PSIyOCIgZmlsbD0iIzFhMWQyMyIvPjxwYXRoIGQ9Ik0yOCAzOGgxNnYxMkgyOHptMjAgMjRoMzJ2MTBINTh6IiBmaWxsPSIjZmZmIi8+PHBhdGggZD0iTTI4IDI4bDMwIDI0LTMwIDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM3ZGQzZmMiIHN0cm9rZS13aWR0aD0iOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+",
+      "service": {
+        "port": 3480,
+        "option": "port"
+      }
+    },
+    "options": {
+      "port": 3480
+    }
+  }
+}

@@ -139,6 +139,7 @@ UI(AI 栏)            src/server           src/ai           网关 3425       sr
 
 | 决策 | 选择 | 为什么 |
 |---|---|---|
+| 打开页面即有标签 | 应用页 WS 连上且 store 零会话时自动发一次 `pty.create`；重连不重复建 | 产品定位是「整页是终端」，进页面看见空白区再自己找「+」是使用失败 |
 | 页面怎么进 3480 | 用**带路页**（`page/index.html` 只做跳转），不在插件页里直接渲染 UI | 插件页 CSP 是 `default-src 'none'; script-src <host>/_magpie/plugin/<token>/; connect-src 'none'`，无内联脚本、无外部 CDN、不能 fetch/XHR/WebSocket。页面唯一能做的联网动作就是 `location.replace()`；把 UI 放在插件页里就连不上自己的服务 |
 | 谁来起 HTTP 服务 | 插件**自己**在 `index.mjs` 的 `server()` 里起 | 宿主只提供 hooks（`server()` 被调用时传 options），不能替插件暴露 HTTP 接口；`package.json` 的 `magpie.page.service` 只是声明端口与选项名，不代建服务 |
 | 端口为什么固定 3480 | 3480 | 3425 网关、3477 page-chat、3488 agent-console gate、3496 model-quota 已占；3480/3466/3478/3490 空闲，四个里选 3480（BRIEF 2 节选定值）。固定端口而不是随机端口：带路页必须在跳转前就知道端口，而 CSP 不允许它先去问服务；随机端口需要额外握手通道 |

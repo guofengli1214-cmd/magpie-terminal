@@ -1,0 +1,210 @@
+/* 组件：标签、按钮、提示条、确认卡、错误条。
+   只引用变量，不出现颜色字面量。 */
+
+button,
+[data-role="tab"] {
+  font: inherit;
+  color: var(--term-fg);
+  background: transparent;
+  border: 1px solid var(--term-border);
+  border-radius: var(--term-radius);
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+button:hover,
+[data-role="tab"]:hover {
+  background: var(--term-selection);
+}
+
+:focus-visible {
+  outline: 2px solid var(--term-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--term-selection);
+}
+
+button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+[data-role="tab"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  border-color: transparent;
+}
+
+[data-role="tab"][aria-selected="true"] {
+  border-color: var(--term-border);
+  background: var(--term-selection);
+  font-weight: 600;
+}
+
+[data-role="tab-title"] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-role="tab-close"] {
+  border: none;
+  padding: 0 4px;
+  line-height: 1;
+  font-size: 14px;
+}
+
+[data-role="tabbar"] {
+  flex-wrap: wrap;
+}
+
+[data-role="status-item"] {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-role="status-item"][data-tone="warn"] {
+  color: var(--term-warn);
+  font-weight: 600;
+}
+
+[data-role="status-item"][data-tone="error"] {
+  color: var(--term-danger);
+  font-weight: 600;
+}
+
+[data-role="banner"] {
+  margin: 4px var(--term-gap) 0;
+  padding: 6px 10px;
+  border: 1px solid var(--term-warn);
+  border-radius: var(--term-radius);
+  color: var(--term-warn);
+  font-weight: 600;
+}
+
+[data-role="banner"][hidden] {
+  display: none;
+}
+
+/* AI 栏 */
+
+.ai-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--term-gap);
+  padding: 6px var(--term-gap);
+  border-bottom: 1px solid var(--term-border);
+  font-weight: 600;
+}
+
+.ai-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--term-gap);
+  padding: var(--term-gap);
+  min-height: 0;
+  flex: 1;
+}
+
+.ai-label {
+  font-size: 12px;
+  color: var(--term-muted);
+}
+
+.ai-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 64px;
+  resize: vertical;
+  font: inherit;
+  color: var(--term-fg);
+  background: var(--term-bg);
+  border: 1px solid var(--term-border);
+  border-radius: var(--term-radius);
+  padding: 6px 8px;
+}
+
+.ai-actions {
+  display: flex;
+  gap: var(--term-gap);
+  flex-wrap: wrap;
+}
+
+.ai-log {
+  display: flex;
+  flex-direction: column;
+  gap: var(--term-gap);
+  min-height: 0;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.ai-message {
+  border: 1px solid var(--term-border);
+  border-radius: var(--term-radius);
+  padding: 6px 8px;
+}
+
+.ai-message[data-tone="error"] {
+  border-color: var(--term-danger);
+  color: var(--term-danger);
+}
+
+.ai-message[data-tone="warn"] {
+  border-color: var(--term-warn);
+}
+
+.ai-command {
+  display: block;
+  margin: 4px 0;
+  padding: 6px 8px;
+  border-radius: var(--term-radius);
+  background: var(--term-selection);
+  font-family: var(--term-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}
+
+.ai-meta {
+  color: var(--term-muted);
+}
+
+/* 确认卡（模态）：Esc 关闭、焦点陷阱由 JS 负责。 */
+
+[data-role="confirm-backdrop"] {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--term-selection);
+  z-index: 20;
+}
+
+[data-role="confirm-backdrop"][hidden] {
+  display: none;
+}
+
+[data-role="confirm-card"] {
+  width: min(560px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 16px;
+  border: 2px solid var(--term-danger);
+  border-radius: var(--term-radius);
+  background: var(--term-panel-bg);
+  color: var(--term-fg);
+}
+
+[data-role="confirm-card"] h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+[data-role="confirm-card"] .ai-command {
+  max-height: 40vh;
+  overflow: auto;
+}

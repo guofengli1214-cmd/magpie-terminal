@@ -1,0 +1,99 @@
+/* 三栏骨架：标签栏 / 主区（终端 + AI 栏）/ 状态栏。
+   窄窗时 AI 栏折叠为抽屉，终端永不缩到 0。 */
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--term-bg);
+  color: var(--term-fg);
+  font: 13px/1.5 var(--magpie-font);
+}
+
+[data-role="app"] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
+  min-width: var(--term-min-main);
+}
+
+[data-role="main"] {
+  display: grid;
+  grid-template-columns: minmax(var(--term-min-main), 1fr) var(--term-ai-width);
+  gap: var(--term-gap);
+  padding: var(--term-gap);
+  min-height: 0;
+  overflow: auto;
+}
+
+[data-role="terminal-host"] {
+  position: relative;
+  min-width: var(--term-min-main);
+  min-height: 0;
+  padding: 4px 2px;
+  overflow: hidden;
+  border: 1px solid var(--term-border);
+  border-radius: var(--term-radius);
+  background: var(--term-bg);
+}
+
+[data-role="terminal-host"] .terminal-pane {
+  position: absolute;
+  inset: 4px 2px;
+  min-width: 0;
+  min-height: 0;
+}
+
+[data-role="terminal-host"] .terminal-pane[hidden] {
+  display: none;
+}
+
+[data-role="ai-panel"] {
+  display: flex;
+  flex-direction: column;
+  min-width: var(--term-ai-min);
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--term-border);
+  border-radius: var(--term-radius);
+  background: var(--term-panel-bg);
+}
+
+[data-role="tabbar"],
+[data-role="statusbar"] {
+  display: flex;
+  align-items: center;
+  gap: var(--term-gap);
+  padding: 4px var(--term-gap);
+  border-bottom: 1px solid var(--term-border);
+}
+
+[data-role="statusbar"] {
+  border-bottom: none;
+  border-top: 1px solid var(--term-border);
+  font-size: 12px;
+}
+
+/* AI 栏折叠：终端优先占满，AI 栏变成可展开的抽屉。 */
+@media (max-width: 900px) {
+  [data-role="main"] {
+    grid-template-columns: minmax(var(--term-min-main), 1fr);
+  }
+
+  [data-role="main"][data-ai-open="false"] [data-role="ai-panel"] {
+    display: none;
+  }
+
+  [data-role="main"][data-ai-open="true"] [data-role="ai-panel"] {
+    max-height: 45vh;
+  }
+}
+
+/* 终端内部：xterm 的容器必须撑满。 */
+.xterm {
+  height: 100%;
+  padding: 2px;
+}
+
+.xterm-viewport {
+  scrollbar-color: var(--term-scrollbar) transparent;
+}

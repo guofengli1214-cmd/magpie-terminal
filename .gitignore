@@ -39,3 +39,10 @@ caller-keys.json
 # Python 缓存（trellis 脚本）
 __pycache__/
 *.pyc
+
+# 本地跑测产物（不入库）
+doctor-report.json
+doctor-run-latest.txt
+*.dispatch/
+.dispatch/*.log
+

@@ -145,10 +145,13 @@ python ./.trellis/scripts/task.py archive <name>
 
 ### 开发状态
 
-- **T1 未启动**：没有 `package.json`、没有 `index.mjs`、没有任何 `src/` 代码。
-- 当前所有任务里只有 `.trellis/tasks/00-bootstrap-guidelines/`（`status: in_progress`）——这是 `trellis init` 生成的初始化任务，用来填 `.trellis/spec/` 里的后端/前端规范。**规范已经写完**：backend 9 份共 1341 行、frontend 6 份共 784 行（`wc -l` 实测），已核验无「占位/未填/待补」残留。但该任务在 trellis 里仍是 `in_progress`、未被设为活动任务（`task.py current --source` 返回 `Current task: (none)`），也还没 archive；用户已批准归档（2026-11-22），归档在文档定稿后执行。**它不产出终端功能的任何代码**，archive 之后才开始 T1。
-- 注意：`task.py current --source` 现在返回 `Current task: (none)`——初始化任务没被设成「活动任务」，只是目录里 status 写着 in_progress。要让它变成活动任务得跑一次 `task.py start 00-bootstrap-guidelines`（该目录没有 `implement.jsonl` / `check.jsonl`；脚本对「清单文件不存在」不做拦截，只有「文件存在但没有条目」才要 `--allow-empty-context`）。
-- 设计事实以本仓库 `docs/` 下 5 份主文档 + `.trellis/spec/` 下 15 份规范为准，代码与文档冲突时先改文档再改代码。`docs/sources/` 下是编写期工作记录归档（可追溯，但不是事实源）。
+- **T1 + T2 已实现，待人工眼验与提交**（2026-11-22）。仓库里已有 `package.json`、`index.mjs`、`page/`、`app/`、`src/`、`scripts/`、`test/`，`node_modules/` 与 `app/vendor/xterm/` 是本地依赖与前端库副本，均不入库。
+- **自动化门槛**：`npm test`（= `node --test`，**不要带 `test/` 路径参数**：本机 node v24.16.0 会把目录参数当模块解析并报错，node v26 会静默把 `test/fixtures/*` 当测试跑）→ 112 pass / 0 fail / 0 skip；v24.16.0 与 v26.12.1 两个 node 各自实跑都一致；`node scripts/doctor.mjs` → 33/33 断言、exit 0。
+- **已在真 Chrome（headless + CDP）里走过的路径**：页面骨架与主题变量生效（`--magpie-bg` 为传入的 `#1e1e2e` 而非兜底 `Canvas`）、打开即自动建首个标签、真键盘输入落到真 PTY、`vim` 能进能退、resize 后连敲 10 条无丢字符、AI 栏真调网关拿到 `ls -la`、非只读命令弹确认卡且不点不动、Esc 关卡后文件仍在。
+- **尚未验证的两件事**（需要人眼看着）：`magpie plugin add` 真装到本机 magpie 之后，侧栏是否出现「终端」入口、`app.log` 是否出现 `plugin: [magpie-terminal] listening on http://127.0.0.1:3480`、以及 WebView2 沙箱 iframe 里页面是否真的画出来（这条没法用自动化脚本断言）。
+- **推 GitHub 等开发完成后再做**（当前本机无 `gh` CLI、无 GitHub token、无 SSH 私钥）。
+- 设计事实以本仓库 `docs/` 下 5 份主文档 + `.trellis/spec/` 下 15 份规范为准，代码与文档冲突时先改文档再改代码。`docs/sources/` 下是编写期工作记录归档（可追溯，但不是事实源）。任务书是根目录 `TASK.md`，实现方的自测报告是根目录 `REPORT.md`。
+- `.trellis/tasks/00-bootstrap-guidelines` 已归档（`.trellis/tasks/archive/2026-11/`，`status: completed`）。
 
 ### 正文里的简称
 

@@ -1,0 +1,428 @@
+// 命令分级器：纯函数、零 IO、永不抛。
+// 唯一的输出是 auto / confirm；任何判不准的分支都落到 confirm（fail-closed）。
+
+import {
+  DEFAULT_ALLOWLIST,
+  DEFAULT_DENYLIST,
+  DANGEROUS_ARGUMENTS,
+  PARAM_ARGUMENTS,
+} from "./allowlist.mjs";
+
+const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+function verdict(decision, reason, hit) {
+  return { decision, reason, hit };
+}
+
+/**
+ * @param {unknown} command
+ * @param {{allowlist?: object, denylist?: object}} [opts]
+ * @returns {{decision: "auto"|"confirm", reason: string, hit: string}}
+ */
+export function classify(command, opts = {}) {
+  try {
+    if (typeof command !== "string") {
+      return verdict("confirm", "输入不是字符串，按危险处理", "invalid-input");
+    }
+    const raw = command.trim();
+    if (raw.length === 0) {
+      return verdict("confirm", "空命令不执行", "noop");
+    }
+
+    const allowlist = opts && opts.allowlist ? opts.allowlist : DEFAULT_ALLOWLIST;
+    const denylist = opts && opts.denylist ? opts.denylist : DEFAULT_DENYLIST;
+
+    const split = splitSegments(raw);
+    if (!split.ok) {
+      return verdict("confirm", split.reason, split.hit);
+    }
+
+    let firstAutoHit = null;
+    for (const segment of split.segments) {
+      const checked = inspectSegment(segment, allowlist, denylist);
+      if (!checked.ok) {
+        return verdict("confirm", checked.reason, checked.hit);
+      }
+      if (firstAutoHit === null) firstAutoHit = checked.hit;
+    }
+
+    return verdict("auto", "只读白名单命中，无需确认", firstAutoHit || "allow");
+  } catch {
+    return verdict("confirm", "判定过程异常，按危险处理", "exception");
+  }
+}
+
+/**
+ * 按 && || ; | 切段，同时拒绝无法安全切分的构造。
+ */
+function splitSegments(input) {
+  const segments = [];
+  let current = "";
+  let quote = "";
+  let any = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    const next = input[i + 1];
+
+    if (quote === "'") {
+      current += ch;
+      if (ch === "'") quote = "";
+      continue;
+    }
+
+    if (quote === '"') {
+      current += ch;
+      if (ch === "\\" && i + 1 < input.length) {
+        current += input[i + 1];
+        i += 1;
+        continue;
+      }
+      if (ch === '"') quote = "";
+      if (ch === "`") {
+        return { ok: false, reason: "命令替换无法静态判定", hit: "substitution" };
+      }
+      if (ch === "$" && next === "(") {
+        return { ok: false, reason: "命令替换无法静态判定", hit: "substitution" };
+      }
+      continue;
+    }
+
+    if (ch === "\\") {
+      if (i + 1 >= input.length) {
+        return { ok: false, reason: "命令以反斜杠结尾，无法切分", hit: "unparsable" };
+      }
+      current += ch + input[i + 1];
+      i += 1;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+
+    if (ch === "`") {
+      return { ok: false, reason: "命令替换无法静态判定", hit: "substitution" };
+    }
+    if (ch === "$" && next === "(") {
+      return { ok: false, reason: "命令替换无法静态判定", hit: "substitution" };
+    }
+    if (ch === "\n" || ch === "\r") {
+      return { ok: false, reason: "命令含换行，无法按单行切分", hit: "unparsable" };
+    }
+    if (ch === ">") {
+      return { ok: false, reason: "命令含输出重定向，可能写文件", hit: "redirect" };
+    }
+    if (ch === "<") {
+      return { ok: false, reason: "命令含输入重定向，无法判定来源", hit: "redirect" };
+    }
+
+    if (ch === "&") {
+      if (next === "&") {
+        segments.push(current);
+        current = "";
+        any = true;
+        i += 1;
+        continue;
+      }
+      return { ok: false, reason: "命令含后台执行符号", hit: "unparsable" };
+    }
+
+    if (ch === "|") {
+      segments.push(current);
+      current = "";
+      any = true;
+      if (next === "|") i += 1;
+      continue;
+    }
+
+    if (ch === ";") {
+      segments.push(current);
+      current = "";
+      any = true;
+      continue;
+    }
+
+    current += ch;
+  }
+
+  if (quote !== "") {
+    return { ok: false, reason: "引号不闭合，命令无法切分", hit: "unparsable" };
+  }
+
+  segments.push(current);
+
+  const cleaned = segments.map((s) => s.trim());
+  if (cleaned.some((s) => s.length === 0)) {
+    return { ok: false, reason: "存在空命令段，命令无法切分", hit: "unparsable" };
+  }
+  if (!any && cleaned.length === 1 && cleaned[0].length === 0) {
+    return { ok: false, reason: "空命令不执行", hit: "noop" };
+  }
+  return { ok: true, segments: cleaned };
+}
+
+/** 最小词法器：只认单 / 双引号与反斜杠。 */
+function tokenize(segment) {
+  const tokens = [];
+  let current = "";
+  let quote = "";
+  let started = false;
+
+  for (let i = 0; i < segment.length; i += 1) {
+    const ch = segment[i];
+    if (quote === "'") {
+      if (ch === "'") quote = "";
+      else current += ch;
+      started = true;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = "";
+      } else if (ch === "\\" && i + 1 < segment.length) {
+        current += segment[i + 1];
+        i += 1;
+      } else {
+        current += ch;
+      }
+      started = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < segment.length) {
+      current += segment[i + 1];
+      i += 1;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started) {
+        tokens.push(current);
+        current = "";
+        started = false;
+      }
+      continue;
+    }
+    current += ch;
+    started = true;
+  }
+  if (quote !== "") return null;
+  if (started) tokens.push(current);
+  return tokens;
+}
+
+function commandHead(token) {
+  const normalized = String(token).replace(/^['"]|['"]$/g, "");
+  const parts = normalized.split(/[\\/]/);
+  let head = parts[parts.length - 1] || normalized;
+  if (head.toLowerCase().endsWith(".exe")) head = head.slice(0, -4);
+  return head;
+}
+
+/**
+ * 把参数规范化成「比较用的名字」：去掉前导连字符，`=` 右侧丢弃。
+ * `-delete` / `--delete` -> "delete"；`--files0-from=list` -> "files0-from"。
+ * 这样短选项与长选项、带值/不带值写法在判定上必然对称。
+ */
+function stripDashes(arg) {
+  return String(arg).split("=")[0].replace(/^-+/, "");
+}
+
+/**
+ * 把一个参数解析成「待检查的名字列表」。
+ *
+ * - `--files0-from=list` -> ["files0-from"]
+ * - `-n`                 -> ["n"]
+ * - `-ln`（组合短选项）  -> 只有当整名不在允许集时才拆成 ["l","n"]
+ *
+ * 「整名优先」让 `--pre` 报成 `-pre` 而不是 `-p r e`，错误信息才指得准。
+ *
+ * @param {string} arg
+ * @param {Set<string>} allowed
+ * @returns {string[]}
+ */
+function flagNames(arg, allowed) {
+  const name = stripDashes(arg);
+  if (!name) return [""];
+  // 长选项（--xxx）永不拆分：`--pre` 就是 "pre"，不是 -p -r -e。
+  if (String(arg).startsWith("--")) return [name];
+  if (allowed.has(name)) return [name];
+  // 单连字符且多字符：可能是组合短选项（-ln / -sS）或带值的长名（-max-count）。
+  if (name.includes("-")) return [name];
+  const chars = name.split("");
+  // 每个字符都是允许的单字符选项 → 组合短选项。
+  if (chars.length > 1 && chars.every((c) => allowed.has(c))) return chars;
+  return [name];
+}
+
+/** 参数名是否命中危险表（粗筛）。不做组合拆分。 */
+function firstUnsafeArg(args, patterns) {
+  if (!patterns) return null;
+  for (const arg of args) {
+    if (!String(arg).startsWith("-")) continue;
+    const name = stripDashes(arg);
+    if (name && patterns.includes(name)) return `-${name}`;
+  }
+  return null;
+}
+
+/**
+ * 危险参数粗筛（只返回 hit 字符串）。fin 走这里拿 `deny:*`，
+ * 其余命令即使通过粗筛还要再过参数级允许集。
+ */
+function hasDangerousArg(head, args) {
+  const direct = firstUnsafeArg(args, DANGEROUS_ARGUMENTS[head]);
+  if (direct) return `${head} ${direct}`;
+  return null;
+}
+
+/**
+ * 参数级允许集校验。返回 null 表示通过；否则返回 { hit, reason }。
+ *
+ * @param {string} scope  键：`head` 或 `head sub`
+ * @param {string[]} args 该段的参数（不含命令头；git 场景下已含子命令）
+ * @param {object} table  PARAM_ARGUMENTS
+ */
+function checkParamAllowlist(scope, args, table) {
+  const rule = table[scope];
+  if (!rule) return null;
+
+  const allowed = new Set(rule.flags);
+  const present = new Set();
+  const positionals = [];
+
+  for (const arg of args) {
+    if (!String(arg).startsWith("-")) {
+      positionals.push(arg);
+      continue;
+    }
+    for (const name of flagNames(arg, allowed)) {
+      present.add(name);
+      if (!allowed.has(name)) {
+        return {
+          hit: `deny:${scope} -${name}`,
+          reason: `${scope} 的参数 -${name} 不在只读允许集内`,
+        };
+      }
+    }
+  }
+
+  if (rule.require && rule.require.length > 0) {
+    const satisfied = rule.require.some((name) => present.has(name));
+    if (!satisfied) {
+      return {
+        hit: `deny:${scope} missing ${rule.require.join("|")}`,
+        reason: `${scope} 必须显式带上 ${rule.require.join(" / ")}`,
+      };
+    }
+  }
+
+  if (rule.positional === "deny" && positionals.length > 0) {
+    return {
+      hit: `deny:${scope} positional:${positionals[0]}`,
+      reason: `${scope} 带位置参数会改变仓库状态`,
+    };
+  }
+
+  return null;
+}
+
+function inspectSegment(segment, allowlist, denylist) {
+  const tokens = tokenize(segment);
+  if (!tokens || tokens.length === 0) {
+    return { ok: false, reason: "命令段无法解析", hit: "unparsable" };
+  }
+
+  // 环境变量前缀包装：FOO=1 cmd —— 真实命令头被藏起来了，一律确认。
+  if (ASSIGNMENT_RE.test(tokens[0])) {
+    return { ok: false, reason: "环境变量前缀包装，无法确认真实命令", hit: "env-prefix" };
+  }
+
+  let index = 0;
+  // env FOO=1 包装：按规范剥掉包装后再看真实命令头。
+  if (commandHead(tokens[0]) === "env") {
+    index = 1;
+    while (index < tokens.length && ASSIGNMENT_RE.test(tokens[index])) {
+      index += 1;
+    }
+    if (index >= tokens.length) {
+      return { ok: false, reason: "env 后没有真实命令", hit: "unparsable" };
+    }
+  }
+
+  const head = commandHead(tokens[index]);
+  const args = tokens.slice(index + 1);
+
+  if (!head) {
+    return { ok: false, reason: "命令头为空", hit: "unparsable" };
+  }
+
+  if (denylist.heads.includes(head)) {
+    return { ok: false, reason: `命中黑名单命令：${head}`, hit: `deny:${head}` };
+  }
+
+  const denySubs = denylist.subcommands[head];
+  if (denySubs && args.length > 0 && denySubs.includes(args[0])) {
+    return { ok: false, reason: `命中黑名单子命令：${head} ${args[0]}`, hit: `deny:${head} ${args[0]}` };
+  }
+
+  // 1) 危险参数粗筛：`find -fprint` 系列、`git --output` 等拿到明确的 deny。
+  const dangerous = hasDangerousArg(head, args);
+  if (dangerous) {
+    return { ok: false, reason: `危险参数：${dangerous}`, hit: `deny:${dangerous}` };
+  }
+
+  // 2) 参数级允许集（curl / rg / wc / "git branch"）。位置在命令头白名单之前：
+  //    这些命令的参数能改语义，必须先过参数关才谈「命令头只读」。
+  const subScope = args.length > 0 ? `${head} ${args[0]}` : null;
+  if (subScope && PARAM_ARGUMENTS[subScope]) {
+    // 子命令级规则：把子命令本身从参数里去掉再判，
+    // 否则 `git branch -a` 里的 "branch" 会被当成位置参数。
+    const subRule = checkParamAllowlist(subScope, args.slice(1), PARAM_ARGUMENTS);
+    if (subRule) return { ok: false, reason: subRule.reason, hit: subRule.hit };
+  }
+  const headRule = checkParamAllowlist(head, args, PARAM_ARGUMENTS);
+  if (headRule) {
+    return { ok: false, reason: headRule.reason, hit: headRule.hit };
+  }
+
+  if (allowlist.heads.includes(head)) {
+    return { ok: true, hit: `allow:${head}` };
+  }
+
+  const allowSubs = allowlist.subcommands[head];
+  if (allowSubs) {
+    if (args.length === 0) {
+      return {
+        ok: false,
+        reason: `命令头 ${head} 只放行只读子命令`,
+        hit: `default:${head}`,
+      };
+    }
+    const sub = args[0];
+    if (!allowSubs.includes(sub)) {
+      return {
+        ok: false,
+        reason: `命令头 ${head} 只放行只读子命令`,
+        hit: `default:${head}`,
+      };
+    }
+    // 子命令级允许集（如 "git branch"）已经在上方检查过。
+    return { ok: true, hit: `allow:${head} ${sub}` };
+  }
+
+  // 有参数级允许集但没有命令头白名单（例如 curl / rg / wc）：
+  // 参数已通过 → 视为允许。
+  if (PARAM_ARGUMENTS[head]) {
+    return { ok: true, hit: `allow:${head}` };
+  }
+
+  return { ok: false, reason: `命令头 ${head} 不在只读白名单`, hit: `default:${head}` };
+}

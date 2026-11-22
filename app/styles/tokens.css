@@ -1,0 +1,85 @@
+/* 颜色只允许出现在本文件的变量声明处。
+   magpie 下发的令牌保持原名；项目自建的加 --term- 前缀。
+   服务端会在应用页 <head> 里注入一份 :root 覆盖（来自 tokens）。 */
+
+:root {
+  color-scheme: light dark;
+
+  /* 来自 magpie 的兜底（服务端注入的会覆盖这里） */
+  --magpie-bg: Canvas;
+  --magpie-fg: CanvasText;
+  --magpie-muted: GrayText;
+  --magpie-font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+
+  /* 项目级语义变量（明色一套值） */
+  --term-bg: var(--magpie-bg);
+  --term-fg: var(--magpie-fg);
+  --term-muted: var(--magpie-muted);
+  --term-panel-bg: var(--magpie-bg);
+  --term-border: var(--magpie-muted);
+  --term-accent: var(--magpie-fg);
+  --term-danger: #b3261e;
+  --term-danger-fg: #ffffff;
+  --term-warn: #7a4a00;
+  --term-ok: #116329;
+  --term-focus: var(--magpie-fg);
+  --term-selection: rgba(90, 120, 180, 0.35);
+  --term-scrollbar: rgba(120, 120, 120, 0.5);
+
+  /* 终端 ANSI 16 色（暗色主题友好，亮色下也被验证过对比度） */
+  --term-ansi-black: #1c1c1c;
+  --term-ansi-red: #c93c37;
+  --term-ansi-green: #2e7d32;
+  --term-ansi-yellow: #8a6d00;
+  --term-ansi-blue: #1565c0;
+  --term-ansi-magenta: #8e24aa;
+  --term-ansi-cyan: #00796b;
+  --term-ansi-white: #d6d6d6;
+  --term-ansi-bright-black: #767676;
+  --term-ansi-bright-red: #ef5350;
+  --term-ansi-bright-green: #66bb6a;
+  --term-ansi-bright-yellow: #c9a227;
+  --term-ansi-bright-blue: #64b5f6;
+  --term-ansi-bright-magenta: #ba68c8;
+  --term-ansi-bright-cyan: #4dd0e1;
+  --term-ansi-bright-white: #ffffff;
+
+  /* 尺寸 / 排版 */
+  --term-min-main: 480px;
+  --term-ai-width: 320px;
+  --term-ai-min: 240px;
+  --term-radius: 6px;
+  --term-gap: 8px;
+  --term-mono: ui-monospace, Menlo, Consolas, "Cascadia Mono", monospace;
+  --term-font-size: 13px;
+  --term-line-height: 1.2;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --term-danger: #ff8a80;
+    --term-danger-fg: #2a0f0d;
+    --term-warn: #ffcc80;
+    --term-ok: #a5d6a7;
+    --term-border: #3a3f46;
+    --term-panel-bg: #14171c;
+    --term-selection: rgba(120, 160, 220, 0.35);
+    --term-scrollbar: rgba(160, 160, 160, 0.5);
+    --term-ansi-black: #2b2b2b;
+    --term-ansi-red: #ff7b72;
+    --term-ansi-green: #7ee787;
+    --term-ansi-yellow: #e3b341;
+    --term-ansi-blue: #79c0ff;
+    --term-ansi-magenta: #d2a8ff;
+    --term-ansi-cyan: #56d4dd;
+    --term-ansi-white: #c9d1d9;
+    --term-ansi-bright-black: #8b949e;
+    --term-ansi-bright-red: #ffa198;
+    --term-ansi-bright-green: #a6f3b0;
+    --term-ansi-bright-yellow: #f2cc60;
+    --term-ansi-bright-blue: #a5d6ff;
+    --term-ansi-bright-magenta: #e2c5ff;
+    --term-ansi-bright-cyan: #89e6ec;
+    --term-ansi-bright-white: #f0f6fc;
+  }
+}
