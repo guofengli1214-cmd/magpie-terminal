@@ -161,16 +161,15 @@ test("#7 正确 token + 自身 Origin → 200", async () => {
   assert.equal(response.status, 200);
 });
 
-test("#7b 正确 token + 无 Origin（脚本调用方）→ 200，且 cookie 方式也 200", async () => {
+test("#7b 正确 token + 无 Origin（脚本调用方）→ 200；query 也 200", async () => {
   const withHeader = await fetch(`${base()}/api/health`, {
     headers: { "x-magpie-term-token": token },
   });
   assert.equal(withHeader.status, 200);
 
-  const withCookie = await fetch(`${base()}/api/health`, {
-    headers: { cookie: `mt=${token}` },
-  });
-  assert.equal(withCookie.status, 200);
+  // WS 只能用 query，所以 query 通道必须保留。
+  const withQuery = await fetch(`${base()}/api/health?token=${token}`);
+  assert.equal(withQuery.status, 200);
 });
 
 test("#8 WS 无 token → 握手失败（非 101），且没有 HTTP body", async () => {
@@ -253,17 +252,96 @@ test("GET /api/policy 已鉴权 → 200 且含白名单 / 黑名单", async () =
   assert.ok(Array.isArray(body.denylist.heads));
 });
 
-test("根路径 / 下发 mt cookie（64 位 hex）且带 CSP", async () => {
+test("根路径 / 注入 meta 口令、不再下发 set-cookie、CSP 无 frame-ancestors", async () => {
   const response = await fetch(`${base()}/`, { redirect: "manual" });
   assert.equal(response.status, 200);
-  const cookie = response.headers.get("set-cookie") || "";
-  assert.match(cookie, /mt=[0-9a-f]{64}/);
-  assert.match(cookie, /HttpOnly/);
-  assert.match(cookie, /SameSite=Strict/);
+
+  // 第 6 轮：cookie 方案在沙箱 opaque origin 下不可用，改为 HTML <meta> 注入。
+  assert.equal(response.headers.get("set-cookie"), null);
+  const html = await response.text();
+  assert.match(html, /<meta name="magpie-term-token" content="[0-9a-f]{64}">/);
+  assert.ok(html.includes("data-role=\"terminal-host\""));
+
+  // CSP 保留收紧项，但绝不能有 frame-ancestors（否则沙箱 iframe 被拦成错误页）。
   const csp = response.headers.get("content-security-policy") || "";
   assert.match(csp, /default-src 'none'/);
-  const html = await response.text();
-  assert.ok(html.includes("data-role=\"terminal-host\""));
+  assert.match(csp, /script-src 'self'/);
+  assert.equal(/frame-ancestors/.test(csp), false);
+});
+
+test("buildCsp() 不含 frame-ancestors（防止有人顺手加回去）", async () => {
+  const { buildCsp } = await import("../../src/server/http.mjs");
+  const csp = buildCsp(3480);
+  assert.equal(
+    csp.includes("frame-ancestors"),
+    false,
+    "magpie 把插件页放在 sandbox=\"allow-scripts\" iframe 里（opaque origin），" +
+      "frame-ancestors 会直接把它拦成 Chromium 错误页。必须留空。",
+  );
+  // 其余收紧项仍在
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /script-src 'self'/);
+  assert.match(csp, /style-src 'self' 'unsafe-inline'/);
+  assert.match(csp, /base-uri 'none'/);
+  assert.match(csp, /form-action 'none'/);
+});
+
+test("Origin: null 取静态 JS 时带 ACAO: null 与 vary: Origin", async () => {
+  const response = await fetch(`${base()}/app.js`, { headers: { origin: "null" } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("access-control-allow-origin"), "null");
+  assert.match(response.headers.get("vary") || "", /Origin/i);
+  assert.match(response.headers.get("access-control-allow-headers") || "", /x-magpie-term-token/);
+  await response.text();
+});
+
+test("Origin: null 取 CSS / vendor 也带 ACAO: null", async () => {
+  for (const pathname of ["/styles/tokens.css", "/vendor/xterm/xterm.js"]) {
+    const response = await fetch(`${base()}${pathname}`, { headers: { origin: "null" } });
+    assert.equal(response.status, 200, pathname);
+    assert.equal(response.headers.get("access-control-allow-origin"), "null", pathname);
+    await response.text();
+  }
+});
+
+test("OPTIONS /api/health 带 Origin: null → 204 + CORS，且不需要 token", async () => {
+  const response = await fetch(`${base()}/api/health`, {
+    method: "OPTIONS",
+    headers: {
+      origin: "null",
+      "access-control-request-method": "GET",
+      "access-control-request-headers": "x-magpie-term-token",
+    },
+  });
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get("access-control-allow-origin"), "null");
+  assert.match(response.headers.get("access-control-allow-headers") || "", /x-magpie-term-token/);
+  assert.match(response.headers.get("access-control-allow-methods") || "", /GET/);
+  assert.match(response.headers.get("vary") || "", /Origin/i);
+  await response.text();
+});
+
+test("cookie 通道已关闭：只带 cookie: mt=<正确 token> → 403", async () => {
+  const response = await fetch(`${base()}/api/health`, {
+    headers: { cookie: `mt=${token}` },
+  });
+  assert.equal(response.status, 403);
+});
+
+test("403 的 /api/* 也带 CORS 头（否则沙箱里分不清没权限还是网络错）", async () => {
+  const response = await fetch(`${base()}/api/health`, { headers: { origin: "null" } });
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get("access-control-allow-origin"), "null");
+  await response.text();
+});
+
+test("Origin 不合法时不回 ACAO（不向恶意页面确认「你能读」）", async () => {
+  const response = await fetch(`${base()}/api/health?token=${token}`, {
+    headers: { origin: "http://evil.com" },
+  });
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get("access-control-allow-origin"), null);
+  await response.text();
 });
 
 // ---------------------------------------------------------------------------

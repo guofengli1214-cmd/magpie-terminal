@@ -52,8 +52,10 @@ Host ∈ { "127.0.0.1:3480", "localhost:3480" }   // 其余一律 403
 | 项 | 设计 | 为什么 |
 |---|---|---|
 | 生成 | 进程启动时 `crypto.randomBytes(32)` → 64 个 hex 字符 | 32 字节 = 256 bit 熵，暴力枚举不可行；hex 便于放进 HTML 与头部 |
-| 传递（HTTP） | 请求头 `X-Term-Token: <64 hex>` | 不进 URL：URL 会进日志、进 Referer、进浏览器历史 |
-| 传递（WS） | `Sec-WebSocket-Protocol: term.v1, token.<64 hex>` | 浏览器 `WebSocket` 构造函数无法设置自定义头，子协议是唯一不进 URL 的通道；用 query string 传 token 会被访问日志记录 |
+| 传递（HTTP） | 请求头 `x-magpie-term-token: <64 hex>` | 不进 URL：URL 会进日志、进 Referer、进浏览器历史 |
+| 传递（WS） | query `?token=<64 hex>` | 浏览器 `WebSocket` 构造函数无法设置自定义头，所以 WS 只能用 query（GET 的 query 不进 Referer；我们的访问日志只记 pathname，不记 query） |
+| 交付（页面 → 前端） | 服务端把口令注入应用页 HTML 的 `<meta name="magpie-term-token" content="…">` | **不能用 cookie**（第 6 轮实测）：插件页在 `<iframe sandbox="allow-scripts">` 里，文档是 opaque origin，`document.cookie = …` 抛 `SecurityError`，跨源请求也不会带我们的 cookie。官方 page-chat 用的也是 meta 注入 |
+| CORS | 静态资源与 `/api/*` 都带 `access-control-allow-origin`（`Origin: null` → `null`）+ `access-control-allow-headers: content-type, x-magpie-term-token`；`OPTIONS` 先回 204 | 沙箱里 `type="module"` 是 CORS 请求，没有 ACAO 就被拦（`blocked by CORS policy`），`app.js` 及其 `import` 全部不执行。`OPTIONS` 预检不带口令，不能要求 token |
 | 比对 | 先比长度，长度不等直接 403；长度相等再 `crypto.timingSafeEqual` | `timingSafeEqual` 在长度不等时**抛异常**，必须先挡；长度固定为 64，不构成信息泄漏 |
 | 失败响应 | 一律 `403`，空 body，不带任何 `WWW-Authenticate` | 401 会触发浏览器凭据弹窗并暴露「服务存在且需要认证」；统一 403 + 空 body 不区分「没带 token」与「token 错」 |
 | 生命周期 | 进程重启即换新 token，旧 token 立即失效；不持久化 | token 是能力凭证，落盘就等于给同用户进程一个长期后门 |
@@ -260,14 +262,14 @@ classify("git branch side-effect-branch")             -> auto → 分支被创�
 
 | # | 构造 | 预期 | 判定依据 |
 |---|---|---|---|
-| S1 | `curl -s -o /dev/null -w '%{http_code}' -H "X-Term-Token: $TOKEN" -H 'Origin: http://evil.example' $BASE/api/health` | `403` | Origin 不在白名单 |
-| S2 | `curl -s -o /dev/null -w '%{http_code}' -H "X-Term-Token: $TOKEN" -H 'Host: evil.example' $BASE/api/health` | `403` | Host 不等于 `127.0.0.1:3480` / `localhost:3480` |
+| S1 | `curl -s -o /dev/null -w '%{http_code}' -H "x-magpie-term-token: $TOKEN" -H 'Origin: http://evil.example' $BASE/api/health` | `403` | Origin 不在白名单 |
+| S2 | `curl -s -o /dev/null -w '%{http_code}' -H "x-magpie-term-token: $TOKEN" -H 'Host: evil.example' $BASE/api/health` | `403` | Host 不等于 `127.0.0.1:3480` / `localhost:3480` |
 | S3 | `curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3480' $BASE/api/health` | `403` | 缺 token |
-| S4 | `curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3480' -H "X-Term-Token: $(printf '0%.0s' {1..64})" $BASE/api/health` | `403` | token 长度对但内容错 |
-| S5 | `curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3480' -H 'X-Term-Token: short' $BASE/api/health` | `403`（不 500） | 长度不等必须先挡，`timingSafeEqual` 不得抛到外层 |
-| S6 | WS 升级走同一套校验：`curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3480' -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H "Sec-WebSocket-Key: $(openssl rand -base64 16)" -H 'Origin: http://evil.example' -H "X-Term-Token: $TOKEN" $BASE/ws` | `403` | 不能只在 HTTP 路由上挂中间件；把 S1–S5 的 header 组合逐个套到这条 WS 请求上，仍须全部 403 |
-| S7 | `curl -s -o /dev/null -w '%{http_code}' -H "X-Term-Token: $TOKEN" -H 'Origin: null' $BASE/api/health` | `200` | 沙箱 iframe 的合法路径，必须放行（否则页面自己连不上） |
-| S8 | `curl -s -o /dev/null -w '%{http_code}' -H "X-Term-Token: $TOKEN" $BASE/api/health`（不带 Origin） | `200` | 非浏览器客户端的合法路径 |
+| S4 | `curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3480' -H "x-magpie-term-token: $(printf '0%.0s' {1..64})" $BASE/api/health` | `403` | token 长度对但内容错 |
+| S5 | `curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3480' -H 'x-magpie-term-token: short' $BASE/api/health` | `403`（不 500） | 长度不等必须先挡，`timingSafeEqual` 不得抛到外层 |
+| S6 | WS 升级走同一套校验：`curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:3480' -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H "Sec-WebSocket-Key: $(openssl rand -base64 16)" -H 'Origin: http://evil.example' -H "x-magpie-term-token: $TOKEN" $BASE/ws` | `403` | 不能只在 HTTP 路由上挂中间件；把 S1–S5 的 header 组合逐个套到这条 WS 请求上，仍须全部 403 |
+| S7 | `curl -s -o /dev/null -w '%{http_code}' -H "x-magpie-term-token: $TOKEN" -H 'Origin: null' $BASE/api/health` | `200` | 沙箱 iframe 的合法路径，必须放行（否则页面自己连不上） |
+| S8 | `curl -s -o /dev/null -w '%{http_code}' -H "x-magpie-term-token: $TOKEN" $BASE/api/health`（不带 Origin） | `200` | 非浏览器客户端的合法路径 |
 
 ### 7.2 命令分级
 

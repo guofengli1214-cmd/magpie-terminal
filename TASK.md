@@ -266,7 +266,10 @@ export default {
 </body></html>
 ```
 
-- 服务端在自己发的页面上设置 CSP：`default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:3480 ws://localhost:3480; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`
+- 服务端在自己发的页面上设置 CSP：`default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:3480 ws://localhost:3480; base-uri 'none'; form-action 'none'`
+  - **不要加 `frame-ancestors`**（第 6 轮实测）：magpie 把插件页放进 `<iframe sandbox="allow-scripts">`，沙箱文档是 opaque origin、父页是 `http://wails.localhost`，跨源嵌框会被 `frame-ancestors 'self'` 拦成 Chromium 错误页（控制台：`Framing 'http://127.0.0.1:3480/' violates the following Content Security Policy directive: "frame-ancestors 'self'"`）。也不要改成 `frame-ancestors http://wails.localhost` —— 父页 host 随平台/版本变，官方 page-chat 的做法就是完全不发这条指令。
+  - **认证不能用 cookie**：同一个沙箱里 `document.cookie = …` 会抛 `SecurityError`（opaque origin），跨源请求也不会带我们的 cookie。口令改为服务端注入 HTML 的 `<meta name="magpie-term-token" content="…">`，前端从 meta 读、放进 `x-magpie-term-token` 请求头（`/api/*`）或 `?token=`（WS）。
+  - **静态资源与 `/api/*` 必须带 CORS 头**：沙箱里 `type="module"` 的脚本是 CORS 请求，缺 `access-control-allow-origin` 就被拦（控制台：`blocked by CORS policy: No 'Access-Control-Allow-Origin' header`）。`app.js` 里的 `import "./core/…"` 全是 module fetch，缺一个头就整页白屏。`Origin: null` 时回 `access-control-allow-origin: null`；`OPTIONS` 先回 204（预检不带口令）。
   - **`style-src` 必须带 `'unsafe-inline'`**（2026-11-22 实测补充，原卡写成 `'self'` 是错的）。两个理由：①服务端注入的 `<style>:root{…tokens…}</style>` 是内联样式，`'self'` 只管外链样式表，实测被拦（控制台 `Applying inline style violates … style-src 'self' … The action has been blocked.`），主题变量全部失效；②xterm.js 6.0 运行期自己 `document.createElement("style")` 4 处、`setAttribute("style", …)` 1 处、`insertRule` 2 处，nonce 方案对它们无效（拿不到 nonce），只有 `'unsafe-inline'` 可行。脚本仍严格 `script-src 'self'`，不放宽。
 - **打开页面必须自动有一个标签**：WS 连上（`onStatus` 变 `open`）且 store 里零会话时，**前端**立刻发 `pty.create`。store 非空（重连、已是第二页）时**不许**再建，否则重连一次就多一个标签。
   - **服务端不许在连接建立时替客户端建会话**（2026-11-22 返工第 2 轮补充）。理由：服务端分不清「真人在开页面」和「探针/核验脚本连了一下 WS」，替客户端建会话会让每一次探测都凭空多一个 `bash.exe`，`/api/health` 的 `sessions` 也对不上；自动建标签是 UI 行为，归前端。服务端只需老实执行收到的 `pty.create`。

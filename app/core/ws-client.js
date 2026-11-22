@@ -2,6 +2,7 @@
 // 只解码与分发；帧定义的唯一住所是 src/server/ws.mjs。
 
 import constants from "./constants.js";
+import { readToken } from "./token.js";
 
 export default function createWsClient(options) {
   const port = options && options.port ? options.port : constants.DEFAULT_PORT;
@@ -13,8 +14,12 @@ export default function createWsClient(options) {
   let retryTimer = null;
   let closedByUs = false;
 
+  // 口令必须显式放进 query：浏览器 WebSocket 构造函数无法设置自定义头，
+  // 而沙箱 iframe（opaque origin）里 cookie 根本不会发过来。
   function url() {
-    return `ws://127.0.0.1:${port}${constants.WS_PATH}`;
+    const token = readToken();
+    const query = token ? `?token=${encodeURIComponent(token)}` : "";
+    return `ws://127.0.0.1:${port}${constants.WS_PATH}${query}`;
   }
 
   function scheduleReconnect() {

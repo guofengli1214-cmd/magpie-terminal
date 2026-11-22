@@ -8,10 +8,10 @@ import {
   TOKEN_BYTES,
   checkHttpGate,
   checkToken,
-  cookieHeader,
   generateToken,
   maskToken,
   readToken,
+  tokenMetaTag,
 } from "./auth.mjs";
 import { buildHealth } from "./routes/health.mjs";
 import { buildPolicy } from "./routes/policy.mjs";
@@ -35,6 +35,15 @@ export const MAX_BODY_BYTES = 64 * 1024;
  * ② xterm.js 运行期自己 createElement("style") / setAttribute("style", …) / insertRule，
  *    nonce 方案拿不到 nonce，只有 'unsafe-inline' 可行。
  * 脚本仍然严格 'self'，不放宽。
+ *
+ * **绝对不能加 `frame-ancestors`**（第 6 轮实测）：
+ * magpie 桌面窗口把插件页放进 `<iframe sandbox="allow-scripts">`，沙箱文档是
+ * opaque origin，父页是 `http://wails.localhost`，跨源嵌框会被
+ * `frame-ancestors 'self'` 拦下，浏览器直接显示 Chromium 错误页
+ * （控制台原文：`Framing 'http://127.0.0.1:3480/' violates the following
+ * Content Security Policy directive: "frame-ancestors 'self'"`）。
+ * 也不要改成 `frame-ancestors http://wails.localhost` 之类的白名单：父页 host
+ * 随平台/版本变化。官方 page-chat 的做法就是完全不发这条指令，这里跟随官方。
  */
 export function buildCsp(port = 3480) {
   return [
@@ -46,7 +55,6 @@ export function buildCsp(port = 3480) {
     `connect-src 'self' ws://127.0.0.1:${port} ws://localhost:${port}`,
     "base-uri 'none'",
     "form-action 'none'",
-    "frame-ancestors 'self'",
   ].join("; ");
 }
 
@@ -73,25 +81,58 @@ export function makeLogger(sink = console) {
   };
 }
 
-function writeJson(res, status, payload, extraHeaders = {}) {
+/**
+ * CORS 头。规则与官方 page-chat 的 `corsHeaders()` 一致：
+ *
+ * - 沙箱 iframe 的 `Origin` 是字面量 `"null"` → 回 `access-control-allow-origin: null`
+ *   （不能回 `*`：带 `null` origin 的请求要精确匹配，且我们不希望任意页面读取响应体）
+ * - 自身 origin（`http://127.0.0.1:<port>` / `http://localhost:<port>`）→ 回自身
+ * - 其他 Origin → 不回 ACAO（浏览器会按 CORS 失败处理）
+ *
+ * 为什么每个响应都要带：沙箱里 `type="module"` 的脚本是 CORS 请求，
+ * 没有 ACAO 就被拦（控制台：`blocked by CORS policy: No
+ * 'Access-Control-Allow-Origin' header`）。`app.js` 里的 `import "./core/…"`
+ * 全是 module fetch，缺一个头就整页白屏。
+ */
+export function corsHeaders(req, port) {
+  const origin = req && req.headers ? req.headers.origin : undefined;
+  const selfOrigins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+  const headers = {
+    "access-control-allow-headers": "content-type, x-magpie-term-token",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    vary: "Origin",
+  };
+  if (origin === "null") {
+    headers["access-control-allow-origin"] = "null";
+  } else if (typeof origin === "string" && selfOrigins.has(origin.toLowerCase())) {
+    headers["access-control-allow-origin"] = origin;
+  }
+  return headers;
+}
+
+function writeJson(res, status, payload, extraHeaders = {}, cors = {}) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
+    ...cors,
     ...extraHeaders,
   });
   res.end(body);
 }
 
-function writeForbidden(res) {
+function writeForbidden(res, cors = {}) {
   // 响应体不区分失败原因，避免成为判定预言机。
+  // 但 CORS 头必须给：否则沙箱页面只能看到「CORS 错误」，
+  // 分不清「没权限」和「网络坏了」。
   const body = JSON.stringify({ code: "FORBIDDEN" });
   res.writeHead(403, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
     "cache-control": "no-store",
+    ...cors,
   });
   res.end(body);
 }
@@ -138,13 +179,15 @@ function buildRootStyle(tokens) {
   return `<style>html:root {\n${lines.join("\n")}\n}</style>`;
 }
 
-async function renderAppIndex(tokens) {
+async function renderAppIndex(tokens, token) {
   const raw = await readAppFile("index.html");
   const style = buildRootStyle(tokens);
+  const meta = token ? tokenMetaTag(token) : "";
+  const injected = meta ? meta + "\n" + style : style;
   // 在注释占位处注入；没有占位则插到 </head> 前。
   const marker = "<!-- 服务端在此处注入 <style>:root{…tokens…}</style> -->";
-  if (raw.includes(marker)) return raw.replace(marker, style);
-  return raw.replace("</head>", `${style}\n</head>`);
+  if (raw.includes(marker)) return raw.replace(marker, injected);
+  return raw.replace("</head>", injected + "\n" + "</head>");
 }
 
 /** 读取请求体，超过上限返回 null 并已经回应 413。 */
@@ -243,21 +286,36 @@ export async function startServer(options = {}) {
       return;
     }
     const pathname = url.pathname;
+    const cors = corsHeaders(req, port);
 
-    // L2 + L3：所有请求都先过 Host / Origin。
+    // L2：Host 先行。Host 不对时连 CORS 头都不给（不是我们可以服务的对象）。
+    // L3：Origin；L4：token（在 /api/* 与 WS 升级处）。
     const gate = checkHttpGate(req, port);
     if (!gate.ok) {
       log({ level: "warn", code: gate.code, msg: "request forbidden", route: `${req.method} ${pathname}` });
-      writeForbidden(res);
+      // Origin 不合法时不回 ACAO（否则等于告诉恶意页面「你能读」）；
+      // Host 不合法时同理。其余 403 场景会带 CORS。
+      const isOriginIssue = gate.code === "AUTH_ORIGIN_MISMATCH";
+      writeForbidden(res, isOriginIssue ? {} : cors);
+      return;
+    }
+
+    // CORS 预检：必须在 token 检查之前。
+    // 浏览器发 OPTIONS 时不会带自定义口令头，所以这里不能要求 token。
+    // 顺序与官方 page-chat 一致：host → origin → OPTIONS 204 → 其余。
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, cors);
+      res.end();
       return;
     }
 
     const isApi = pathname === "/api" || pathname.startsWith("/api/");
 
-    // 根路径：带路页跳进来的入口。先下发 mt cookie 再返回应用页。
+    // 根路径：带路页跳进来的入口。
+    // 不再下发 cookie（沙箱 opaque origin 收不到也用不了）；口令注入 HTML 的 <meta>。
     if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
       const tokens = decodeTokens(url.searchParams.get("tokens"));
-      const html = await renderAppIndex(tokens);
+      const html = await renderAppIndex(tokens, token);
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "content-length": Buffer.byteLength(html),
@@ -265,7 +323,7 @@ export async function startServer(options = {}) {
         "x-content-type-options": "nosniff",
         "content-security-policy": buildCsp(port),
         "referrer-policy": "no-referrer",
-        "set-cookie": cookieHeader(token),
+        ...cors,
       });
       res.end(html);
       log({
@@ -288,7 +346,7 @@ export async function startServer(options = {}) {
           msg: "api forbidden",
           route: `${req.method} ${pathname}`,
         });
-        writeForbidden(res);
+        writeForbidden(res, cors);
         return;
       }
 
@@ -304,12 +362,14 @@ export async function startServer(options = {}) {
             nodePtyVersion,
             sessions: sessions.size,
           }),
+          {},
+          cors,
         );
         return;
       }
 
       if (req.method === "GET" && pathname === "/api/policy") {
-        writeJson(res, 200, buildPolicy());
+        writeJson(res, 200, buildPolicy(), {}, cors);
         return;
       }
 
@@ -319,18 +379,19 @@ export async function startServer(options = {}) {
         return;
       }
 
-      writeJson(res, 404, { code: "NOT_FOUND", userText: "没有这个接口。" });
+      writeJson(res, 404, { code: "NOT_FOUND", userText: "没有这个接口。" }, {}, cors);
       return;
     }
 
     // 静态资源：只认白名单前缀，其余 404。
+    // CORS 头必须带：沙箱里 /app.js 与它 import 的 /core/* /ui/* 全是 module fetch。
     if (req.method === "GET" && isStaticPath(pathname)) {
-      const sent = await sendStatic(res, pathname);
-      if (!sent) writeJson(res, 404, { code: "NOT_FOUND", userText: "资源不存在。" });
+      const sent = await sendStatic(res, pathname, cors);
+      if (!sent) writeJson(res, 404, { code: "NOT_FOUND", userText: "资源不存在。" }, {}, cors);
       return;
     }
 
-    writeJson(res, 404, { code: "NOT_FOUND", userText: "资源不存在。" });
+    writeJson(res, 404, { code: "NOT_FOUND", userText: "资源不存在。" }, {}, cors);
   }
 
   // 端口绑定：EADDRINUSE 映射为 PORT_IN_USE，不重试、不顺延。

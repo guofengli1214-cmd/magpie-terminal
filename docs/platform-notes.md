@@ -76,9 +76,22 @@ sandbox allow-scripts; default-src 'none'; script-src <host>/_magpie/plugin/<tok
 | 无外部 CDN | xterm.js 等前端依赖**必须打进插件包**，不能 `unpkg` |
 | `connect-src 'none'` | **不能 fetch / XHR / WebSocket**，连 `no-cors` 也会被拒 |
 | `sandbox="allow-scripts"` 无 `allow-same-origin` | origin 是 opaque（`Origin: null`），不能用 storage、不能读父窗口 |
-| `frame-ancestors 'self'` | 只能被 magpie 自己嵌 |
+| `frame-ancestors 'self'` | 只能被 magpie 自己嵌（**这条只约束宿主给 `page/` 带路页发的响应**） |
 
 **所以页面唯一能做的联网动作是 `location.replace()` 跳到自己的本地服务**——这就是「带路页（boot page）」模式的根因，不是风格选择。
+
+> **第 6 轮实测补充（应用页侧，与上面这张表不是同一个响应）**：上面那串 CSP 是**宿主**发给
+> `page/` 带路页的。我们**自己的应用页**（3480 发出）如果也照抄 `frame-ancestors 'self'`，
+> 会被同一个沙箱 iframe 拦成 Chromium 错误页：
+> `Framing 'http://127.0.0.1:3480/' violates the following Content Security Policy directive: "frame-ancestors 'self'"`
+> ——沙箱文档是 opaque origin，父页是 `http://wails.localhost`，属于跨源嵌框。
+> **应用页的 CSP 必须完全不写 `frame-ancestors`**（官方 page-chat 干脆不发 CSP）；也不要改成
+> `frame-ancestors http://wails.localhost`，父页 host 会随平台/版本变。
+>
+> 同一次实测还确认两件事：①沙箱里 `document.cookie = …` 抛 `SecurityError`，跨源请求也不带
+> 我们的 cookie，所以 set-cookie 认证在这个环境里不可行 → 口令改注入 HTML `<meta>`；
+> ②`type="module"` 是 CORS 请求，`Origin: null` 时没有 `access-control-allow-origin` 就被拦
+> （`blocked by CORS policy`），应用页的静态资源与 `/api/*` 都必须带 CORS 头、`OPTIONS` 先回 204。
 
 ### 2.1 bridge.js 与 10 秒定时器
 

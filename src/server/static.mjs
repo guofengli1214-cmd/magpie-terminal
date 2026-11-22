@@ -52,8 +52,13 @@ export function resolveStatic(pathname) {
 
 /**
  * 直接把文件写进响应；文件不存在返回 false。
+ *
+ * `cors` 由调用方（http.mjs 的 corsHeaders）传入并原样写进响应头。
+ * 这一层必须能带 CORS：magpie 的插件页在沙箱 iframe（opaque origin）里，
+ * `/app.js` 与它 `import` 的 `/core/*`、`/ui/*` 都是 CORS 请求，
+ * 缺 `access-control-allow-origin` 会被浏览器拦下，页面白屏。
  */
-export async function sendStatic(res, pathname) {
+export async function sendStatic(res, pathname, cors = {}) {
   const target = resolveStatic(pathname);
   if (!target) return false;
   let info;
@@ -69,6 +74,7 @@ export async function sendStatic(res, pathname) {
     "content-length": info.size,
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
+    ...cors,
   });
   await new Promise((resolve) => {
     const stream = createReadStream(target);

@@ -3,8 +3,12 @@
 
 import crypto from "node:crypto";
 
-export const TOKEN_COOKIE = "mt";
+// 口令的三种传输方式里，cookie 已被彻底删除：magpie 把插件页放在
+// <iframe sandbox="allow-scripts"> 里，文档是 opaque origin，
+// 该环境里 `document.cookie = …` 会抛 SecurityError（实测），
+// 且跨源请求根本不会带上我们的 cookie。所以只用「请求头」与「query」。
 export const TOKEN_HEADER = "x-magpie-term-token";
+export const TOKEN_META_NAME = "magpie-term-token";
 export const TOKEN_QUERY = "token";
 export const TOKEN_BYTES = 32;
 
@@ -72,32 +76,27 @@ export function checkToken(candidate, expected) {
   return { ok: true };
 }
 
-/** 从 cookie 头里取 mt 的值。 */
-export function readCookie(cookieHeader, name = TOKEN_COOKIE) {
-  if (typeof cookieHeader !== "string" || cookieHeader.length === 0) return null;
-  for (const part of cookieHeader.split(";")) {
-    const index = part.indexOf("=");
-    if (index === -1) continue;
-    const key = part.slice(0, index).trim();
-    if (key !== name) continue;
-    return part.slice(index + 1).trim();
-  }
-  return null;
-}
-
-/** 按 header → query → cookie 的顺序取 token。 */
+/**
+ * 按 header → query 的顺序取 token。
+ *
+ * 没有 cookie 分支：沙箱 iframe 是 opaque origin，浏览器不会把我们的 cookie
+ * 发过来（实测服务端看到的永远是 `cookie=none`），留着只会制造「以为能用」的假象。
+ */
 export function readToken(req, url) {
   const fromHeader = req.headers[TOKEN_HEADER];
   if (typeof fromHeader === "string" && fromHeader.length > 0) return fromHeader;
   const fromQuery = url.searchParams.get(TOKEN_QUERY);
   if (fromQuery) return fromQuery;
-  const fromCookie = readCookie(req.headers.cookie);
-  if (fromCookie) return fromCookie;
   return null;
 }
 
-export function cookieHeader(token) {
-  return `${TOKEN_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict`;
+/**
+ * 注入到应用页 <head> 的口令 meta 标签。
+ * 官方 page-chat 用的是同一套做法（`<meta name="magpie-chat-token">`），
+ * 因为沙箱里读不到 cookie、也不该把口令写进 URL 的历史记录。
+ */
+export function tokenMetaTag(token) {
+  return `<meta name="${TOKEN_META_NAME}" content="${token}">`;
 }
 
 /**

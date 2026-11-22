@@ -2,7 +2,7 @@
 
 > 执行环境：`C:\Users\41807\magpie-terminal`，Windows 11，node `v24.16.0`，插件宿主 `magpie-bun.exe` 1.4.5。
 > 所有命令都在仓库根目录下执行，以下输出是**真实粘贴**，不是「通过了」。
-> 第 1 轮交付 → 第 2 轮修 D7（§9）→ 第 3 轮修 D8/D9（§10）→ 第 4 轮修 D10（§11）→ **第 5 轮修 npm test + git show / 当前有效（§13）**。
+> 第 1 轮交付 → 第 2 轮修 D7（§9）→ 第 3 轮修 D8/D9（§10）→ 第 4 轮修 D10（§11）→ 第 5 轮修 npm test + git show（§13）→ **第 6 轮修沙箱 iframe 可用性 / 当前有效（§14）**。
 
 ---
 
@@ -23,7 +23,8 @@
 | **D9 三个小缺陷** | favicon 零请求零 404（CDP 实测）；轮询到 20s（实测有一轮 15533ms 命中）；doctor 超时报 `STEP_TIMEOUT` 而不是伪装成 orphans 失败。见 §10.2 |
 | **D10 提示词不得自我审查**（第 4 轮，确认卡路径） | 真实 3425 网关：删除类 **12/12** 都给出 `rm keepme.txt` 且 `classify()` = `confirm`（两轮各 6 次）；只读类 **6/6** = `auto`。旧提示词反证 **1/6 返回空 command**。见 §11 |
 | **第 5 轮两处修复** | `package.json` 的 `test` 改为裸 `node --test`；`git show` 补入只读子命令。双 node（v24.16.0 / v26.12.1）+ `npm test` 全绿。见 §13 |
-| 全量测试 | `node --test`（不带路径）**112/112 通过**，0 skip（v24 与 v26 一致） |
+| **第 6 轮：沙箱 iframe 可用性** | `frame-ancestors` 已删；认证从 cookie 改成 HTML `<meta>` 口令 + 请求头 / WS query；静态资源与 `/api/*` 全带 CORS。真 Edge + 真 `sandbox="allow-scripts"` 跨源父页实测：`title:"终端"`、`xtermCount:1`、`sessions:1`、`connection:"open"`。见 §14 |
+| 全量测试 | `node --test`（不带路径）**119/119 通过**，0 skip（v24 与 v26 一致） |
 
 `nodePtyVersion` 实测值：`1.2.0-beta.15`
 实际 shell：`C:\Program Files\Git\bin\bash.exe`，版本 `5.2.37`（`GNU bash, version 5.2.37(1)-release (x86_64-pc-msys)`）
@@ -585,6 +586,10 @@ STYLE_UNSAFE true
 ```
 default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:3480 ws://localhost:3480; base-uri 'none'; form-action 'none'; frame-ancestors 'self'
 ```
+
+> ⚠️ 上面这行是**第 2 轮当时的实测值，已经过时**：`frame-ancestors 'self'` 会让 magpie 的
+> `<iframe sandbox="allow-scripts">` 直接显示 Chromium 错误页（第 6 轮实测）。
+> 现在的 CSP 已经删掉该项，当前值见 §14.2。
 
 **真浏览器里的计算值**（CDP 执行 `getComputedStyle(document.documentElement).getPropertyValue('--magpie-bg').trim()`）：
 
@@ -1372,3 +1377,248 @@ confirm  | deny:git push              | git push
 **不是**提示词自我审查（那是 `command=""` 且 `reason` 提到破坏性操作）。重跑同一探针 **10/10 全过**
 （删除类 6/6 `rm keepme.txt` + `confirm`，只读类 3/3 `ls`/`ls -la` + `auto`）。D10 的结论与第 4 轮一致。
 
+---
+
+## 14. 第 6 轮：让插件页在 magpie 的沙箱 iframe 里真正跑起来
+
+**状态：待验收。** 本节所有输出都是本机真实运行结果；未做的项在 §14.8 单列。
+
+### 14.1 真实故障与三条根因（验收方已实证，本轮照改）
+
+点开侧栏「终端」后，magpie 主区变成 Chromium 错误页（`document.title` = `127.0.0.1`，页脚 `Microsoft Edge`），
+服务端只有 `PAGE_SERVED`、没有 `WS_CONNECTED`，`/api/health` 的 `sessions` 一直 0。
+
+| # | 根因 | 浏览器原文 | 修法 |
+|---|---|---|---|
+| A | 应用页 CSP 里有 `frame-ancestors 'self'` | `Framing 'http://127.0.0.1:3480/' violates the following Content Security Policy directive: "frame-ancestors 'self'". The request has been blocked.` | **整条删掉**（不改白名单，父页 host 会变；官方 page-chat 根本不发 CSP） |
+| B | 认证走 cookie | 沙箱 opaque origin 下 `document.cookie = …` 抛 `SecurityError`；子页 fetch 到自身时服务端看到 `cookie=none` | 口令改为注入 HTML `<meta name="magpie-term-token">`，前端读出来放请求头 / WS query |
+| C | `type="module"` 是 CORS 请求 | `Access to script at 'http://127.0.0.1:3531/module.js' from origin 'null' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present` | 静态资源与 `/api/*` 全部带 CORS 头；`OPTIONS` 先回 204 |
+
+### 14.2 改了什么（逐文件）
+
+| 文件 | 改动 |
+|---|---|
+| `src/server/http.mjs` | ① `buildCsp()` **删掉** `frame-ancestors 'self'`（其余指令一字未动，注释写清为什么不能加回来）。② 新增导出 `corsHeaders(req, port)`：`Origin: "null"` → `ACAO: null`；自身 origin → 回自身；其他 → 不回 ACAO；恒带 `access-control-allow-headers: content-type, x-magpie-term-token`、`access-control-allow-methods: GET, POST, OPTIONS`、`vary: Origin`。③ 请求顺序改为 **Host → Origin → OPTIONS 204 → 其余**（预检不带口令，不能要求 token）。④ 根路径**不再 `set-cookie`**，改为把口令注入 HTML（`renderAppIndex(tokens, token)`）。⑤ 所有 `/api/*` 成功与 403 都带 CORS；未知路径 404 也带。 |
+| `src/server/auth.mjs` | 删掉 `TOKEN_COOKIE` / `readCookie` / `cookieHeader`（死代码一并清干净）。`readToken()` 只剩 **header → query**。新增 `TOKEN_META_NAME` 与 `tokenMetaTag(token)`。`checkHost` / `checkOrigin` / `checkToken`（先比长度 + `timingSafeEqual`）、403 body 恒定 `{"code":"FORBIDDEN"}` **全部保持原样**。 |
+| `src/server/static.mjs` | `sendStatic(res, pathname, cors)` 接受并写出 CORS 头（`/app.js`、`/core/*`、`/ui/*`、`/styles/*`、`/vendor/*` 都有）。 |
+| `app/core/token.js`（新） | `readToken()`：从 `<meta name="magpie-term-token">` 读；取不到返回 `""`（不抛）。全文注释解释为什么不能用 cookie / localStorage。 |
+| `app/core/api.js` | `fetch` 加 `x-magpie-term-token` 头，`credentials: "omit"`；顶部注释从「同源 cookie 自动携带」改成新机制。 |
+| `app/core/ws-client.js` | `url()` 拼 `?token=<encodeURIComponent(token)>`（WebSocket 构造函数不能设自定义头）。 |
+| `app/index.html` | 在既有注入占位旁边加注释，说明这里会被替换成「meta 口令 + `<style>` 主题变量」两样东西。**没有**改版式、没有加内联脚本。 |
+| `test/server/auth.test.mjs` | 旧的「根路径下发 mt cookie」断言**作废并替换**为 meta 口令 + 无 `set-cookie` + CSP 无 `frame-ancestors`；新增 8 条本轮回归（见 §14.5）。 |
+| `scripts/sandbox-probe.mjs`（新） | 真浏览器 + 真实 `sandbox="allow-scripts"` 跨源父页，读子 iframe 的 DOM，证明 module 脚本真执行、WS 真连上。 |
+| 文档同步 | `TASK.md:269`、`.trellis/spec/backend/magpie-plugin-contract.md`（新增 §3.1）、`docs/platform-notes.md`（§2 表后加实测补充）、`docs/sources/brief.md:42`、`docs/security.md`（token 传递/交付/CORS 三行 + S1–S8 的头名）、`REPORT.md:586`（旧 CSP 已标注过时）。 |
+
+**没有改**：`page/` 带路页逻辑、node-pty、PTY/会话/AI 栏功能、UI 版式、依赖、`/api/health` 的 token 要求、服务端自动建会话（仍然禁止）。
+
+### 14.3 验收 1：`npm test`（裸跑，不带 `test/`）
+
+```bash
+$ "D:/nodejs/install/npm.cmd" test
+```
+（exit=0）
+
+```
+ℹ tests 119
+ℹ pass 119
+ℹ fail 0
+```
+
+两个 node 版本一致：
+
+```bash
+$ "D:/nodejs/install/node.exe" --test        # v24.16.0
+ℹ tests 119  ℹ pass 119  ℹ fail 0            exit=0
+
+$ node --test                                 # v26.12.1 (Hermes toolchain)
+ℹ tests 119  ℹ pass 119  ℹ fail 0            exit=0
+```
+
+用例数 112 → **119**（`test/server/auth.test.mjs` 由 25 涨到 32，新增 8 条、替换 1 条旧断言）。
+
+### 14.4 验收 2：`node scripts/doctor.mjs`
+
+> ⚠️ 本机 3480 被**用户正在运行的 magpie 插件宿主**占着
+> （`magpie-bun.exe` 1.4.4，PID 7088）。我没有杀它，改用 `DOCTOR_PORT` 指定空闲端口。
+
+```bash
+$ DOCTOR_PORT=3505 node scripts/doctor.mjs
+```
+（exit=0）
+
+```
+doctor: 33/33 assertions passed
+  PASS 1.health.status actual=200 expected=200
+  …
+  PASS 8.orphans actual={"skippedBecause":null,"checked":2,"aliveBeforeWait":2,"orphans":[]} expected={...}
+  PASS D7-1c.silentSocketDoesNotCreate actual={"before":0,"after500ms":0,"createdFrames":0} expected={...}
+  PASS D7-2a.cspStyleUnsafeInline actual=true expected=true
+  PASS D7-2b.browserComputedValue actual={"value":"#1e1e2e","skipped":false,"reason":null} expected={"value":"#1e1e2e"}
+  PASS D7-3a.sessionsBuild actual={"beforeDestroy":1,"afterDestroy":1,"afterGrace":0} expected={...}
+  PASS D7-3b.resumeKeepsSession actual={"resumedType":"session.resumed","pty":"native","recentOutputLen":111,"before":1,"after":1} expected={...}
+  PASS D7-3c.sessionGone actual="SESSION_GONE" expected="SESSION_GONE"
+report: C:\Users\41807\magpie-terminal\doctor-report.json
+```
+
+D7（自动建标签 / 主题变量 / 断连回收）在改完 CSP + 认证 + CORS 之后**全部仍然通过**。
+
+### 14.5 验收 3：真实 HTTP 请求（非 curl，避免 MSYS `curl -o /dev/null` 的 write 报错）
+
+脚本：临时用 `startServer()` 起在 3505 端口，逐条真实 `fetch`。原始 JSON：
+
+```json
+{
+  "get_root": {
+    "status": 200,
+    "set_cookie": null,
+    "has_frame_ancestors": false,
+    "meta_present": true,
+    "meta_len": 64
+  },
+  "get_appjs_origin_null": {
+    "status": 200,
+    "acao": "null",
+    "vary": "Origin",
+    "acah": "content-type, x-magpie-term-token",
+    "bytes": 12180
+  },
+  "options_api_health": {
+    "status": 204,
+    "acao": "null",
+    "acam": "GET, POST, OPTIONS",
+    "vary": "Origin",
+    "body_len": 0
+  },
+  "api_health_with_header": {
+    "status": 200,
+    "body": {
+      "ok": true, "version": "0.1.0", "port": 3505,
+      "shell": { "name": "bash", "version": "5.2.37",
+                 "path": "C:\\Program Files\\Git\\bin\\bash.exe", "fallback": false },
+      "pty": "native", "nodePtyVersion": "1.2.0-beta.15", "sessions": 0
+    }
+  },
+  "api_health_no_token": { "status": 403, "body": { "code": "FORBIDDEN" } },
+  "api_health_cookie_only": { "status": 403 },
+  "ws": { "ok": true, "connected": true },
+  "ws_no_token": { "ok": true, "rejected": true }
+}
+```
+
+逐条对照验收要求：
+
+| 要求 | 实测 |
+|---|---|
+| `GET /` 无 `set-cookie` | `set_cookie: null` ✅ |
+| `GET /` 无 `frame-ancestors` | `has_frame_ancestors: false` ✅ |
+| `GET /` body 里有 meta 口令 | `meta_present: true, meta_len: 64` ✅ |
+| `GET /app.js` + `Origin: null` → 有 `ACAO: null` | `acao: "null"`, `vary: "Origin"` ✅ |
+| `OPTIONS /api/health` + `Origin: null` → 204 | `status: 204`, body 0 字节 ✅ |
+| 带 `x-magpie-term-token` 的 `/api/health` → 200 | `status: 200`（完整 JSON 见上）✅ |
+| 不带 token 的 `/api/health` → 403 | `status: 403, {"code":"FORBIDDEN"}` ✅ |
+| （额外）只带 `cookie: mt=<正确 token>` → 403 | `status: 403` ✅（证明 cookie 通道确实关了） |
+| （额外）WS `?token=` 能连 / 无 token 被拒 | `connected: true` / `rejected: true` ✅ |
+
+`GET /` 的完整响应头（curl 实录，3480 换成本次 3495 的实例）：
+
+```
+HTTP/1.1 200 OK
+content-type: text/html; charset=utf-8
+content-length: 1898
+cache-control: no-store
+x-content-type-options: nosniff
+content-security-policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:3495 ws://localhost:3495; base-uri 'none'; form-action 'none'
+referrer-policy: no-referrer
+access-control-allow-headers: content-type, x-magpie-term-token
+access-control-allow-methods: GET, POST, OPTIONS
+vary: Origin
+```
+
+注意 `content-security-policy` 那行**以 `form-action 'none'` 结束**，没有 `frame-ancestors`。
+（该请求不带 `Origin`，所以按设计**不**返回 `access-control-allow-origin`。）
+
+### 14.6 验收 4：真浏览器 + 真实 `sandbox="allow-scripts"` 跨源父页（决定性证据）
+
+`scripts/sandbox-probe.mjs` 做四件事：
+1. 起一个**跨源**父页（`http://127.0.0.1:<appPort+100>/`），用
+   `<iframe sandbox="allow-scripts" src="http://127.0.0.1:<appPort>/">` 嵌入应用页；
+2. 用 headless Edge（`msedge.exe`）通过 CDP 打开父页；
+3. 从 `/json/list` 找到那个独立 iframe target，连上它读**子页自己的 DOM**；
+4. 断言 `.xterm` 节点存在、`__termDebug()` 可用、`sessions === 1`、`connection === "open"`。
+
+```bash
+$ node scripts/sandbox-probe.mjs --app-port 3505
+```
+（exit=0）
+
+```json
+{"ok":true,"appPort":3505,"parentPort":3605,
+ "browser":"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+ "headless":true,
+ "parent":{"loaded":true,"title":"parent"},
+ "child":{
+   "title":"终端",
+   "url":"http://127.0.0.1:3505/",
+   "xtermCount":1,
+   "hasTermDebug":true,
+   "sessions":1,
+   "connection":"open",
+   "metaTokenPresent":true,
+   "bodyText":"bash: 41807\n×\n+\n41807@devpc MINGW64 ~\n$\n41807@devpc MINGW64 ~\n$  \nAI 助手\n收起\n用中文说要干什么，AI 给一条命令。只读命令自动执行，其余需要你确认。\n问 AI\nCtrl+E",
+   "found":true}}
+```
+
+读法（每一条都对应一个根因）：
+
+- `title: "终端"` —— 不再是 `127.0.0.1` 错误页 → **A 修好了**（没有 `frame-ancestors`）。
+- `xtermCount: 1` 且 `bodyText` 里有真实 bash 提示符 → **C 修好了**（module 脚本真的执行了，CORS 头生效）。
+- `sessions: 1` 且 `connection: "open"` → 前端拿到了 meta 口令、WS 用 `?token=` 连上了 → **B 修好了**。
+- `metaTokenPresent: true` —— 口令确实注入在子页的 DOM 里。
+
+同一探针在 3495 端口也跑过一次，结果相同（`ok: true`，`xtermCount: 1`，`sessions: 1`）。
+
+### 14.7 新增/替换的测试（回归护栏）
+
+`test/server/auth.test.mjs` 32 条全绿，其中本轮新增 8 条、替换 1 条：
+
+```
+✔ 根路径 / 注入 meta 口令、不再下发 set-cookie、CSP 无 frame-ancestors   ← 替换旧「下发 mt cookie」
+✔ buildCsp() 不含 frame-ancestors（防止有人顺手加回去）
+✔ Origin: null 取静态 JS 时带 ACAO: null 与 vary: Origin
+✔ Origin: null 取 CSS / vendor 也带 ACAO: null
+✔ OPTIONS /api/health 带 Origin: null → 204 + CORS，且不需要 token
+✔ cookie 通道已关闭：只带 cookie: mt=<正确 token> → 403
+✔ 403 的 /api/* 也带 CORS 头（否则沙箱里分不清没权限还是网络错）
+✔ Origin 不合法时不回 ACAO（不向恶意页面确认「你能读」）
+```
+
+`#7b` 也改了：原来断言「cookie 方式也 200」，现在断言「header 200 + query 200」（WS 只能走 query，所以 query 必须保留）。
+
+**没有放宽任何既有期望**：`checkHost` / `checkOrigin` / `checkToken` 的 403 矩阵（`#1`–`#9`）原样保留，
+`D7`/`D8`/`D9`/`D10` 的断言全部保留并通过。
+
+### 14.8 没做的事与原因
+
+| 项 | 状态 | 原因 |
+|---|---|---|
+| 在**真实 magpie 窗口**里点开侧栏看渲染 | **未做** | 3480 被用户正在运行的 magpie 宿主（PID 7088）占着，我不杀它；而且「WebView2 沙箱 iframe 里画出来」按 `docs/roadmap.md` §5 一直属于人眼项。**替代证据**：§14.6 用 headless Edge + 真实 `sandbox="allow-scripts"` 跨源父页读到了子页的 `.xterm` 与 `sessions: 1`，这是本轮能做到的最强程序化证据。 |
+| 在 3480 上直接跑 doctor / HTTP 验收 | **改用 3505** | 同上（端口被用户 magpie 占用）。doctor 支持 `DOCTOR_PORT`；HTTP 验收脚本自带端口参数。**代码里的默认端口仍是 3480**，未改。 |
+| 用 `curl -o /dev/null` 贴原始输出 | **改用真实 `fetch` 脚本** | 本机 MSYS curl 对 `/dev/null` 会报 `curl: (23) client returned ERROR on write`（`docs/sources/pty-probe-findings.md` Q6c 已记录同一现象）。`-D <头文件>` 的写法我用过，头都拿到了；把 §14.5 的 JSON 作为主证据、头文件片段作补充。 |
+| 旧 CSP 的**负向对照**（证明探针能抓到错误页） | **部分做** | 尝试过：起一个「旧行为」服务（CSP 带 `frame-ancestors 'self'`）再让探针去嵌，但探针自身要占父页端口，两次都撞端口/撞到别的插件（3496 是 model-quota）。没有继续折腾，因为正向证据已经足够强（`title: "终端"`、`xtermCount: 1`、`sessions: 1` 三项同时成立，在旧实现下这三项都不可能成立）。 |
+
+### 14.9 待确认（不自己放宽验收）
+
+1. **`page-chat` 的 `corsHeaders` 在未知 Origin 时回 `"null"`，我回的是「不发 ACAO」。**
+   我选择不发，因为「对任意 Origin 都回 `null`」会让任何页面都能读我们的响应体（虽然仍要口令）。
+   如果验收方认为应当逐字跟随官方（恒回 `null`），这是一行改动，请裁决。
+2. **`style-src` 仍保留 `'unsafe-inline'`，而 `script-src` 保持 `'self'`。**
+   `docs/security.md` 与 §4.4 都要求这样；本轮没有放宽脚本策略。若将来有人想用 nonce，
+   xterm.js 运行期创建的 `<style>` 拿不到 nonce，这条路走不通（已写进 `docs/security.md`）。
+3. **`Access-Control-Allow-Origin` 对「自身 origin」回的是请求里的 origin 字符串（含端口）。**
+   端口可配（`magpie.options.port`），所以这里不能写死 3480；当前实现按 `port` 参数动态算。
+   如果验收方希望只放 `null`、不放自身 origin（因为应用页本来就不该跨源访问自己），可以再收紧。
+
+### 14.10 产物状态
+
+**待验收。** 本轮改动只覆盖「页面能被沙箱 iframe 渲染 + 能连上 WS」这一条故障链；
+终端/AI 栏的功能逻辑、PTY 生命周期、分级器策略均未改动，相关回归（D7/D8/D9/D10 + PTY 16 条）全部通过。

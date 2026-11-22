@@ -40,6 +40,10 @@
 - magpie 窗口是 Wails v3 over WebView2（origin `http://wails.localhost`）。
 - 插件页不是普通网页：宿主渲染成 `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer">`，`src` 为 `<host>/_magpie/plugin/<32-hex-token>/<file>`。
 - 每页响应头 CSP：`sandbox allow-scripts; default-src 'none'; script-src <host>/_magpie/plugin/<token>/; frame-ancestors 'self'`
+  - 这是**宿主发给 `page/` 带路页**的 CSP。第 6 轮实测：我们自己 3480 发出的应用页**不能**带
+    `frame-ancestors`，否则在 `<iframe sandbox="allow-scripts">`（opaque origin，父页 `http://wails.localhost`）
+    里被拦成 Chromium 错误页；同时该沙箱里 `document.cookie` 抛 `SecurityError`（认证不能用 cookie）、
+    `type="module"` 是 CORS 请求（静态资源与 `/api/*` 必须带 `access-control-allow-origin`）。
   → **无内联脚本、无外部 CDN、`connect-src 'none'`（不能 fetch/XHR/WebSocket）**。
 - 因此页面唯一能做的联网动作是：`location.replace()` 跳到自己的本地服务。这就是「带路页（boot page）」模式的根因。
 - `_magpie/bridge.js` 加载时同步 post `{magpie:1, method:"hello"}`；窗口 `open()` 起 **10 秒**定时器，收不到 hello 就报错（中文「此页面已停止工作」）。
