@@ -77,3 +77,13 @@
 ## 6. 成本
 
 pi 单次（low）= 90 请求 / 22.4% reasoning / $0.1018。主 agent 验收自写探针 12 个（详见 `.dispatch/my-v4g-*.mjs`），无强档升级。
+
+## 7. 补测：AUDIT-UI 的两个焦点 P0 在卡 G 版本上仍然存在（提交后追加）
+
+脚本 `.dispatch/my-focus-ctrl2.mjs`（真浏览器 + CDP `Input.insertText` + `Input.dispatchKeyEvent` Enter），带对照组：
+- **对照组**：焦点在终端时打字 → `~/CTRL_GROUP_*.txt` **真生成**，说明判据有效。
+- **P0-焦点-a（设置页）FAIL**：点「设置」后 `document.activeElement` 仍是 `TEXTAREA.xterm-helper-textarea`，设置面板有 `role="dialog"` 但焦点没进；此时键盘输入 `echo ok > ~/SETTINGS_LEAK_*.txt` **被终端真实执行**（文件生成）。→ 用户打开设置页去改选项，手一打字就把命令跑进了终端。
+- **P0-焦点-b（抽屉）FAIL**：抽屉收起后 `data-ai-open="false"`，但 `agent-input` 仍持有焦点，且抽屉只是 `transform: translateX(385px)` 移出视野 —— `display:flex`、`visibility:visible`、无 `aria-hidden`、无 `inert`。打字 20 字符全部进了看不见的输入框（`val:"HIDDEN_TYPED_..."`），用户完全看不到自己打了什么，回车就会把请求发出去。
+
+两条都不是卡 G 引入（AUDIT-UI 在 `5d7d15e` 上已记录同样现象），属卡 E 遗留，**未在本次验尸范围内修复**，随安全返工卡 S 一并处理。
+
