@@ -1,0 +1,42 @@
+configPath = C:\Users\41807\AppData\Local\Temp\mt-config-probe-mCFUp3\config.json
+
+--- GET /api/config（文件不存在 → 四个默认值）
+HTTP 200
+{"model":"commandcode/deepseek/deepseek-v4.1-flash","autonomy":"balanced","allowlist":[],"reviewModel":null,"basePrompt":null}
+--- PUT /api/config（四个合法值）
+HTTP 200
+{"model":"commandcode/deepseek/deepseek-v4.1-flash","autonomy":"loose","allowlist":[{"pattern":"mkdir","mode":"prefix","enabled":true}],"reviewModel":"commandcode/deepseek/deepseek-v4.1-flash","basePrompt":"你是我的私人助理。"}
+--- GET /api/config（回读，应与 PUT 一致）
+HTTP 200
+{"model":"commandcode/deepseek/deepseek-v4.1-flash","autonomy":"loose","allowlist":[{"pattern":"mkdir","mode":"prefix","enabled":true}],"reviewModel":"commandcode/deepseek/deepseek-v4.1-flash","basePrompt":"你是我的私人助理。"}
+--- PUT INVALID_AUTONOMY
+HTTP 400
+{"code":"INVALID_AUTONOMY","userText":"autonomy 必须是 strict / balanced / loose 之一。"}
+--- PUT INVALID_ALLOWLIST（不是数组）
+HTTP 400
+{"code":"INVALID_ALLOWLIST","userText":"allowlist 必须是数组且不超过 200 条。"}
+--- PUT INVALID_ALLOWLIST（pattern 超 500）
+HTTP 400
+{"code":"INVALID_ALLOWLIST","userText":"allowlist 每条都需要 1-500 字符的 pattern（不含换行）、mode=prefix|exact、enabled=true|false。"}
+--- PUT INVALID_REVIEW_MODEL
+HTTP 400
+{"code":"INVALID_REVIEW_MODEL","userText":"reviewModel 必须是字符串或 null。"}
+--- PUT INVALID_BASE_PROMPT
+HTTP 400
+{"code":"INVALID_BASE_PROMPT","userText":"basePrompt 长度不能超过 8000。"}
+
+--- 落盘文件内容
+{
+  "model": null,
+  "autonomy": "loose",
+  "allowlist": [
+    {
+      "pattern": "mkdir",
+      "mode": "prefix",
+      "enabled": true
+    }
+  ],
+  "reviewModel": "commandcode/deepseek/deepseek-v4.1-flash",
+  "basePrompt": "你是我的私人助理。"
+}
+

@@ -21,13 +21,31 @@ import path from "node:path";
 export const CONFIG_PATH_ENV = "MAGPIE_TERMINAL_CONFIG_PATH";
 
 /**
- * 已知字段（`updateConfig` 的补丁白名单）。
+ * 已知字段（`updateConfig` 的补丁白名单 + `PUT /api/config` 的字段白名单）。
  *
- * TASK-V2-A 的单测把这里锁成 `["model"]`，本卡不降低那条期望：`hosts` 不从这里走，
- * 它由下面的 `addHost/updateHost/removeHost` 直接读-改-写整份配置（未知字段本来
- * 就是原样保留的，所以两者不会互相踩）。
+ * TASK-V3-D 按 docs/PROTOCOL-AGENT.md §1 从 `["model"]` 扩成五项：
+ * `hosts` 仍然不从这里走，它由下面的 `addHost/updateHost/removeHost` 直接
+ * 读-改-写整份配置（未知字段本来就是原样保留的，所以两者不会互相踩）。
  */
-export const KNOWN_FIELDS = Object.freeze(["model"]);
+export const KNOWN_FIELDS = Object.freeze([
+  "model",
+  "autonomy",
+  "allowlist",
+  "reviewModel",
+  "basePrompt",
+]);
+
+/** 自动执行档位（PROTOCOL §1）。 */
+export const AUTONOMY_LEVELS = Object.freeze(["strict", "balanced", "loose"]);
+
+/** 白名单上限（PROTOCOL §1）。 */
+export const ALLOWLIST_MAX_ENTRIES = 200;
+/** 单条 pattern 长度上限（PROTOCOL §1）。 */
+export const ALLOWLIST_PATTERN_MAX = 500;
+/** reviewModel 长度上限（PROTOCOL §1）。 */
+export const REVIEW_MODEL_MAX = 200;
+/** basePrompt 长度上限（PROTOCOL §1）。 */
+export const BASE_PROMPT_MAX = 8000;
 
 /** 主机认证方式（TASK-V2-B §2.2）。 */
 export const AUTH_TYPES = Object.freeze(["password", "privateKey"]);
@@ -40,6 +58,10 @@ export const KNOWN_HOSTS_FILE = "known_hosts.json";
 /** 文件不存在 / 损坏时返回的值。调用方可以再与网关清单求默认。 */
 export const DEFAULT_CONFIG = Object.freeze({
   model: null,
+  autonomy: "balanced",
+  allowlist: [],
+  reviewModel: null,
+  basePrompt: null,
 });
 
 /**
@@ -139,12 +161,126 @@ async function readJsonMaybe(file) {
   return parsed;
 }
 
-/** 只挑已知字段做类型归一；其余字段原样保留，不做断言。 */
+/** 白名单条目是否合法（PROTOCOL §1）。非法条目整份白名单都算非法。 */
+export function isValidAllowlistEntry(entry) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+  if (typeof entry.pattern !== "string") return false;
+  if (entry.pattern.length < 1 || entry.pattern.length > ALLOWLIST_PATTERN_MAX) return false;
+  if (/[\r\n]/.test(entry.pattern)) return false;
+  if (entry.mode !== "prefix" && entry.mode !== "exact") return false;
+  if (typeof entry.enabled !== "boolean") return false;
+  return true;
+}
+
+/**
+ * 校验一份 `PUT /api/config` 的补丁（PROTOCOL §1）。
+ *
+ * 只校验 patch 里出现过的字段；返回第一个错误码，没有错误返回 null。
+ * 错误码：INVALID_AUTONOMY / INVALID_ALLOWLIST / INVALID_REVIEW_MODEL / INVALID_BASE_PROMPT。
+ *
+ * @param {object} patch
+ * @returns {{code:string, userText:string}|null}
+ */
+export function validateConfigPatch(patch) {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return null;
+  const has = (field) => Object.prototype.hasOwnProperty.call(patch, field);
+
+  if (has("autonomy")) {
+    if (!AUTONOMY_LEVELS.includes(patch.autonomy)) {
+      return {
+        code: "INVALID_AUTONOMY",
+        userText: "autonomy 必须是 strict / balanced / loose 之一。",
+      };
+    }
+  }
+
+  if (has("allowlist")) {
+    const list = patch.allowlist;
+    if (!Array.isArray(list) || list.length > ALLOWLIST_MAX_ENTRIES) {
+      return {
+        code: "INVALID_ALLOWLIST",
+        userText: `allowlist 必须是数组且不超过 ${ALLOWLIST_MAX_ENTRIES} 条。`,
+      };
+    }
+    for (const entry of list) {
+      if (!isValidAllowlistEntry(entry)) {
+        return {
+          code: "INVALID_ALLOWLIST",
+          userText: `allowlist 每条都需要 1-${ALLOWLIST_PATTERN_MAX} 字符的 pattern（不含换行）、mode=prefix|exact、enabled=true|false。`,
+        };
+      }
+    }
+  }
+
+  if (has("reviewModel")) {
+    const value = patch.reviewModel;
+    if (value !== null && typeof value !== "string") {
+      return { code: "INVALID_REVIEW_MODEL", userText: "reviewModel 必须是字符串或 null。" };
+    }
+    if (typeof value === "string" && value.length > REVIEW_MODEL_MAX) {
+      return {
+        code: "INVALID_REVIEW_MODEL",
+        userText: `reviewModel 长度不能超过 ${REVIEW_MODEL_MAX}。`,
+      };
+    }
+  }
+
+  if (has("basePrompt")) {
+    const value = patch.basePrompt;
+    if (value !== null && typeof value !== "string") {
+      return { code: "INVALID_BASE_PROMPT", userText: "basePrompt 必须是字符串或 null。" };
+    }
+    if (typeof value === "string" && value.length > BASE_PROMPT_MAX) {
+      return { code: "INVALID_BASE_PROMPT", userText: `basePrompt 长度不能超过 ${BASE_PROMPT_MAX}。` };
+    }
+  }
+
+  return null;
+}
+
+/** 只挑已知字段做类型归一；其余字段原样保留，不做断言。非法值一律回落默认，不抛错。 */
 function normalize(config) {
   const next = { ...config };
   if (typeof next.model !== "string" || next.model.trim().length === 0) next.model = null;
   else next.model = next.model.trim();
+
+  if (!AUTONOMY_LEVELS.includes(next.autonomy)) next.autonomy = DEFAULT_CONFIG.autonomy;
+
+  if (!Array.isArray(next.allowlist)) {
+    next.allowlist = [];
+  } else {
+    next.allowlist = next.allowlist
+      .filter((entry) => isValidAllowlistEntry(entry))
+      .slice(0, ALLOWLIST_MAX_ENTRIES)
+      .map((entry) => ({ pattern: entry.pattern, mode: entry.mode, enabled: entry.enabled }));
+  }
+
+  if (next.reviewModel === null || next.reviewModel === undefined) {
+    next.reviewModel = null;
+  } else if (typeof next.reviewModel !== "string" || next.reviewModel.length > REVIEW_MODEL_MAX) {
+    next.reviewModel = null;
+  }
+
+  if (next.basePrompt === null || next.basePrompt === undefined) {
+    next.basePrompt = null;
+  } else if (typeof next.basePrompt !== "string" || next.basePrompt.length > BASE_PROMPT_MAX) {
+    next.basePrompt = null;
+  }
+
   return next;
+}
+
+/** 对外形态：把内部配置补齐成默认值（GET /api/config 用）。 */
+export function publicConfig(config) {
+  const source = config && typeof config === "object" ? config : {};
+  const normalized = normalize({ ...DEFAULT_CONFIG, ...source });
+  return {
+    model: normalized.model,
+    autonomy: normalized.autonomy,
+    allowlist: normalized.allowlist,
+    reviewModel: normalized.reviewModel,
+    basePrompt: normalized.basePrompt,
+  };
 }
 
 /**

@@ -383,8 +383,17 @@ export default function createHostsPanel(elements) {
           return;
         }
         const body = probe.data || {};
-        if (body.ok) setStatus(`成功 ${body.durationMs}ms`, "ok");
-        else setStatus(`失败：${body.userText || body.code}`, "error");
+        if (body.ok) {
+          setStatus(`成功 ${body.durationMs}ms`, "ok");
+          return;
+        }
+        // TASK-V3-C §6.5：首次连接（known_hosts 里没有这条主机）时不再只说「失败」，
+        // 而是把指纹核对卡弹出来引导用户信任一次，信任成功后自动重跑测试。
+        if (body.code === "UNKNOWN_HOST_KEY") {
+          await guideUnknownHostKey(host, setStatus);
+          return;
+        }
+        setStatus(`失败：${body.userText || body.code}`, "error");
       } finally {
         testButton.disabled = false;
       }
@@ -401,9 +410,63 @@ export default function createHostsPanel(elements) {
 
   /* ---------------- 指纹核对（首次连接） ---------------- */
 
+  /**
+   * 「测试连接」遇到 UNKNOWN_HOST_KEY 的引导（TASK-V3-C §6.5）：
+   * 1. 不显示「失败：…」
+   * 2. 取 /api/hosts/:id/fingerprint 拿 algo + fingerprint
+   * 3. 复用 buildTrustCard 弹卡（onTrusted 覆盖默认 onCreateSession）
+   * 4. 信任成功后自动重跑一次 testHost，把结果写回表单的状态行
+   * 5. 用户取消 → 什么都不做（主机已存住，只是没信任指纹）
+   */
+  async function guideUnknownHostKey(host, setStatus) {
+    setStatus("第一次连这台主机，正在取它的指纹…", "info");
+    const info = await api.hostFingerprint(host.id);
+    if (!info.ok) {
+      setStatus(info.userText || `取不到指纹（${info.code}）`, "error");
+      return;
+    }
+    const data = info.data || {};
+    if (!data.fingerprint) {
+      setStatus("取不到这台主机的指纹，请确认主机地址与端口是对的。", "error");
+      return;
+    }
+    setStatus("", null);
+    const mismatch = Boolean(
+      data.recorded && data.recorded.fingerprint && data.recorded.fingerprint !== data.fingerprint,
+    );
+    buildTrustCard({
+      host,
+      algo: data.algo || "unknown",
+      fingerprint: data.fingerprint,
+      mismatch,
+      knownFingerprint: mismatch ? data.recorded.fingerprint : undefined,
+      knownAlgo: mismatch ? data.recorded.algo : undefined,
+      onTrusted: async () => {
+        // 信任成功 → 自动重跑一次测试（不是建会话：用户点的是「测试连接」）。
+        setStatus("指纹已记住，正在重新测试…", "info");
+        const retry = await api.testHost(host.id);
+        if (!retry.ok) {
+          setStatus(retry.userText || `测试失败（${retry.code}）`, "error");
+          return;
+        }
+        const body = retry.data || {};
+        if (body.ok) setStatus(`成功 ${body.durationMs}ms（指纹已记住）`, "ok");
+        else setStatus(`失败：${body.userText || body.code}`, "error");
+      },
+    });
+  }
+
   const trustModal = createModal({ role: "host-trust-card", title: "首次连接，请核对指纹" });
 
-  function buildTrustCard({ host, algo, fingerprint, mismatch, knownFingerprint, knownAlgo }) {
+  function buildTrustCard({
+    host,
+    algo,
+    fingerprint,
+    mismatch,
+    knownFingerprint,
+    knownAlgo,
+    onTrusted,
+  }) {
     const { card } = trustModal;
     card.textContent = "";
     card.setAttribute("data-mismatch", mismatch ? "true" : "false");
@@ -449,7 +512,9 @@ export default function createHostsPanel(elements) {
         }
         trustModal.close();
         await refreshHosts();
-        onCreateSession(host);
+        // 调用方给了 onTrusted 就用它（例如「测试连接」里只重跑测试，不建会话）。
+        if (typeof onTrusted === "function") await onTrusted(host);
+        else onCreateSession(host);
       });
       const cancelButton = el("button", { type: "button", "data-role": "host-trust-cancel" }, "取消");
       cancelButton.addEventListener("click", () => trustModal.close());
@@ -490,7 +555,6 @@ export default function createHostsPanel(elements) {
       mismatch: false,
     });
   }
-
   async function connectHost(host) {
     // 只要服务端有可用凭据才去连；没有凭据先让用户编辑。
     if (!host.hasSecret && !(host.authType === "privateKey" && host.privateKeyPath)) {

@@ -53,8 +53,9 @@
   --term-ai-width: 320px;
   --term-ai-min: 240px;
 
-  /* 方案 A 骨架（TASK-V2-A §2.1）：图标栏 / AI 输入条 / 模型下拉 / AI 浮层 */
+  /* V3 骨架（TASK-V3-C §6.1）：图标栏 / 右侧 AI 抽屉 / 把手 / toast / 设置模态 */
   --term-rail-width: 48px;
+  /* V2-A 的底部 AI 条已删除：这两个变量不再影响布局，只留给外部引用不断链。 */
   --term-aibar-height: 44px;
   --term-model-width: 190px;
   /* 浮层底部让出的距离 = AI 条 + 间隙；浮层最大高 = calc(100% - 88px) */
@@ -70,6 +71,21 @@
   --term-hosts-width: 212px;
   --term-file-meta-width: 74px;
   --term-panel-radius: 8px;
+
+  /* TASK-V3-C：右侧 AI 抽屉 / 把手 / toast / 设置模态 */
+  /* --term-drawer-width 由 [data-ai-open] 覆盖（收起 0px / 展开 360px）。 */
+  --term-drawer-width: 0px;
+  --term-drawer-open-width: 360px;
+  --term-handle-width: 20px;
+  --term-handle-height: 96px;
+  /* 把手的点击热区：48px（视觉仍是 20px 竖条，用 padding 补宽）。 */
+  --term-handle-hit: 48px;
+  --term-toast-width: 340px;
+  --term-backdrop: rgba(0, 0, 0, 0.42);
+  --term-ok-soft: rgba(17, 99, 41, 0.16);
+  --term-warn-soft: rgba(122, 74, 0, 0.16);
+  --term-danger-soft: rgba(179, 38, 30, 0.16);
+  --term-accent-soft: rgba(90, 120, 180, 0.16);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -100,5 +116,10 @@
     --term-ansi-bright-magenta: #e2c5ff;
     --term-ansi-bright-cyan: #89e6ec;
     --term-ansi-bright-white: #f0f6fc;
+    --term-backdrop: rgba(0, 0, 0, 0.62);
+    --term-ok-soft: rgba(165, 214, 167, 0.18);
+    --term-warn-soft: rgba(255, 204, 128, 0.18);
+    --term-danger-soft: rgba(255, 138, 128, 0.18);
+    --term-accent-soft: rgba(120, 160, 220, 0.18);
   }
 }

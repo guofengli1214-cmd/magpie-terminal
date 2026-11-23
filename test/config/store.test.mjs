@@ -49,8 +49,9 @@ test("configPath 默认落在 ~/.config/magpie-terminal/config.json", () => {
   }
 });
 
-test("KNOWN_FIELDS 本卡只有 model（下一张卡加 hosts）", () => {
-  assert.deepEqual([...KNOWN_FIELDS], ["model"]);
+// TASK-V3-D §6.2 授权本卡把这条期望从 ["model"] 扩到新字段列表。
+test("KNOWN_FIELDS = model + agent 四字段（TASK-V3-D §6.2）", () => {
+  assert.deepEqual([...KNOWN_FIELDS], ["model", "autonomy", "allowlist", "reviewModel", "basePrompt"]);
 });
 
 test("文件不存在 → 默认值，不抛错（ok:false reason:missing）", async () => {

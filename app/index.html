@@ -11,31 +11,32 @@
      1) <meta name="magpie-term-token" content="…">  口令（沙箱 iframe 里 cookie 不可用）
      2) <style>html:root{…tokens…}</style>          主题变量
      不要删掉这行注释，服务端靠它定位注入点。 -->
-<!-- 服务端在此处注入 <style>:root{…tokens…}</style> -->
+<!-- 服务端在此处注入 <style>:root{…tokens}</style> -->
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
 <link rel="stylesheet" href="/styles/tokens.css">
 <link rel="stylesheet" href="/styles/layout.css">
 <link rel="stylesheet" href="/styles/components.css">
 </head>
 <body>
-  <!-- 方案 A 骨架：左侧 48px 图标栏 + 主区（标签条 / 终端 / 底部 AI 条）+ 状态栏。
-       AI 结果浮层与终端同格，绝对覆盖在终端之上，默认 hidden。
-       data-ai-open 由 app.js 维护：false 时 .aibar / #ai-layer / #model-note 都不显示。 -->
-  <div id="root" data-role="app" data-ai-open="true">
+  <!-- V3 骨架（TASK-V3-C §6.1）：左侧 48px 图标栏 + 主区（标签条 / 终端）+ 右侧 AI 抽屉。
+       抽屉默认收起（data-ai-open="false"）：此时 --term-drawer-width 为 0px，终端拿满宽度。
+       收起态在终端右边缘垂直居中留一个「突起」把手（ai-handle），有待确认时显示红点角标。
+       toast 栈固定在右下角，设置模态宿主是空 div（内容由 settings-panel.js 填）。 -->
+  <div id="root" data-role="app" data-ai-open="false">
     <nav class="rail" data-role="rail" aria-label="主导航">
       <button type="button" data-role="rail-term" data-active="true" aria-pressed="true" title="终端（本地）">
         <span aria-hidden="true">▣</span><span class="rail-label">终端</span>
       </button>
-      <!-- 本卡只渲染按钮并 hidden：主机面板属于下一张卡，点击 no-op。 -->
+      <!-- 主机按钮由 app.js 在 init 时去掉 hidden（历史占位，保持原行为）。 -->
       <button type="button" data-role="rail-hosts" hidden title="主机（即将支持）">
         <span aria-hidden="true">🖧</span><span class="rail-label">主机</span>
       </button>
-      <button type="button" data-role="rail-ai" data-unread="false" aria-pressed="false" title="AI 助手">
+      <button type="button" data-role="rail-ai" data-unread="false" aria-pressed="false" title="AI 助手（开合右侧抽屉）">
         <span aria-hidden="true">✦</span><span class="rail-label">AI</span>
         <span class="rail-dot" data-role="rail-unread" hidden></span>
       </button>
       <div class="rail-spacer" aria-hidden="true"></div>
-      <button type="button" data-role="rail-settings" title="设置（即将支持）">
+      <button type="button" data-role="rail-settings" title="设置">
         <span aria-hidden="true">⚙</span><span class="rail-label">设置</span>
       </button>
     </nav>
@@ -43,26 +44,18 @@
     <section class="main" data-role="main">
       <div data-role="tabbar"></div>
       <div data-role="terminal-host"></div>
-      <div class="aibar" data-role="aibar">
-        <select data-role="model-select" aria-label="选择模型" title="选择模型"></select>
-        <input
-          type="text"
-          data-role="ai-question"
-          aria-label="问 AI"
-          placeholder="用中文说要干什么…（Enter 发送，Shift+Enter 不换行）"
-          autocomplete="off"
-          spellcheck="false"
-        >
-        <button type="button" data-role="ai-submit" class="aibar-submit">问</button>
-      </div>
-      <!-- 选中「上次失败」的模型时，在 AI 条下方给一行小字说明。 -->
-      <div data-role="model-note" hidden></div>
+      <!-- 收起态的把手：贴在 main 的右边缘、垂直居中（styling 见 layout.css）。 -->
+      <button type="button" data-role="ai-handle" data-badge="0" title="打开 AI 助手" aria-label="打开 AI 助手">
+        <span class="handle-icon" aria-hidden="true">✦</span>
+        <span class="handle-badge" data-role="ai-handle-badge" hidden>0</span>
+      </button>
     </section>
 
-    <!-- AI 结果浮层：回答列表 + 确认卡。与终端同格，绝对覆盖，不遮 rail / aibar。 -->
-    <div data-role="ai-layer" data-open="false" hidden aria-label="AI 结果"></div>
+    <aside class="drawer" data-role="ai-drawer" aria-label="AI 助手"></aside>
 
     <div data-role="statusbar"></div>
+    <div data-role="toast-stack" aria-live="polite"></div>
+    <div data-role="settings-host"></div>
   </div>
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/xterm/addon-fit.js"></script>

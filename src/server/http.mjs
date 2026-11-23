@@ -20,12 +20,14 @@ import {
   addHost,
   getHostRecord,
   listHosts,
+  publicConfig,
   readConfig,
   rememberKnownHost,
   removeHost,
   saveSecret,
   updateConfig,
   updateHost,
+  validateConfigPatch,
 } from "../config/store.mjs";
 import { z } from "zod";
 import { RemoteRegistry, fingerprintForHost, listFiles, testHostConnection } from "../ssh/registry.mjs";
@@ -791,12 +793,26 @@ export async function startServer(options = {}) {
       // GET /api/config：只暴露已知字段；文件缺失/损坏时返回默认值。
       if (req.method === "GET" && pathname === "/api/config") {
         const { config } = await readConfig();
-        const model = typeof config.model === "string" && config.model.length > 0 ? config.model : DEFAULT_MODEL;
-        writeJson(res, 200, { model }, {}, cors);
+        const view = publicConfig(config);
+        const model = view.model || DEFAULT_MODEL;
+        writeJson(
+          res,
+          200,
+          {
+            model,
+            autonomy: view.autonomy,
+            allowlist: view.allowlist,
+            reviewModel: view.reviewModel,
+            basePrompt: view.basePrompt,
+          },
+          {},
+          cors,
+        );
         return;
       }
 
-      // PUT /api/config：只接受已知字段（本卡只有 model）。
+      // PUT /api/config：只接受已知字段（TASK-V3-D 起是 model + agent 四字段）。
+      // 可以只提交其中一部分：出现哪个字段就只校验/只写哪个字段。
       if (req.method === "PUT" && pathname === "/api/config") {
         const body = await readBody(req, res);
         if (res.writableEnded) return;
@@ -817,54 +833,88 @@ export async function startServer(options = {}) {
           );
           return;
         }
-        if (typeof parsed.model !== "string" || parsed.model.trim().length === 0) {
-          writeJson(res, 400, { code: "INVALID_MODEL", userText: "model 必须是非空字符串。" }, {}, cors);
+        const hasModel = Object.prototype.hasOwnProperty.call(parsed, "model");
+        let wanted = null;
+        if (hasModel) {
+          if (typeof parsed.model !== "string" || parsed.model.trim().length === 0) {
+            writeJson(res, 400, { code: "INVALID_MODEL", userText: "model 必须是非空字符串。" }, {}, cors);
+            return;
+          }
+          wanted = parsed.model.trim();
+        }
+
+        // agent 四字段先做纯形状校验（不打网络）。
+        const invalid = validateConfigPatch(parsed);
+        if (invalid) {
+          writeJson(res, 400, invalid, {}, cors);
           return;
         }
-        const wanted = parsed.model.trim();
-        let known;
-        try {
-          const probe = await probeGateway();
-          known = probe.models.map((model) => model.id);
-        } catch (err) {
-          writeJson(
-            res,
-            502,
-            {
-              code: "GATEWAY_UNAVAILABLE",
-              userText: "网关不可用，无法确认这个模型是否存在于清单里。",
-            },
-            {},
-            cors,
-          );
-          log({
-            level: "warn",
-            code: "CONFIG_MODEL_UNVERIFIED",
-            msg: "put config while gateway unreachable",
-            reason: err && err.code ? err.code : "GATEWAY_UNREACHABLE",
-          });
-          return;
+
+        if (hasModel) {
+          let known;
+          try {
+            const probe = await probeGateway();
+            known = probe.models.map((model) => model.id);
+          } catch (err) {
+            writeJson(
+              res,
+              502,
+              {
+                code: "GATEWAY_UNAVAILABLE",
+                userText: "网关不可用，无法确认这个模型是否存在于清单里。",
+              },
+              {},
+              cors,
+            );
+            log({
+              level: "warn",
+              code: "CONFIG_MODEL_UNVERIFIED",
+              msg: "put config while gateway unreachable",
+              reason: err && err.code ? err.code : "GATEWAY_UNREACHABLE",
+            });
+            return;
+          }
+          // model 必须是 /api/models 里出现过的 id；否则 400。
+          if (!known.includes(wanted)) {
+            writeJson(res, 400, { code: "INVALID_MODEL", userText: "这个模型不在网关模型清单里。" }, {}, cors);
+            return;
+          }
         }
-        // model 必须是 /api/models 里出现过的 id；否则 400。
-        if (!known.includes(wanted)) {
-          writeJson(res, 400, { code: "INVALID_MODEL", userText: "这个模型不在网关模型清单里。" }, {}, cors);
-          return;
+
+        const patch = {};
+        for (const field of KNOWN_FIELDS) {
+          if (Object.prototype.hasOwnProperty.call(parsed, field)) patch[field] = parsed[field];
         }
+        if (hasModel) patch.model = wanted;
+
         let saved;
         try {
-          saved = await updateConfig({ model: wanted });
+          saved = await updateConfig(patch);
         } catch (err) {
           writeJson(
             res,
             500,
-            { code: "CONFIG_WRITE_FAILED", userText: "模型偏好没存住（写入配置文件失败）。" },
+            { code: "CONFIG_WRITE_FAILED", userText: "配置没存住（写入配置文件失败）。" },
             {},
             cors,
           );
           log({ level: "error", code: "CONFIG_WRITE_FAILED", msg: "config write failed", err });
           return;
         }
-        writeJson(res, 200, { model: saved.model }, {}, cors);
+        const view = publicConfig(saved);
+        writeJson(
+          res,
+          200,
+          {
+            model: view.model || DEFAULT_MODEL,
+            autonomy: view.autonomy,
+            allowlist: view.allowlist,
+            reviewModel: view.reviewModel,
+            basePrompt: view.basePrompt,
+          },
+          {},
+          cors,
+        );
         return;
       }
 

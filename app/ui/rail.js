@@ -1,10 +1,10 @@
 // 左侧图标栏：终端 / 主机 / AI / 设置。
 //
-// 本卡范围（TASK-V2-A §2.1）：
-// - rail-term   默认 active；点击只切「视图名」，为下一张卡的分屏留钩子。
-// - rail-hosts  只渲染，HTML 里带 hidden；点击 no-op，绝不报错。
-// - rail-ai     切换 AI 输入条 + 浮层；有未读回复时 data-unread="true" 并显示小圆点。
-// - rail-settings 只渲染，点击无副作用。
+// TASK-V3-C 起：
+// - rail-term     默认 active；点击只切「视图名」，为下一张卡的分屏留钩子。
+// - rail-hosts    HTML 里带 hidden，由 app.js 在 init 时解锁并接到主机面板。
+// - rail-ai       开合右侧 AI 抽屉；有待确认时 data-pending>0 并显示小圆点。
+// - rail-settings 真正打开设置模态（V2-A 遗留的空监听体已补上）。
 //
 // 视图只订阅 store，不直接改字段。
 
@@ -12,6 +12,8 @@ export default function createRail(elements) {
   const host = elements.host;
   const store = elements.store;
   const onToggleAi = typeof elements.onToggleAi === "function" ? elements.onToggleAi : () => {};
+  const onOpenSettings =
+    typeof elements.onOpenSettings === "function" ? elements.onOpenSettings : () => {};
 
   let unsubscribe = null;
 
@@ -20,12 +22,15 @@ export default function createRail(elements) {
   }
 
   function render(snapshot) {
-    const aiOpen = snapshot.aiOpen !== false;
+    const aiOpen = snapshot.aiOpen === true;
     const aiButton = button("rail-ai");
     if (aiButton) {
       aiButton.setAttribute("aria-pressed", aiOpen ? "true" : "false");
-      const unread = snapshot.aiUnread === true;
+      // 有未读回答或待确认时点小圆点（V3 的待确认另有把手角标 + toast）。
+      const pending = Number(snapshot.pendingCount) || 0;
+      const unread = snapshot.aiUnread === true || pending > 0;
       aiButton.setAttribute("data-unread", unread ? "true" : "false");
+      aiButton.setAttribute("data-pending", String(pending));
       const dot = aiButton.querySelector('[data-role="rail-unread"]');
       if (dot) dot.hidden = !unread;
     }
@@ -59,7 +64,7 @@ export default function createRail(elements) {
       const settings = button("rail-settings");
       if (settings) {
         settings.addEventListener("click", () => {
-          // 本卡只渲染，点击无副作用。
+          onOpenSettings();
         });
       }
 

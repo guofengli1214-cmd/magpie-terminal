@@ -12,8 +12,13 @@ export default function createSessionStore() {
     // aiOpen     —— AI 输入条 / 浮层是否展开，对应 #root[data-ai-open]
     // aiUnread   —— 有没有「用户没看过的 AI 回复」，驱动图标栏小圆点
     model: null,
-    aiOpen: true,
+    // V3：抽屉默认收起（用户明确要求「AI 栏靠右、默认收起」）。
+    aiOpen: false,
     aiUnread: false,
+    // V3：待确认的审批条数（agent-store 是唯一来源，这里只做展示镜像）。
+    pendingCount: 0,
+    // V3：AI 任务状态（idle/running/awaiting/done/error/stopped），同样只是镜像。
+    agentStatus: "idle",
   };
   const subscribers = new Set();
   let scheduled = false;
@@ -44,6 +49,8 @@ export default function createSessionStore() {
       model: state.model,
       aiOpen: state.aiOpen,
       aiUnread: state.aiUnread,
+      pendingCount: state.pendingCount,
+      agentStatus: state.agentStatus,
     };
   }
 
@@ -125,6 +132,20 @@ export default function createSessionStore() {
       const next = Boolean(open);
       if (state.aiOpen === next) return;
       state.aiOpen = next;
+      notify();
+    },
+    /** V3：待确认条数（驱动 rail 小圆点 / 状态栏「待确认 N」）。 */
+    setPendingCount(value) {
+      const next = Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
+      if (state.pendingCount === next) return;
+      state.pendingCount = next;
+      notify();
+    },
+    /** V3：AI 任务状态镜像（状态栏显示「空闲 / 执行中 / 待确认 N」）。 */
+    setAgentStatus(value) {
+      const next = typeof value === "string" && value.length > 0 ? value : "idle";
+      if (state.agentStatus === next) return;
+      state.agentStatus = next;
       notify();
     },
     setAiUnread(value) {

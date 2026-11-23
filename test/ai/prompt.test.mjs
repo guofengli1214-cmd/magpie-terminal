@@ -67,3 +67,56 @@ test("提示词首行仍是「单条命令 + JSON 输出」的契约", () => {
   assert.ok(prompt.includes('{"command":"…","reason":"…"}'));
   assert.ok(prompt.includes("只输出 JSON"));
 });
+
+// ---------------------------------------------------------------------------
+// TASK-V3-D / PROTOCOL-AGENT.md §6.2：agent 提示词的断言。
+//
+// 旧提示词（单条命令 + JSON）的契约保持不变（上面的断言），这里只加新路径。
+// ---------------------------------------------------------------------------
+
+const agentModule = await import("../../src/ai/agent.mjs");
+const agentPrompt = agentModule.buildAgentSystemPrompt({});
+
+test("agent 提示词首段是内置基础提示词（PROTOCOL §6.2 逐字）", () => {
+  assert.equal(agentModule.DEFAULT_BASE_PROMPT, "你是一个内置在终端里的 AI 助手。你的服务对象是不太懂命令行的普通用户。你的工作是理解他想达成什么，然后自己动手在终端里把这件事做完，最后用他自己的语言告诉他结果。");
+  assert.ok(agentPrompt.startsWith(agentModule.DEFAULT_BASE_PROMPT));
+});
+
+test("agent 提示词带「## 硬性规则」十条（逐条锁关键句）", () => {
+  assert.ok(agentPrompt.includes("## 硬性规则"));
+  const rules = agentPrompt.split("\n").filter((line) => /^\d+\. /.test(line));
+  assert.equal(rules.length, 10, `硬性规则必须是 10 条，实际 ${rules.length}`);
+});
+
+test("agent 提示词不包含自我审查句，也要求照常给出 rm / mv", () => {
+  assert.equal(agentPrompt.includes("不要执行破坏性操作"), false);
+  assert.ok(agentPrompt.includes("包括 rm / mv 这类删除移动"));
+  assert.ok(agentPrompt.includes("不要因为「它是破坏性操作」就拒绝给命令"));
+});
+
+test("agent 提示词保留 sudo / su 的绝对禁令", () => {
+  assert.ok(agentPrompt.includes("唯一绝对不给的是 sudo / su"));
+});
+
+test("agent 提示词要求最后用大白话总结（面向不懂命令行的用户）", () => {
+  assert.ok(agentPrompt.includes("最后必须用大白话讲清楚"));
+  assert.ok(agentPrompt.includes("任务完成后必须用文字给出结论"));
+});
+
+test("agent 提示词沿用 find / curl 的约束（与旧提示词一致）", () => {
+  assert.ok(agentPrompt.includes("不要使用 find"));
+  assert.ok(agentPrompt.includes("rg -n"));
+  assert.ok(agentPrompt.includes("rg --files"));
+  assert.ok(agentPrompt.includes("curl -I"));
+});
+
+test("agent 提示词要求被拒绝后不重试", () => {
+  assert.ok(agentPrompt.includes("如果某条命令被用户拒绝，不要重试"));
+});
+
+test("自定义 basePrompt 替换基础提示词，硬性规则不丢", () => {
+  const custom = agentModule.buildAgentSystemPrompt({ basePrompt: "你是我的私人助理。" });
+  assert.ok(custom.startsWith("你是我的私人助理。"));
+  assert.equal(custom.includes(agentModule.DEFAULT_BASE_PROMPT), false);
+  assert.ok(custom.includes("## 硬性规则"));
+});

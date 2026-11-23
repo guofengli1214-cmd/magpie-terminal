@@ -7,8 +7,10 @@ import api from "./core/api.js";
 import createTabBar from "./ui/tab-bar.js";
 import createTerminalView from "./ui/terminal-view.js";
 import createStatusBar from "./ui/status-bar.js";
-import createAiPanel from "./ui/ai-panel.js";
-import createAiBar from "./ui/ai-bar.js";
+import createAgentStore from "./core/agent-store.js";
+import createAiDrawer from "./ui/ai-drawer.js";
+import createToastStack from "./ui/toast.js";
+import createSettingsPanel from "./ui/settings-panel.js";
 import createRail from "./ui/rail.js";
 import createHostsPanel from "./ui/hosts-panel.js";
 
@@ -17,14 +19,16 @@ const railHost = document.querySelector('[data-role="rail"]');
 const tabbarHost = document.querySelector('[data-role="tabbar"]');
 const mainHost = document.querySelector('[data-role="main"]');
 const terminalHost = document.querySelector('[data-role="terminal-host"]');
-const aiLayer = document.querySelector('[data-role="ai-layer"]');
-const modelSelect = document.querySelector('[data-role="model-select"]');
-const aiQuestion = document.querySelector('[data-role="ai-question"]');
-const aiSubmit = document.querySelector('[data-role="ai-submit"]');
-const modelNote = document.querySelector('[data-role="model-note"]');
+const aiDrawerHost = document.querySelector('[data-role="ai-drawer"]');
+const aiHandle = document.querySelector('[data-role="ai-handle"]');
+const aiHandleBadge = document.querySelector('[data-role="ai-handle-badge"]');
+const toastHost = document.querySelector('[data-role="toast-stack"]');
+const settingsHost = document.querySelector('[data-role="settings-host"]');
 const statusHost = document.querySelector('[data-role="statusbar"]');
 
 const store = createSessionStore();
+// Agent 状态独立成 store（PROTOCOL-AGENT.md §7），视图订阅它而不是污染会话 store。
+const agentStore = createAgentStore();
 
 const banner = document.createElement("div");
 banner.setAttribute("data-role", "banner");
@@ -37,8 +41,9 @@ let health = null;
 let lastAttachedId = null;
 // 重连时已发过 pty.attach、还在等 session.resumed / SESSION_GONE 的 id。
 const resumePendingIds = new Set();
-let aiPanel = null;
-let aiBar = null;
+let aiDrawer = null;
+let toastStack = null;
+let settingsPanel = null;
 let rail = null;
 let tabBar = null;
 let statusBar = null;
@@ -239,6 +244,25 @@ function handleFrame(frame) {
       return;
     }
     case "pty.error": {
+      // 内核未就绪的显式信号（TASK-V3-C §6.7）：agent.run 被服务端判成坏帧。
+      // 只有在「刚发了 agent.run、还没收到任何 agent.* 帧」时才这么解读，
+      // 避免把普通 pty 错误误报成内核缺失。
+      if (
+        frame.code === "BAD_FRAME" &&
+        pendingAgentRequestId &&
+        agentStore &&
+        agentStore.getSnapshot().status === "running" &&
+        // 只有「这个 BAD_FRAME 针对的就是当前活动任务」时才当成内核未就绪：
+        // 别的任务还在跑时，新请求被拒不能把老任务的界面清掉（修复 B/C 的配套）。
+        agentStore.getSnapshot().requestId === pendingAgentRequestId &&
+        aiDrawer
+      ) {
+        const wasPending = pendingAgentRequestId;
+        pendingAgentRequestId = null;
+        aiDrawer.handleBadFrame();
+        logInternal(`agent.run 被服务端拒为 BAD_FRAME（requestId=${wasPending}）`);
+        return;
+      }
       // SESSION_GONE：重连后服务端说这个会话已经结束 —— 移除标签，不要永久转圈。
       if (frame.code === "SESSION_GONE") {
         resumePendingIds.delete(frame.id);
@@ -270,13 +294,56 @@ function handleFrame(frame) {
       return;
     }
     case "ai.reply": {
-      aiPanel.onReply(frame);
+      // 旧的单命令路径（保留）：降级渲染进抽屉，确认卡也在抽屉里。
+      if (aiDrawer) aiDrawer.onLegacyReply(frame);
       arriveAiResult();
       return;
     }
     case "ai.error": {
-      aiPanel.onError(frame);
+      if (aiDrawer) aiDrawer.onLegacyError(frame);
       arriveAiResult();
+      return;
+    }
+    case "agent.start": {
+      if (aiDrawer) aiDrawer.notifyAgentFrame();
+      clearPendingAgentRequest(frame);
+      agentStore.onStart(frame);
+      return;
+    }
+    case "agent.step": {
+      if (aiDrawer) aiDrawer.notifyAgentFrame();
+      clearPendingAgentRequest(frame);
+      agentStore.onStep(frame);
+      return;
+    }
+    case "agent.approval": {
+      if (aiDrawer) aiDrawer.notifyAgentFrame();
+      clearPendingAgentRequest(frame);
+      agentStore.onApproval(frame);
+      return;
+    }
+    case "agent.done": {
+      if (aiDrawer) aiDrawer.notifyAgentFrame();
+      clearPendingAgentRequest(frame);
+      agentStore.onDone(frame);
+      return;
+    }
+    case "agent.error": {
+      if (aiDrawer) aiDrawer.notifyAgentFrame();
+      clearPendingAgentRequest(frame);
+      const result = agentStore.onError(frame);
+      // 被作用域挡下的错误（例如另一个 requestId 的 BUSY）：不动当前状态，只给一句轻提示。
+      if (result && result.applied === false) {
+        if (frame && frame.code === "BUSY" && statusBar) {
+          statusBar.setNotice(
+            frame.userText || "上一个任务还在跑，等它结束或点停止。",
+            "warn",
+          );
+        }
+        logInternal(
+          `丢弃不属于当前任务的 agent.error（code=${frame && frame.code} requestId=${frame && frame.requestId}）`,
+        );
+      }
       return;
     }
     default:
@@ -368,62 +435,84 @@ function setupKeyboard() {
   });
 }
 
-// 浮层默认 hidden（§2.1）：只有真正出现了结果 / 用户问了问题才显示，
-// 否则一屏半透明面板会盖住终端。
-let aiLayerHasContent = false;
+/* ------------------------------------------------------------------ *
+ * AI 抽屉（TASK-V3-C §6.1 / §6.2）：默认收起，点把手机开，点收起/rail-ai 收回去。
+ * 抽屉开合只动 #root[data-ai-open]，终端由 ResizeObserver 自动 refit。
+ * ------------------------------------------------------------------ */
 
-function openAiLayer() {
-  aiLayerHasContent = true;
-  store.setAiOpen(true);
-  store.setAiUnread(false);
-  // setAiOpen(true) 在已经是 true 时不会通知，所以这里显式同步一次可见性。
-  applyAiOpen(true);
+let pendingAgentRequestId = null;
+
+/** 只清掉「这一帧对应的」待确认 requestId，别把刚发出去的那次请求抹了。 */
+function clearPendingAgentRequest(frame) {
+  if (!pendingAgentRequestId) return;
+  const requestId = frame && typeof frame.requestId === "string" ? frame.requestId : null;
+  if (!requestId || requestId === pendingAgentRequestId) pendingAgentRequestId = null;
 }
 
-/** 「收起」：只藏浮层，输入条仍留着（继续提问不用先展开）。 */
-function hideAiLayer() {
-  aiLayerHasContent = false;
-  applyAiOpen(store.getSnapshot().aiOpen !== false);
-  if (aiPanel) aiPanel.closeConfirm({ restoreFocus: false });
+function logInternal(text) {
+  try {
+    console.info(`[magpie-terminal] ${text}`);
+  } catch {
+    // 忽略。
+  }
+}
+
+function openDrawer({ focus = false } = {}) {
+  store.setAiOpen(true);
+  store.setAiUnread(false);
+  applyAiOpen(true);
+  if (focus && aiDrawer) aiDrawer.focusInput();
   requestAnimationFrame(() => terminalView && terminalView.resizeAll());
+}
+
+function closeDrawer() {
+  store.setAiOpen(false);
+  applyAiOpen(false);
+  requestAnimationFrame(() => terminalView && terminalView.resizeAll());
+}
+
+function toggleAi() {
+  if (store.getSnapshot().aiOpen === true) closeDrawer();
+  else openDrawer({ focus: true });
+}
+
+/** #root[data-ai-open] / 把手可见性 / 终端 fit 的唯一同步点。 */
+function applyAiOpen(open) {
+  root.setAttribute("data-ai-open", open ? "true" : "false");
+  // 抽屉展开时把手必须消失（§6.1：展开时不显示突起）。
+  if (aiHandle) aiHandle.hidden = Boolean(open);
 }
 
 /**
  * AI 结果到达时该做什么：
- * - 浮层此刻可见（AI 条展开且已有内容）→ 什么都不用做，用户已经看得到；
- * - 浮层被收起（点了「收起」）或 AI 条整体关掉 → 不抢用户的终端焦点，
- *   只在 rail-ai 上点一个未读圆点，等用户自己展开。
+ * - 抽屉已经展开 → 用户看得到，清掉未读；
+ * - 抽屉收起 → 不抢终端焦点，只在 rail-ai 点一个未读圆点，等用户自己展开。
+ * 待确认（agent.approval）另有把手角标 + toast，见 syncAgentBadge()。
  */
 function arriveAiResult() {
-  const visible = !aiLayer.hidden && aiLayer.getAttribute("data-open") === "true";
-  if (visible) {
+  if (store.getSnapshot().aiOpen === true) {
     store.setAiUnread(false);
     return;
   }
   store.setAiUnread(true);
 }
 
-function toggleAi() {
-  const open = store.getSnapshot().aiOpen !== true;
-  if (open) aiLayerHasContent = true;
-  store.setAiOpen(open);
-  applyAiOpen(open);
-  store.setAiUnread(false);
-  if (open) {
-    // 浮层刚展开：把焦点交给输入条（用户按下 AI 按钮就是要问问题）。
-    if (aiBar) aiBar.focusInput();
-  } else if (aiPanel) {
-    aiPanel.closeConfirm({ restoreFocus: false });
+/** agent-store 的待确认条数 → 把手角标（data-badge 与文字同步）。 */
+function syncAgentBadge(snapshot) {
+  const count = snapshot.pendingApprovals ? snapshot.pendingApprovals.length : 0;
+  if (aiHandle) {
+    aiHandle.setAttribute("data-badge", String(count));
+    aiHandle.setAttribute(
+      "title",
+      count > 0 ? `打开 AI 助手（${count} 条待确认）` : "打开 AI 助手",
+    );
   }
-  // 终端宽度可能变化（浮层不挤宽度，但收起时可能触发 fit），保险再量一次。
-  requestAnimationFrame(() => terminalView && terminalView.resizeAll());
-}
-
-/** #root[data-ai-open] / 浮层可见性 / 终端 fit 唯一同步点。 */
-function applyAiOpen(open) {
-  root.setAttribute("data-ai-open", open ? "true" : "false");
-  aiLayer.hidden = !open || !aiLayerHasContent;
-  aiLayer.setAttribute("data-open", open ? "true" : "false");
+  if (aiHandleBadge) {
+    aiHandleBadge.textContent = String(count);
+    aiHandleBadge.hidden = count === 0;
+  }
+  // rail 上的小圆点也要跟着待确认走（rail.subscribe 用的是同一个 store）。
+  store.setPendingCount(count);
 }
 
 function init() {
@@ -451,6 +540,9 @@ function init() {
     host: railHost,
     store,
     onToggleAi: toggleAi,
+    onOpenSettings: () => {
+      if (settingsPanel) settingsPanel.open();
+    },
   });
   rail.init();
 
@@ -476,12 +568,9 @@ function init() {
   hostsPanel = createHostsPanel({
     api,
     store,
-    // 面板盖住终端区，但不遮标签栏 / AI 条 / 状态栏。
+    // 面板盖住终端区，但不遮标签栏 / 状态栏（底部 AI 条在 V3 已删除）。
     anchor: tabbarHost,
-    bottomAnchors: [
-      document.querySelector('[data-role="aibar"]'),
-      statusHost,
-    ],
+    bottomAnchors: [statusHost],
     onCreateSession: (host) => createRemoteTab(host),
     onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
     // 双击文件 → 只把路径填进当前远程终端输入，不执行（让用户自己确认再回车）。
@@ -494,50 +583,121 @@ function init() {
   });
   hostsPanel.init();
 
-  aiPanel = createAiPanel({
-    host: aiLayer,
-    store,
-    onExecute: (id, command) => {
-      wsClient.send({ type: "pty.input", id, data: `${command}\r` });
-    },
-    onClose: () => hideAiLayer(),
-  });
-  aiPanel.init();
+  /* ---------------- AI 抽屉（V3 取代底部 AI 条） ---------------- */
 
-  aiBar = createAiBar({
-    store,
-    select: modelSelect,
-    input: aiQuestion,
-    submit: aiSubmit,
-    note: modelNote,
+  aiDrawer = createAiDrawer({
+    host: aiDrawerHost,
+    agentStore,
     api,
+    onClose: () => closeDrawer(),
     onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
+    // 发 agent.run（字段逐字按 PROTOCOL-AGENT.md §3.1）。
+    // 返回值："sent" | "blocked-pending" | "no-active" | "send-failed"（ai-drawer 按它决定是否清输入框）。
     onAsk: ({ question, model }) => {
+      // 门禁（修复 B/D6）：有待确认时不许开新任务，一个状态都不动。
+      const before = agentStore.getSnapshot();
+      if (before.pendingApprovals.length > 0) {
+        statusBar.setNotice("先处理上面的待确认命令（或点停止），再问新的。", "warn");
+        return "blocked-pending";
+      }
       const active = store.getActive();
-      if (!active) return false;
+      if (!active) {
+        statusBar.setNotice("还没有可用的终端标签：先点「+」新建一个。", "warn");
+        return "no-active";
+      }
+      const requestId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const context = {
-        cwd: active.cwd,
-        shell: active.shell,
-        recentOutput: terminalView.recentOutput(active.id, constants.RECENT_OUTPUT_LINES),
+        cwd: active.cwd || "",
+        shell: active.shell || null,
+        recentOutput: terminalView.recentOutput(active.id, constants.RECENT_OUTPUT_LINES) || "",
+        sessionId: active.id,
       };
-      // 请求帧必须带 model（服务端透传给网关）。
-      const frame = { type: "ai.ask", requestId: `req-${Date.now()}`, question, context };
+      const frame = { type: "agent.run", requestId, question, context };
       if (model) frame.model = model;
       const sent = wsClient.send(frame);
-      if (sent) {
-        aiPanel.appendQuestion(question);
-        openAiLayer();
+      if (!sent) {
+        statusBar.setNotice("AI 请求没发出去：连接还没就绪。点状态栏「重连」后重试。", "error");
+        return "send-failed";
       }
-      return sent;
+      pendingAgentRequestId = requestId;
+      // 有活动任务时 beginRun 只记下这次请求、不清当前状态（等 agent.start 再切）。
+      const begun = agentStore.beginRun({ requestId, question });
+      if (begun && begun.adopted === false) {
+        logInternal(`上一个任务还在跑，本次 agent.run 等 agent.start 再接管（requestId=${requestId}）`);
+      }
+      openDrawer();
+      return "sent";
     },
-    onPersistFailed: (result) => {
-      // PUT 失败：保留本地选择，只提示。状态栏由 ai-bar 的 onNotice 闪。
-      if (result && result.code === "GATEWAY_UNAVAILABLE") {
-        // 网关这会儿不可达：顺手重拉清单，让下拉切到「网关不可用」。
-        void aiBar.reload();
+    // 审批按钮 → agent.approve（scope 默认 once；requestId 必须取当前活动任务）。
+    onApprove: ({ approvalId, approved, scope }) => {
+      const snapshot = agentStore.getSnapshot();
+      const requestId = snapshot.requestId;
+      if (!requestId) return false;
+      const frame = {
+        type: "agent.approve",
+        requestId,
+        approvalId,
+        approved: Boolean(approved),
+        scope: scope === "rest" ? "rest" : "once",
+      };
+      const sent = wsClient.send(frame);
+      if (!sent) {
+        statusBar.setNotice("审批没发出去：连接断了。点状态栏「重连」后重试。", "error");
+        return false;
       }
+      // 立刻收尾本地状态（修复 D4）：不等内核补 agent.step{running}。
+      agentStore.removeApproval(approvalId, Boolean(approved));
+      return true;
+    },
+    onStop: () => {
+      const snapshot = agentStore.getSnapshot();
+      if (!snapshot.requestId) return;
+      wsClient.send({ type: "agent.stop", requestId: snapshot.requestId });
+      agentStore.markStopped();
+    },
+    // 旧 ai.reply 的确认卡走本地直接写 PTY（不发 ai.confirm，保持原行为）。
+    onExecuteLegacy: (command) => {
+      const active = store.getActive();
+      if (!active) {
+        statusBar.setNotice("当前没有活动终端标签，命令没有执行。", "error");
+        return;
+      }
+      wsClient.send({ type: "pty.input", id: active.id, data: `${command}
+` });
+      statusBar.setNotice(`已写入当前标签：${command}`, "info");
     },
   });
+  aiDrawer.init();
+
+  toastStack = createToastStack({
+    host: toastHost,
+    agentStore,
+    onGoConfirm: (approvalId) => {
+      openDrawer();
+      requestAnimationFrame(() => {
+        if (aiDrawer) aiDrawer.scrollToApproval(approvalId);
+      });
+    },
+  });
+  toastStack.init();
+
+  settingsPanel = createSettingsPanel({
+    host: settingsHost,
+    api,
+    onSaved: () => statusBar && statusBar.setNotice("设置已保存", "ok"),
+  });
+  settingsPanel.init();
+
+  // agent-store：待确认条数 → 把手角标 / rail 小圆点；status → 状态栏任务态。
+  agentStore.subscribe((snapshot) => {
+    syncAgentBadge(snapshot);
+    store.setAgentStatus(snapshot.status);
+  });
+
+  // 把手：点它开抽屉。
+  if (aiHandle) {
+    aiHandle.addEventListener("click", () => openDrawer({ focus: true }));
+  }
 
   statusBar = createStatusBar({
     host: statusHost,
@@ -546,8 +706,6 @@ function init() {
     onToggleAi: toggleAi,
   });
   statusBar.init();
-
-  aiBar.init();
 
   wsClient = createWsClient({
     port: options.port,
@@ -563,7 +721,7 @@ function init() {
     if (snapshot.activeId !== lastAttachedId && snapshot.activeId && terminalView) {
       attachActive();
     }
-    const open = snapshot.aiOpen !== false;
+    const open = snapshot.aiOpen === true;
     if (root.getAttribute("data-ai-open") !== (open ? "true" : "false")) applyAiOpen(open);
   });
 
@@ -590,13 +748,34 @@ function init() {
     }
   }, constants.CONNECT_TIMEOUT_MS);
 
-  // 调试出口：只读快照，仅 loopback。避免被打包/污染。
+  // 调试出口：只读快照 + 假帧注入，仅 loopback。避免被打包/污染。
+  // __termDebugFrame 的用途：验收探针在内核（TASK-V3-D）尚未合入时注入 agent.* 帧，
+  // 以便单独验证前端渲染；与 __termDebug 同一层级的调试口，不参与业务逻辑。
   if (location.hostname === "127.0.0.1" || location.hostname === "localhost") {
     Object.defineProperty(window, "__termDebug", {
       configurable: false,
       enumerable: false,
       writable: false,
       value: () => structuredClone(store.getSnapshot()),
+    });
+    Object.defineProperty(window, "__termDebugFrame", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: (frame) => handleFrame(frame),
+    });
+    Object.defineProperty(window, "__termDebugAgent", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: () => structuredClone(agentStore.getSnapshot()),
+    });
+    // 慢网关模拟用：调整「内核未就绪」看门狗时长（毫秒）。
+    Object.defineProperty(window, "__termDebugWatchdog", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: (ms) => (aiDrawer ? aiDrawer.setReadyTimeout(ms) : null),
     });
   }
 }

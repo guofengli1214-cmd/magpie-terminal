@@ -1,9 +1,10 @@
-/* 方案 A 骨架（TASK-V2-A §2.1）：
-     #root  三行网格：主行（rail + main + ai-layer 同格） / 状态栏
+/* 骨架（TASK-V3-C §6.1）：
+     #root  两行网格：主行（rail / main / ai-drawer 三列） / 状态栏
      .rail  48px 固定左，纵跨主行（不参与终端 flex 计算）
-     .main  1fr，纵向 flex：标签条 / 终端 1fr / AI 输入条 44px
-     #ai-layer  与终端同格，绝对覆盖在终端之上（默认 hidden）
-   视觉与尺寸基准：docs/mockups/layout-v2.html 的 `.a .rail` / `.aibar` / `.card`。
+     .main  1fr，纵向 flex：标签条 / 终端 1fr
+     drawer 右侧 AI 抽屉，宽 360px；收起时列宽 0px 且 display:none
+     handle 收起态贴在 main 右边缘、垂直居中的「突起」
+   toast 栈与设置宿主是 position: fixed 的覆盖层，不占网格格子。
    颜色一律来自 tokens.css 的变量。 */
 
 html, body {
@@ -12,22 +13,28 @@ html, body {
   background: var(--term-bg);
   color: var(--term-fg);
   font: 13px/1.5 var(--magpie-font);
-  /* 任何视口都不许出现横向滚动条（§2.1 硬指标）。 */
+  /* 任何视口都不许出现横向滚动条（§6.1 硬指标）。 */
   overflow-x: hidden;
 }
 
 [data-role="app"] {
   display: grid;
-  /* 主行 + 状态栏。主行里 rail 与 main 并排，ai-layer 叠在 main 上。 */
-  grid-template-columns: var(--term-rail-width) minmax(0, 1fr);
+  /* 三列：图标栏 / 终端主区 / AI 抽屉。抽屉宽度由 data-ai-open 决定（见下）。 */
+  grid-template-columns: var(--term-rail-width) minmax(0, 1fr) var(--term-drawer-width);
   grid-template-rows: minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
   overflow: hidden;
 }
 
-/* 标签条 / 状态栏跨越 rail 之外的两列？——不：rail 纵跨整个主行，
-   标签条与状态栏只在 main 这一列。见下方显式定位。 */
+/* 抽屉宽度的唯一开关。收起态必须真的是 0（不是隐藏但占位），否则终端拿不满。 */
+[data-role="app"][data-ai-open="false"] {
+  --term-drawer-width: 0px;
+}
+
+[data-role="app"][data-ai-open="true"] {
+  --term-drawer-width: var(--term-drawer-open-width);
+}
 
 [data-role="rail"] {
   grid-column: 1;
@@ -37,11 +44,29 @@ html, body {
 [data-role="main"] {
   grid-column: 2;
   grid-row: 1;
+  /* 把手相对 main 定位（贴右边缘）。 */
+  position: relative;
 }
 
 [data-role="statusbar"] {
   grid-column: 1 / -1;
   grid-row: 2;
+}
+
+[data-role="ai-drawer"] {
+  grid-column: 3;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--term-border);
+  background: var(--term-panel-bg);
+}
+
+[data-role="app"][data-ai-open="false"] [data-role="ai-drawer"] {
+  display: none;
 }
 
 [data-role="main"] {
@@ -94,66 +119,118 @@ html, body {
   display: none;
 }
 
-/* AI 输入条：模型下拉 → 输入 → 「问」按钮。高 44px，不参与终端 flex。 */
-[data-role="aibar"] {
-  flex: 0 0 auto;
-  height: var(--term-aibar-height);
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  min-width: 0;
-  border-top: 1px solid var(--term-border);
-  background: var(--term-panel-bg);
-}
+/* ------------------------------------------------------------------ *
+ * 收起态的把手：贴在终端右边缘、垂直居中的竖条突起。
+ * 视觉宽 20px（--term-handle-width），点击热区靠 ::after 往左扩到 48px：
+ * 不能往右扩 —— main 是 overflow:hidden，往右会被裁掉。
+ * ------------------------------------------------------------------ */
 
-/* AI 结果浮层：与终端同格，从 AI 条上方开始，不碰 rail。 */
-[data-role="ai-layer"] {
-  grid-column: 2;
-  grid-row: 1;
-  position: relative;
-  z-index: 5;
+[data-role="ai-handle"] {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 8;
   display: flex;
   flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  margin: 8px 8px calc(var(--term-aibar-height) + 8px) 8px;
-  max-height: calc(100% - var(--term-ai-layer-inset));
-  overflow: auto;
-  border: 1px solid var(--term-border);
-  border-radius: var(--term-radius);
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: var(--term-handle-width);
+  height: var(--term-handle-height);
+  box-sizing: border-box;
+  padding: 0;
+  color: var(--term-fg);
   background: var(--term-panel-bg);
-  box-shadow: 0 8px 24px var(--term-shadow);
+  border: 1px solid var(--term-border);
+  border-right: none;
+  border-radius: var(--term-panel-radius) 0 0 var(--term-panel-radius);
+  box-shadow: -2px 0 8px var(--term-shadow);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
 }
 
-[data-role="ai-layer"][hidden] {
+/* 扩出来的点击热区（仍然是这个按钮本身，只是透明）。 */
+[data-role="ai-handle"]::after {
+  content: "";
+  position: absolute;
+  top: calc(var(--term-handle-hit) / -4);
+  bottom: calc(var(--term-handle-hit) / -4);
+  left: calc((var(--term-handle-hit) - var(--term-handle-width)) * -1);
+  width: var(--term-handle-hit);
+  background: transparent;
+}
+
+[data-role="ai-handle"]:hover {
+  background: var(--term-selection);
+}
+
+[data-role="app"][data-ai-open="true"] [data-role="ai-handle"] {
   display: none;
 }
 
-/* AI 关闭时：输入条、浮层、模型提示都不占位（终端自己拿满）。 */
-[data-role="app"][data-ai-open="false"] [data-role="aibar"],
-[data-role="app"][data-ai-open="false"] [data-role="model-note"] {
+[data-role="ai-handle"] .handle-icon {
+  pointer-events: none;
+}
+
+[data-role="ai-handle"] .handle-badge {
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: var(--term-danger);
+  color: var(--term-danger-fg);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+[data-role="ai-handle"] .handle-badge[hidden] {
   display: none;
 }
 
-[data-role="app"][data-ai-open="false"] [data-role="ai-layer"] {
-  display: none;
+/* ------------------------------------------------------------------ *
+ * toast 栈：右下角固定，宽度 ≤ 360px，层级高于状态栏，不遮终端输入区。
+ * ------------------------------------------------------------------ */
+
+[data-role="toast-stack"] {
+  position: fixed;
+  right: var(--term-gap);
+  bottom: calc(var(--term-gap) * 2);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: var(--term-gap);
+  width: min(var(--term-toast-width), calc(100vw - 2 * var(--term-gap)));
+  max-width: var(--term-toast-width);
+  pointer-events: none;
 }
 
-/* 窄窗：rail 不变；AI 条允许折成两行（选择器 + 输入一行，按钮一行）。 */
+[data-role="toast-stack"] > * {
+  pointer-events: auto;
+}
+
+/* 设置模态宿主：内容由 settings-panel.js 填（fixed 覆盖层）。 */
+[data-role="settings-host"] {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+}
+
+[data-role="settings-host"] > * {
+  pointer-events: auto;
+}
+
+/* 窄窗：抽屉窄一点，但仍然是三列，不出现横向滚动。 */
 @media (max-width: 720px) {
-  [data-role="aibar"] {
-    height: auto;
-    min-height: var(--term-aibar-height);
-    flex-wrap: wrap;
-    align-content: center;
-    padding: 4px 8px;
-    row-gap: 4px;
-  }
-
-  [data-role="aibar"] [data-role="ai-question"] {
-    flex: 1 1 140px;
+  [data-role="app"][data-ai-open="true"] {
+    --term-drawer-open-width: 280px;
   }
 }
 

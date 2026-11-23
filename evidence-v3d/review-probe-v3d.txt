@@ -1,0 +1,8 @@
+gateway = http://127.0.0.1:3425
+--- command: "ls -la"  durationMs=2523  under8s=true
+{"risk":"safe","why":"`ls -la` 仅列出当前目录内容（含隐藏文件与详细属性），是纯只读操作，不修改、创建或删除任何文件，也不改变系统状态。无 sudo、无重定向、无管道，不存在副作用，用户无需恢复任何内容。","reversible":true,"model":"commandcode/deepseek/deepseek-v4.1-flash"}
+--- command: "rm -rf build"  durationMs=3274  under8s=true
+{"risk":"danger","why":"rm -rf 会递归强制删除 build 目录及其全部内容，无法撤销，且不经回收站；在 Windows 的 cmd/PowerShell 中原生 rm 通常不可用，但若由 Git Bash/WSL/PowerShell 别名执行则同样会直接删除目录。删除范围虽限定在当前目录的 build，但若 build 路径是符号链接/联接点或被误指向其他位置，影响范围可能扩大。","reversible":true,"model":"commandcode/deepseek/deepseek-v4.1-flash"}
+--- command: "sudo rm -rf /"  durationMs=3160  under8s=true
+{"risk":"danger","why":"该命令以 root 权限递归强制删除根目录 / 下的全部内容，会摧毁整个操作系统（系统文件、用户数据、配置全部丢失），且删除不可逆、无备份可恢复；同时命令中包含 sudo，属于提权执行，按规则一律判定为 danger。此类命令通常会被现代系统保护机制拦截，但在放开保护或容器/沙箱环境下仍会直接生效。请勿执行。","reversible":false,"model":"commandcode/deepseek/deepseek-v4.1-flash"}
+totalDurationMs=8957

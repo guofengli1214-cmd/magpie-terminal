@@ -14,6 +14,9 @@ import { z } from "zod";
 import { checkWsGate } from "./auth.mjs";
 import { classify } from "../policy/classify.mjs";
 import { askGateway } from "../ai/gateway.mjs";
+import { createAgentRunner } from "../ai/agent.mjs";
+import { createCommandRunner } from "../ai/runner.mjs";
+import { readConfig } from "../config/store.mjs";
 
 export const WS_PATH = "/ws";
 
@@ -57,6 +60,32 @@ const InputFrame = z.union([
       })
       .optional(),
   }),
+  // ---- agent 帧（TASK-V3-D / PROTOCOL-AGENT.md §3.1，字段名逐字） ----
+  z.object({
+    type: z.literal("agent.run"),
+    requestId: z.string(),
+    question: z.string(),
+    model: z.string().max(200).optional(),
+    context: z
+      .object({
+        cwd: z.string().optional(),
+        shell: z.unknown().optional(),
+        recentOutput: z.string().optional(),
+        sessionId: z.string().optional(),
+      })
+      .optional(),
+  }),
+  z.object({
+    type: z.literal("agent.approve"),
+    requestId: z.string(),
+    approvalId: z.string(),
+    approved: z.boolean(),
+    scope: z.enum(["once", "rest"]).optional(),
+  }),
+  z.object({
+    type: z.literal("agent.stop"),
+    requestId: z.string(),
+  }),
 ]);
 
 function send(socket, frame) {
@@ -87,6 +116,15 @@ export function attachWebSocket(opts) {
    * state: "owned"（正常持有）/ "orphaned"（owner 已断，等认领或回收）
    */
   const ownership = new Map();
+
+  // agent 内核（TASK-V3-D）：runner 在用户真实 PTY 里执行命令，agent 跑多步循环。
+  const runner = createCommandRunner({ sessions, remote, log });
+  // resolver：agent 拿到的 sessionId 属于本地还是远程。
+  runner.setSessionResolver((id) => {
+    const hit = lookup(id);
+    return hit ? hit.kind : null;
+  });
+  const agent = createAgentRunner({ log, runner });
 
   // `sessions.create()` 是同步 emit `session.created` 的，早于我们能 setOwner。
   // 用一个同作用域的临时变量把「正在创建的那个 socket」传给 onCreated。
@@ -175,10 +213,14 @@ export function attachWebSocket(opts) {
     // 自动建首个标签是 UI 行为，归 app.js 的 onStatus(open) 分支。
     socket.on("close", () => {
       clients.delete(socket);
+      const task = agent.taskForSocket(socket);
+      if (task) task.stop({ reason: "disconnect" });
       orphanOwnedBy(socket);
     });
     socket.on("error", () => {
       clients.delete(socket);
+      const task = agent.taskForSocket(socket);
+      if (task) task.stop({ reason: "disconnect" });
       orphanOwnedBy(socket);
     });
 
@@ -316,11 +358,29 @@ export function attachWebSocket(opts) {
         const registry = registryOf(frame.id);
         if (registry) registry.close(frame.id);
         forgetOwner(frame.id);
+        runner.dispose(frame.id);
         log({ level: "info", code: "SESSION_CLOSED", msg: "session closed", sessionId: frame.id });
         return;
       }
       case "ai.ask": {
         void handleAsk(socket, frame);
+        return;
+      }
+      case "agent.run": {
+        void handleAgentRun(socket, frame);
+        return;
+      }
+      case "agent.approve": {
+        agent.resolveApproval({
+          approvalId: frame.approvalId,
+          approved: frame.approved,
+          scope: frame.scope,
+        });
+        return;
+      }
+      case "agent.stop": {
+        const task = agent.taskForSocket(socket);
+        if (task) task.stop({ reason: "user" });
         return;
       }
       default:
@@ -363,6 +423,46 @@ export function attachWebSocket(opts) {
       recentOutput: session.recentOutput || "",
     });
     log({ level: "info", code: "SESSION_RESUMED", msg: "session resumed", sessionId: id });
+  }
+
+  async function handleAgentRun(socket, frame) {
+    const context = frame.context && typeof frame.context === "object" ? frame.context : {};
+    // 目标会话：context.sessionId 优先，其次这个 socket 当前持有的最新会话。
+    let sessionId = typeof context.sessionId === "string" ? context.sessionId : "";
+    if (!sessionId) {
+      for (const [id, record] of ownership) {
+        if (record.socket === socket) sessionId = id;
+      }
+    }
+    if (!sessionId || !lookup(sessionId)) {
+      send(socket, {
+        type: "agent.error",
+        requestId: frame.requestId,
+        taskId: "",
+        code: "NO_SESSION",
+        userText: "先开一个终端标签，再让 AI 动手。",
+      });
+      return;
+    }
+
+    let config = {};
+    try {
+      const read = await readConfig();
+      config = read.config || {};
+    } catch {
+      config = {};
+    }
+
+    agent.start({
+      requestId: frame.requestId,
+      question: frame.question,
+      model: frame.model,
+      context: { ...context, sessionId },
+      sessionId,
+      socket,
+      send: (outbound) => send(socket, outbound),
+      config,
+    });
   }
 
   async function handleAsk(socket, frame) {
@@ -436,12 +536,14 @@ export function attachWebSocket(opts) {
     const frame = { type: "pty.exit", id: info.id, exitCode: info.exitCode, signal: info.signal };
     if (record && record.socket) send(record.socket, frame);
     forgetOwner(info.id);
+    runner.dispose(info.id);
   };
   const onFailed = (info) => {
     const record = ownerOf(info.id);
     const frame = { type: "pty.error", id: info.id, code: info.code, userText: info.userText };
     if (record && record.socket) send(record.socket, frame);
     forgetOwner(info.id);
+    runner.dispose(info.id);
   };
 
   const onRemoteCreated = (info) => {
@@ -462,6 +564,7 @@ export function attachWebSocket(opts) {
     }
     forgetOwner(info.id);
     pendingCreateSockets.delete(info.id);
+    runner.dispose(info.id);
   };
   const onRemoteFailed = (info) => {
     const record = ownerOf(info.id);
@@ -469,6 +572,7 @@ export function attachWebSocket(opts) {
     send(target, { type: "pty.error", id: info.id, code: info.code, userText: info.userText });
     forgetOwner(info.id);
     pendingCreateSockets.delete(info.id);
+    runner.dispose(info.id);
   };
   const onRemoteOutput = (info) => {
     const record = ownerOf(info.id);
@@ -488,6 +592,12 @@ export function attachWebSocket(opts) {
   }
 
   function close() {
+    // 服务关闭：停掉所有 agent 任务（不杀已在跑的 PTY 命令）。
+    try {
+      agent.stopAll();
+    } catch {
+      // 忽略。
+    }
     sessions.off("session.created", onCreated);
     sessions.off("pty.output", onOutput);
     sessions.off("session.exited", onExited);
@@ -499,6 +609,7 @@ export function attachWebSocket(opts) {
       remote.off("session.failed", onRemoteFailed);
     }
     pendingCreateSockets.clear();
+    for (const id of ownership.keys()) runner.dispose(id);
     for (const record of ownership.values()) {
       if (record.timer) clearTimeout(record.timer);
     }

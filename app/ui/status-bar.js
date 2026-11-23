@@ -78,20 +78,33 @@ export default function createStatusBar(elements) {
       host.appendChild(shell);
     }
 
-    // 模型一栏：显示当前下拉选中的 id 尾段（完整 id 太长，状态栏放不下）。
-    const model = document.createElement("span");
-    model.setAttribute("data-role", "status-item");
-    model.setAttribute("data-status", "model");
-    if (typeof snapshot.model === "string" && snapshot.model.length > 0) {
-      const parts = String(snapshot.model).split("/").filter(Boolean);
-      const tail = parts.length > 0 ? parts[parts.length - 1] : snapshot.model;
-      model.textContent = `模型：${tail}`;
-      model.setAttribute("title", snapshot.model);
+    // 任务一栏（TASK-V3-C §6.6）：显示当前 AI 任务状态：空闲 / 执行中 / 待确认 N。
+    // 模型名已移到抽屉标题栏的下拉里，状态栏不再重复。
+    const task = document.createElement("span");
+    task.setAttribute("data-role", "status-item");
+    task.setAttribute("data-status", "agent");
+    const pending = Number(snapshot.pendingCount) || 0;
+    if (pending > 0) {
+      task.textContent = `待确认 ${pending}`;
+      task.setAttribute("data-tone", "warn");
+      task.setAttribute("data-agent-state", "awaiting");
     } else {
-      model.textContent = "模型：未选";
-      model.setAttribute("data-tone", "warn");
+      const status = snapshot.agentStatus || "idle";
+      const label =
+        status === "running"
+          ? "执行中"
+          : status === "done"
+            ? "已完成"
+            : status === "error"
+              ? "出错"
+              : status === "stopped"
+                ? "已停止"
+                : "空闲";
+      task.textContent = `AI：${label}`;
+      if (status === "error") task.setAttribute("data-tone", "error");
+      task.setAttribute("data-agent-state", status);
     }
-    host.appendChild(model);
+    host.appendChild(task);
 
     if (notice) {
       const flash = document.createElement("span");
@@ -121,7 +134,7 @@ export default function createStatusBar(elements) {
     const aiToggle = document.createElement("button");
     aiToggle.type = "button";
     aiToggle.setAttribute("data-role", "status-ai-toggle");
-    aiToggle.textContent = "AI 栏";
+    aiToggle.textContent = snapshot.aiOpen === true ? "收起 AI" : "AI 助手";
     aiToggle.addEventListener("click", () => onToggleAi());
     host.appendChild(aiToggle);
   }

@@ -1,0 +1,35 @@
+doctor: 33/33 assertions passed
+  PASS 1.health.status actual=200 expected=200
+  PASS 1.health.pty actual="native" expected="native"
+  PASS 1.health.nodePtyVersion actual="1.2.0-beta.15" expected="1.2.0-beta.15"
+  PASS 1.health.shell actual="bash" expected="name contains bash"
+  PASS 2.session.created actual="f292b108-a35e-4ea0-92df-253a1128cf09" expected="uuid"
+  PASS 2.session.pty actual="native" expected="native"
+  PASS 2.session.cwd actual="C:\\Users\\41807" expected="string"
+  PASS 3.echo.M-2 actual="M-2 present" expected="M-2 present"
+  PASS 4.stty.initial actual="28 90" expected="28 90"
+  PASS 4.stty.resized actual="40 132" expected="40 132"
+  PASS 5.warmup.10of10 actual="10/10" expected="10/10"
+  PASS 6.two.sessions actual=2 expected=2
+  PASS 6.pids.collected actual=[5648,2084] expected="2 pids"
+  PASS 6.pids.alive actual=2 expected=2
+  PASS 6.first.closed actual=true expected=true
+  PASS 6.second.works actual="SECOND-2 present" expected="SECOND-2 present"
+  PASS 7.pty.exit actual="pty.exit" expected="pty.exit"
+  PASS 8.orphans actual={"skippedBecause":null,"checked":2,"aliveBeforeWait":2,"orphans":[]} expected={"skippedBecause":null,"checked":2,"aliveBeforeWait":2,"orphans":[]}
+  PASS D7-1.before.sessions actual=0 expected=0
+  PASS D7-1c.silentSocketDoesNotCreate actual={"before":0,"after500ms":0,"createdFrames":0} expected={"before":0,"after500ms":0,"createdFrames":0}
+  PASS D7-1a.clientCreateProducesOneSession actual={"sessions":1,"gotSessionCreated":true} expected={"sessions":1,"gotSessionCreated":true}
+  PASS D7-1b.noDuplicateOnReconnect actual={"createdFrames":0,"sessionsBefore":1,"sessionsAfter":1} expected={"createdFrames":0,"sessionsBefore":1,"sessionsAfter":1}
+  PASS D7-1.cleanup.sessions actual=0 expected=0
+  PASS D7-2a.cspStyleUnsafeInline actual=true expected=true
+  PASS D7-2a.cspScriptStillSelf actual=true expected=true
+  PASS D7-2a.buildCspMatches actual=true expected=true
+  PASS D7-2b.browserComputedValue actual={"value":"#1e1e2e","skipped":false,"reason":null} expected={"value":"#1e1e2e"}
+  PASS D7-1a.browserAutoTab actual={"debugAvailable":true,"sessionCount":1,"xtermCount":1} expected={"debugAvailable":true,"sessionCount":1}
+  PASS D7-3a.sessionsBuild actual={"beforeDestroy":1,"afterDestroy":1,"afterGrace":0} expected={"beforeDestroy":1,"afterDestroy":1,"afterGrace":0}
+  PASS D7-3a.orphanKeptDuringGrace actual=1 expected=1
+  PASS D7-3a.reclaimedAfterGrace actual=0 expected=0
+  PASS D7-3b.resumeKeepsSession actual={"resumedType":"session.resumed","pty":"native","recentOutputLen":111,"before":1,"after":1} expected={"resumedType":"session.resumed","pty":"native","before":1,"after":1}
+  PASS D7-3c.sessionGone actual="SESSION_GONE" expected="SESSION_GONE"
+report: C:\Users\41807\magpie-terminal\doctor-report.json
