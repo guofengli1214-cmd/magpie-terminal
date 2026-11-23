@@ -46,3 +46,8 @@ doctor-run-latest.txt
 *.dispatch/
 .dispatch/*.log
 
+
+# TASK-V2-B 敏感状态（绝不入库）
+secrets.json
+secrets.key
+known_hosts.json

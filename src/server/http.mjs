@@ -15,7 +15,22 @@ import {
 } from "./auth.mjs";
 import { buildHealth } from "./routes/health.mjs";
 import { DEFAULT_MODEL, gatewayBaseUrl, probeGateway } from "../ai/gateway.mjs";
-import { KNOWN_FIELDS, readConfig, updateConfig } from "../config/store.mjs";
+import {
+  KNOWN_FIELDS,
+  addHost,
+  getHostRecord,
+  listHosts,
+  readConfig,
+  rememberKnownHost,
+  removeHost,
+  saveSecret,
+  updateConfig,
+  updateHost,
+} from "../config/store.mjs";
+import { z } from "zod";
+import { RemoteRegistry, fingerprintForHost, listFiles, testHostConnection } from "../ssh/registry.mjs";
+import { stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import { buildPolicy } from "./routes/policy.mjs";
 import { handleAiPost } from "./routes/ai.mjs";
 import { isStaticPath, readAppFile, sendStatic } from "./static.mjs";
@@ -101,7 +116,7 @@ export function corsHeaders(req, port) {
   const selfOrigins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
   const headers = {
     "access-control-allow-headers": "content-type, x-magpie-term-token",
-    "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
     vary: "Origin",
   };
   if (origin === "null") {
@@ -192,7 +207,7 @@ async function renderAppIndex(tokens, token) {
   return raw.replace("</head>", injected + "\n" + "</head>");
 }
 
-/** 读取请求体，超过上限返回 null 并已经回应 413。 */
+/** 读请求体，超过上限返回 null 并已经回应 413。 */
 function readBody(req, res) {
   return new Promise((resolve) => {
     const chunks = [];
@@ -239,6 +254,61 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/* ------------------------------------------------------------------ *
+ * 主机接口的校验（TASK-V2-B §2.5）
+ *
+ * 防注入是硬要求：host 不许出现 `/` `;` `$()` 等任何能当命令用的字符，
+ * 所以用**允许集**而不是黑名单（与 security-model §5.4.1 同一原则）。
+ * ------------------------------------------------------------------ */
+
+/** host 只允许字母数字、点、减号（IPv4 / 域名 / 本机别名都覆盖）。 */
+export const HOST_PATTERN = /^[A-Za-z0-9.-]+$/;
+/** username 只允许字母数字、点、下划线、减号。 */
+export const USERNAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+export const HostCreateSchema = z.object({
+  name: z.string().trim().min(1).max(64),
+  host: z.string().trim().min(1).max(253).regex(HOST_PATTERN),
+  port: z.number().int().min(1).max(65535),
+  username: z.string().trim().min(1).max(64).regex(USERNAME_PATTERN),
+  authType: z.enum(["password", "privateKey"]),
+  password: z.string().max(4096).optional(),
+  privateKey: z.string().max(200000).optional(),
+  privateKeyPath: z.string().max(4096).optional(),
+  passphrase: z.string().max(4096).optional(),
+});
+
+/** PUT 可以只改几个字段，但给了的字段要合法。 */
+export const HostUpdateSchema = HostCreateSchema.partial();
+
+/** 远程路径参数：只要不是空的就行（真正的路径语义交给远端）。 */
+export const FilesQuerySchema = z.string().min(1).max(4096);
+
+function invalidHost(res, cors, detail, log) {
+  if (log) {
+    log({ level: "warn", code: "INVALID_HOST", msg: "invalid host payload", detail });
+  }
+  writeJson(
+    res,
+    400,
+    { code: "INVALID_HOST", userText: detail || "主机信息不合法。" },
+    {},
+    cors,
+  );
+}
+
+/** privateKeyPath 必须是绝对路径且文件存在（§2.5）。 */
+async function checkPrivateKeyPath(value) {
+  if (!isAbsolute(value)) return "私钥路径必须是绝对路径。";
+  try {
+    const info = await stat(value);
+    if (!info.isFile()) return "私钥路径不是一个文件。";
+  } catch {
+    return "私钥路径不存在。";
+  }
+  return null;
+}
+
 /**
  * 启动服务。返回进程内句柄（含 token），供 doctor / 测试直接使用。
  * 端口被占：抛带 code=PORT_IN_USE 的错误，不做 +1 顺延。
@@ -256,6 +326,10 @@ export async function startServer(options = {}) {
   const mode = ptyLoad.ok ? "native" : "sentinel";
   const sessions = new SessionManager({ shell, ptyLoad, mode });
   sessions.ensureExitHook();
+
+  // 远程 SSH 会话层（TASK-V2-B）。与本地 SessionManager 并存，互不影响。
+  const remote = new RemoteRegistry({ log });
+  remote.ensureExitHook();
 
   const nodePtyVersion = ptyLoad.ok ? ptyLoad.version : null;
   if (mode === "sentinel") {
@@ -290,6 +364,297 @@ export async function startServer(options = {}) {
       else res.destroy();
     });
   });
+
+  async function handleHostsRequest(req, res, url, cors, log) {
+    const pathname = url.pathname;
+    const segments = pathname.split("/").filter(Boolean); // ["api","hosts", id?, action?]
+    const id = segments[2] || null;
+    const action = segments[3] || null;
+
+    // GET /api/hosts
+    if (req.method === "GET" && pathname === "/api/hosts") {
+      writeJson(res, 200, { hosts: await listHosts() }, {}, cors);
+      return true;
+    }
+
+    // POST /api/hosts
+    if (req.method === "POST" && pathname === "/api/hosts") {
+      const body = await readBody(req, res);
+      if (res.writableEnded) return true;
+      const parsed = parseJsonBody(body);
+      if (!parsed) {
+        writeJson(res, 400, { code: "INVALID_HOST", userText: "请求体必须是 JSON 对象。" }, {}, cors);
+        return true;
+      }
+      const check = HostCreateSchema.safeParse(parsed);
+      if (!check.success) {
+        invalidHost(res, cors, "主机字段不合法（名称/主机/端口/用户名/认证方式）。", log);
+        return true;
+      }
+      const input = check.data;
+      if (input.authType === "privateKey") {
+        const hasInline = typeof input.privateKey === "string" && input.privateKey.length > 0;
+        if (!hasInline && !(typeof input.privateKeyPath === "string" && input.privateKeyPath.length > 0)) {
+          invalidHost(res, cors, "私钥认证需要 privateKey 或 privateKeyPath。", log);
+          return true;
+        }
+        if (!hasInline) {
+          const bad = await checkPrivateKeyPath(input.privateKeyPath);
+          if (bad) {
+            invalidHost(res, cors, bad, log);
+            return true;
+          }
+        }
+      } else if (typeof input.password !== "string" || input.password.length === 0) {
+        invalidHost(res, cors, "密码认证需要 password。", log);
+        return true;
+      }
+
+      const created = await addHost({
+        name: input.name,
+        host: input.host,
+        port: input.port,
+        username: input.username,
+        authType: input.authType,
+        privateKeyPath: input.privateKeyPath,
+      });
+      const hasSecret =
+        input.authType === "password"
+          ? true
+          : typeof input.privateKey === "string" && input.privateKey.length > 0
+            ? true
+            : false;
+      if (hasSecret) {
+        await saveSecret(created.id, {
+          password: input.password,
+          privateKey: input.privateKey,
+          passphrase: input.passphrase,
+        });
+      }
+      const fresh = await getHostRecord(created.id);
+      writeJson(res, 201, { host: fresh || created }, {}, cors);
+      log({ level: "info", code: "HOST_CREATED", msg: "host created", route: "POST /api/hosts" });
+      return true;
+    }
+
+    // POST /api/hosts/:id/trust
+    //
+    // §2.3 要求「用户点了信任并记住后才写入 known_hosts.json」。卡片 §2.5 的接口
+    // 表里没有这一条，但前端没有别的写入途径，所以必须有。它是一个**额外的**
+    // 必要路由（报告里写明）。防 TOCTOU：服务端重新取一次指纹，必须与前端展示的
+    // 那条完全一致才落盘 —— 不信任客户端传来的「我看到的指纹」。
+    if (req.method === "POST" && action === "trust") {
+      const body = await readBody(req, res);
+      if (res.writableEnded) return true;
+      const parsed = parseJsonBody(body);
+      if (!parsed || typeof parsed.fingerprint !== "string" || parsed.fingerprint.length === 0) {
+        writeJson(res, 400, { code: "INVALID_FINGERPRINT", userText: "要信任的指纹缺失。" }, {}, cors);
+        return true;
+      }
+      const host = await getHostRecord(id);
+      if (!host) {
+        writeJson(res, 404, { code: "HOST_NOT_FOUND", userText: "没有这条主机。" }, {}, cors);
+        return true;
+      }
+      let probed;
+      try {
+        probed = await fingerprintForHost(id);
+      } catch (err) {
+        writeJson(
+          res,
+          502,
+          { code: (err && err.code) || "SSH_FINGERPRINT_FAILED", userText: (err && err.userText) || "取不到主机指纹。" },
+          {},
+          cors,
+        );
+        return true;
+      }
+      if (probed.fingerprint !== parsed.fingerprint.trim()) {
+        writeJson(
+          res,
+          409,
+          {
+            code: "HOST_KEY_CHANGED",
+            userText: "指纹在核对期间变了，连接已中止。请重新连接重新核对。",
+            algo: probed.algo,
+            fingerprint: probed.fingerprint,
+          },
+          {},
+          cors,
+        );
+        return true;
+      }
+      // 已有记录且与新指纹不一致 → **拒绝覆盖**。
+      // 卡片 §2.3 的语义是「只能用户自己去删掉那条记录」，接口层也不能给一条
+      // 「覆盖旧指纹」的捷径（那等于把「忽略」换了个名字）。
+      if (probed.recorded && probed.recorded.fingerprint !== probed.fingerprint) {
+        writeJson(
+          res,
+          409,
+          {
+            code: "HOST_KEY_MISMATCH",
+            userText: "这台主机的指纹与已记录的不一样，不能直接覆盖。先删掉这条主机并重新添加。",
+            knownFingerprint: probed.recorded.fingerprint,
+            knownAlgo: probed.recorded.algo,
+            algo: probed.algo,
+            fingerprint: probed.fingerprint,
+          },
+          {},
+          cors,
+        );
+        return true;
+      }
+      await rememberKnownHost(host.host, host.port, probed.algo, probed.fingerprint);
+      writeJson(res, 200, { algo: probed.algo, fingerprint: probed.fingerprint, known: true }, {}, cors);
+      log({ level: "info", code: "HOST_KEY_TRUSTED", msg: "host key trusted", route: "POST /api/hosts/:id/trust" });
+      return true;
+    }
+
+    if (!id) return false;
+
+    // PUT /api/hosts/:id
+    if (req.method === "PUT" && !action) {
+      const existing = await getHostRecord(id);
+      if (!existing) {
+        writeJson(res, 404, { code: "HOST_NOT_FOUND", userText: "没有这条主机。" }, {}, cors);
+        return true;
+      }
+      const body = await readBody(req, res);
+      if (res.writableEnded) return true;
+      const parsed = parseJsonBody(body);
+      if (!parsed) {
+        writeJson(res, 400, { code: "INVALID_HOST", userText: "请求体必须是 JSON 对象。" }, {}, cors);
+        return true;
+      }
+      const check = HostUpdateSchema.safeParse(parsed);
+      if (!check.success) {
+        invalidHost(res, cors, "主机字段不合法。", log);
+        return true;
+      }
+      const patch = check.data;
+      const nextAuth = patch.authType || existing.authType;
+      if (patch.authType === "privateKey" && !patch.privateKey && !patch.privateKeyPath) {
+        // 切到私钥但没给路径/正文：只有原来已经有可用私钥才算合法。
+        if (!existing.privateKeyPath && !existing.hasInlineKey) {
+          invalidHost(res, cors, "私钥认证需要 privateKey 或 privateKeyPath。", log);
+          return true;
+        }
+      }
+      if (patch.privateKeyPath) {
+        const bad = await checkPrivateKeyPath(patch.privateKeyPath);
+        if (bad) {
+          invalidHost(res, cors, bad, log);
+          return true;
+        }
+      }
+      if (patch.password !== undefined && patch.password.length === 0) {
+        invalidHost(res, cors, "password 不能是空串（不改密码就别传这个字段）。", log);
+        return true;
+      }
+
+      const updated = await updateHost(id, {
+        name: patch.name,
+        host: patch.host,
+        port: patch.port,
+        username: patch.username,
+        authType: patch.authType,
+        privateKeyPath: patch.privateKeyPath,
+        hasInlineKey: typeof patch.privateKey === "string" && patch.privateKey.length > 0,
+      });
+      if (!updated) {
+        writeJson(res, 404, { code: "HOST_NOT_FOUND", userText: "没有这条主机。" }, {}, cors);
+        return true;
+      }
+      if (
+        typeof patch.password === "string" ||
+        typeof patch.privateKey === "string" ||
+        typeof patch.passphrase === "string"
+      ) {
+        await saveSecret(id, {
+          password: patch.password,
+          privateKey: patch.privateKey,
+          passphrase: patch.passphrase,
+        });
+      }
+      // 换主机名/端口后旧指纹不再适用于新目标：让它自己重新走一次核对。
+      if ((patch.host && patch.host !== existing.host) || (patch.port && patch.port !== existing.port)) {
+        // 不自动写 known_hosts：用户必须重新核对。旧记录保留（只按新 host:port 查找不会命中）。
+      }
+      const fresh = await getHostRecord(id);
+      writeJson(res, 200, { host: fresh || updated }, {}, cors);
+      log({ level: "info", code: "HOST_UPDATED", msg: "host updated", route: "PUT /api/hosts/:id" });
+      return true;
+    }
+
+    // DELETE /api/hosts/:id
+    if (req.method === "DELETE" && !action) {
+      const removed = await removeHost(id);
+      if (!removed) {
+        writeJson(res, 404, { code: "HOST_NOT_FOUND", userText: "没有这条主机。" }, {}, cors);
+        return true;
+      }
+      res.writeHead(204, cors);
+      res.end();
+      log({ level: "info", code: "HOST_DELETED", msg: "host deleted", route: "DELETE /api/hosts/:id" });
+      return true;
+    }
+
+    // POST /api/hosts/:id/test
+    if (req.method === "POST" && action === "test") {
+      await readBody(req, res);
+      if (res.writableEnded) return true;
+      const result = await testHostConnection(id);
+      // 失败也是 200：连不上是正常结果，不是服务端错误。
+      writeJson(res, 200, result, {}, cors);
+      return true;
+    }
+
+    // GET /api/hosts/:id/fingerprint
+    if (req.method === "GET" && action === "fingerprint") {
+      try {
+        const info = await fingerprintForHost(id);
+        writeJson(res, 200, info, {}, cors);
+      } catch (err) {
+        const code = err && err.code ? err.code : "SSH_FINGERPRINT_FAILED";
+        const status = code === "HOST_NOT_FOUND" ? 404 : 502;
+        writeJson(
+          res,
+          status,
+          { code, userText: (err && err.userText) || "取不到主机指纹。" },
+          {},
+          cors,
+        );
+      }
+      return true;
+    }
+
+    // GET /api/hosts/:id/files?path=/var/log
+    if (req.method === "GET" && action === "files") {
+      const rawPath = url.searchParams.get("path") || ".";
+      const pathCheck = FilesQuerySchema.safeParse(rawPath);
+      if (!pathCheck.success) {
+        writeJson(res, 400, { code: "INVALID_PATH", userText: "路径不合法。" }, {}, cors);
+        return true;
+      }
+      try {
+        const listing = await listFiles(id, pathCheck.data);
+        writeJson(res, 200, listing, {}, cors);
+      } catch (err) {
+        const code = err && err.code ? err.code : "SFTP_LIST_FAILED";
+        const status = code === "HOST_NOT_FOUND" ? 404 : 502;
+        writeJson(
+          res,
+          status,
+          { code, userText: (err && err.userText) || "列不出远程目录。" },
+          {},
+          cors,
+        );
+      }
+      return true;
+    }
+
+    return false;
+  }
 
   async function handleRequest(req, res) {
     const startedAt = Date.now();
@@ -508,6 +873,15 @@ export async function startServer(options = {}) {
         return;
       }
 
+      /* --------------------------------------------------------- *
+       * 主机（TASK-V2-B §2.5）
+       * 全部已在上面过了 token 门；此处只管校验与落盘。
+       * --------------------------------------------------------- */
+      if (pathname === "/api/hosts" || pathname.startsWith("/api/hosts/")) {
+        const handled = await handleHostsRequest(req, res, url, cors, log);
+        if (handled) return;
+      }
+
       if (req.method === "POST" && pathname === "/api/ai") {
         await readBody(req, res);
         if (!res.writableEnded) handleAiPost(req, res);
@@ -551,7 +925,7 @@ export async function startServer(options = {}) {
     server.listen({ host, port });
   });
 
-  wsHandle = attachWebSocket({ server, port, token, sessions, log });
+  wsHandle = attachWebSocket({ server, port, token, sessions, remote, log });
 
   const handle = {
     port,
@@ -560,12 +934,18 @@ export async function startServer(options = {}) {
     tokenInfo: maskToken(token),
     server,
     sessions,
+    remote,
     shell,
     mode,
     nodePtyVersion,
     log,
     close: async () => {
       wsHandle.close();
+      try {
+        remote.killAllSync();
+      } catch {
+        // 忽略。
+      }
       await new Promise((resolve) => server.close(resolve));
     },
   };

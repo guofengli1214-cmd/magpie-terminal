@@ -72,6 +72,10 @@ export default function createSessionStore() {
         exitCode: session.exitCode === undefined ? null : session.exitCode,
         cols: session.cols || 80,
         rows: session.rows || 24,
+        // TASK-V2-B：本地/远程。默认 "local"，老调用方不用改。
+        kind: session.kind === "remote" ? "remote" : "local",
+        hostId: typeof session.hostId === "string" ? session.hostId : null,
+        hostName: typeof session.hostName === "string" ? session.hostName : null,
       });
       if (!state.activeId) state.activeId = session.id;
       notify();

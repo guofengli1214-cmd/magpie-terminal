@@ -8,6 +8,10 @@ export default function createTabBar(elements) {
   let unsubscribe = null;
 
   function titleFor(session) {
+    // 远程标签：标题就是主机名（TASK-V2-B §2.6）。
+    if (session && session.kind === "remote") {
+      return session.hostName || session.hostId || "远程主机";
+    }
     const shell = String(session.shell || "shell").split(" ")[0];
     const cwd = String(session.cwd || "");
     let tail = cwd;
@@ -31,6 +35,16 @@ export default function createTabBar(elements) {
       const selected = session.id === snapshot.activeId;
       tab.setAttribute("aria-selected", selected ? "true" : "false");
       tab.tabIndex = selected ? 0 : -1;
+      // 本地 / 远程的小图标（TASK-V2-B §2.6：`data-kind="remote"`）。
+      tab.setAttribute("data-kind", session.kind === "remote" ? "remote" : "local");
+      if (session.kind === "remote") tab.title = `${titleFor(session)}（远程）`;
+
+      const kindIcon = document.createElement("span");
+      kindIcon.setAttribute("data-role", "tab-kind");
+      kindIcon.setAttribute("aria-hidden", "true");
+      kindIcon.textContent = session.kind === "remote" ? "🖧" : "▣";
+      kindIcon.title = session.kind === "remote" ? "远程主机" : "本地终端";
+      tab.appendChild(kindIcon);
 
       const title = document.createElement("span");
       title.setAttribute("data-role", "tab-title");

@@ -356,3 +356,391 @@ button[disabled] {
   max-height: 40vh;
   overflow: auto;
 }
+
+/* ------------------------------------------------------------------ *
+ * 主机面板 / 连接表单 / 指纹核对卡 / 文件树（TASK-V2-B §2.6）
+ *
+ * 关键：`.hosts-panel` 是 position: fixed 的**覆盖层**（从 rail 右侧滑出），
+ * 不是 .main 的 flex 子项 —— 所以打开面板不会改变 xterm 的可用宽度，
+ * A 卡 829x721 下 106 列的基线不会被破坏（验收 E8）。
+ * ------------------------------------------------------------------ */
+
+[data-role="rail"] button[data-connected="true"]::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--term-ok);
+}
+
+[data-role="hosts-panel"] {
+  position: fixed;
+  /* top 由 hosts-panel.js 按标签栏底边现算（不遮标签栏），这里只给兜底值。 */
+  top: 0;
+  left: var(--term-rail-width);
+  bottom: 0;
+  width: var(--term-hosts-width);
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  box-sizing: border-box;
+  border-right: 1px solid var(--term-border);
+  border-radius: 0 var(--term-panel-radius) var(--term-panel-radius) 0;
+  background: var(--term-panel-bg);
+  box-shadow: 0 8px 24px var(--term-shadow);
+}
+
+[data-role="hosts-panel"][hidden] {
+  display: none;
+}
+
+[data-role="hosts-panel"] .hosts-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--term-gap);
+  padding: 8px;
+  border-bottom: 1px solid var(--term-border);
+}
+
+[data-role="hosts-panel"] .hosts-title {
+  flex: 1 1 auto;
+  font-size: 13px;
+}
+
+[data-role="hosts-panel"] .hosts-header button {
+  padding: 1px 8px;
+  font-size: 12px;
+}
+
+[data-role="hosts-panel"] .hosts-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--term-border);
+}
+
+[data-role="hosts-panel"] .hosts-tabs button[aria-selected="true"] {
+  background: var(--term-selection);
+  font-weight: 600;
+}
+
+[data-role="hosts-panel"] .hosts-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px;
+}
+
+[data-role="hosts-panel"] .hosts-footer {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-top: 1px solid var(--term-border);
+}
+
+[data-role="hosts-panel"] .hosts-footer button {
+  width: 100%;
+}
+
+.hosts-empty {
+  margin: 8px 2px;
+  font-size: 12px;
+  color: var(--term-muted);
+}
+
+/* 主机列表项：默认只显示 name + addr；工具按钮 hover / focus / 右键时出现。 */
+[data-role="host-item"] {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  border-radius: var(--term-radius);
+}
+
+[data-role="host-item"]:hover,
+[data-role="host-item"]:focus-within,
+[data-role="host-item"][data-tools="true"] {
+  background: var(--term-selection);
+}
+
+[data-role="host-item"] [data-role="host-open"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border: none;
+  text-align: left;
+  background: transparent;
+}
+
+[data-role="host-item"] .host-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--term-border);
+}
+
+[data-role="host-item"][data-connected="true"] .host-dot {
+  background: var(--term-ok);
+}
+
+[data-role="host-item"] .host-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+[data-role="host-item"] .host-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-role="host-item"] .host-addr {
+  font-size: 11px;
+  color: var(--term-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-role="host-item"] .host-item-tools {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+}
+
+[data-role="host-item"]:hover .host-item-tools,
+[data-role="host-item"]:focus-within .host-item-tools,
+[data-role="host-item"][data-tools="true"] .host-item-tools {
+  display: flex;
+}
+
+[data-role="host-item"] .host-item-tools button {
+  padding: 0 6px;
+  font-size: 11px;
+  border-color: transparent;
+}
+
+/* 连接表单（复用 confirm-backdrop 模态壳）。 */
+[data-role="host-form-card"],
+[data-role="host-trust-card"] {
+  width: min(460px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--term-border);
+  border-radius: var(--term-radius);
+  background: var(--term-panel-bg);
+  color: var(--term-fg);
+  font-size: 13px;
+}
+
+[data-role="host-trust-card"] {
+  border: 2px solid var(--term-warn);
+}
+
+[data-role="host-trust-card"][data-mismatch="true"] {
+  border-color: var(--term-danger);
+}
+
+[data-role="host-form-card"] h2,
+[data-role="host-trust-card"] h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.host-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+
+.host-field-label {
+  font-size: 12px;
+  color: var(--term-muted);
+}
+
+.host-field input,
+.host-field select,
+.host-field textarea {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 6px;
+  box-sizing: border-box;
+  color: var(--term-fg);
+  background: var(--term-bg);
+  border: 1px solid var(--term-border);
+  border-radius: var(--term-radius);
+}
+
+.host-field-hint {
+  font-size: 11px;
+  color: var(--term-muted);
+}
+
+.host-key-row {
+  display: flex;
+  gap: 4px;
+}
+
+.host-key-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+[data-role="host-form-status"] {
+  margin: 4px 0 10px;
+  font-size: 12px;
+  min-height: 1.2em;
+}
+
+[data-role="host-form-status"][data-tone="ok"] {
+  color: var(--term-ok);
+  font-weight: 600;
+}
+
+[data-role="host-form-status"][data-tone="error"] {
+  color: var(--term-danger);
+  font-weight: 600;
+}
+
+.host-form-actions {
+  display: flex;
+  gap: var(--term-gap);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* 指纹核对卡 */
+.host-trust-lead {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.host-trust-label {
+  display: block;
+  font-size: 11px;
+  color: var(--term-muted);
+}
+
+.host-trust-fingerprint {
+  display: block;
+  font-family: var(--term-mono);
+  font-size: 12px;
+  word-break: break-all;
+  user-select: all;
+  margin-bottom: 10px;
+}
+
+/* 文件树 */
+[data-role="file-tree"] {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px 6px;
+  overflow: hidden;
+}
+
+.file-tree-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--term-border);
+}
+
+.file-tree-bar button {
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.file-tree-bar [data-role="file-path"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--term-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.file-tree-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-top: 4px;
+}
+
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 3px 4px;
+  border: none;
+  border-radius: var(--term-radius);
+  background: transparent;
+  text-align: left;
+  font-size: 12px;
+}
+
+.file-tree-row:hover {
+  background: var(--term-selection);
+}
+
+.file-tree-icon {
+  flex: 0 0 auto;
+}
+
+.file-tree-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tree-meta {
+  flex: 0 0 var(--term-file-meta-width);
+  text-align: right;
+  font-size: 10.5px;
+  color: var(--term-muted);
+}
+
+.file-tree-empty {
+  margin: 8px 2px;
+  font-size: 12px;
+  color: var(--term-muted);
+}
+
+.file-tree-empty[data-tone="error"] {
+  color: var(--term-danger);
+}
+
+/* 标签上的本地/远程图标 */
+[data-role="tab-kind"] {
+  flex: 0 0 auto;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+[data-role="tab"][data-kind="remote"] [data-role="tab-kind"] {
+  opacity: 1;
+}

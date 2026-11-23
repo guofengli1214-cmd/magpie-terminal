@@ -10,6 +10,7 @@ import createStatusBar from "./ui/status-bar.js";
 import createAiPanel from "./ui/ai-panel.js";
 import createAiBar from "./ui/ai-bar.js";
 import createRail from "./ui/rail.js";
+import createHostsPanel from "./ui/hosts-panel.js";
 
 const root = document.querySelector('[data-role="app"]');
 const railHost = document.querySelector('[data-role="rail"]');
@@ -43,6 +44,9 @@ let tabBar = null;
 let statusBar = null;
 let terminalView = null;
 let wsClient = null;
+let hostsPanel = null;
+// 远程会话建连中的 hostId → 等 session.created 时补上的元数据（用于建标签后同步面板）。
+let pendingRemoteHost = null;
 
 function showBanner(text) {
   banner.textContent = text;
@@ -89,6 +93,27 @@ function createTab() {
   }
 }
 
+/**
+ * 建一个远程标签（TASK-V2-B §2.6）。
+ * 帧带 hostId，服务端建连成功后才回 session.created（kind=remote）。
+ */
+function createRemoteTab(host) {
+  if (!host || typeof host.id !== "string") return;
+  if (store.getSnapshot().sessions.length >= constants.TAB_LIMIT) {
+    showBanner(`标签数量已达上限（${constants.TAB_LIMIT}）。关掉一个再新建。`);
+    setTimeout(hideBanner, 5000);
+    return;
+  }
+  const sent = wsClient.send({ type: "pty.create", hostId: host.id });
+  if (!sent) {
+    showBanner("连接还没就绪，远程标签没发出去。点状态栏「重连」后重试。");
+    setTimeout(hideBanner, 5000);
+    return;
+  }
+  pendingRemoteHost = host;
+  if (statusBar) statusBar.setNotice(`正在连接 ${host.name}…`, "info");
+}
+
 function sendResize(id, cols, rows) {
   wsClient.send({ type: "pty.resize", id, cols, rows });
   // PTY 尺寸是服务端权威，把它同步进 store，状态栏 / 调试出口才看得到真值。
@@ -109,6 +134,7 @@ function handleFrame(frame) {
   switch (frame.type) {
     case "session.created": {
       const id = frame.id;
+      const isRemote = frame.kind === "remote";
       store.addSession({
         id,
         shell: shellSummary(frame),
@@ -117,6 +143,9 @@ function handleFrame(frame) {
         exitCode: null,
         cols: frame.cols || 80,
         rows: frame.rows || 24,
+        kind: isRemote ? "remote" : "local",
+        hostId: isRemote ? frame.hostId || null : null,
+        hostName: isRemote ? frame.hostName || frame.host || "远程主机" : null,
       });
       terminalView.ensure(id);
       store.patchSession(id, {
@@ -125,6 +154,15 @@ function handleFrame(frame) {
       });
       if (!store.getSnapshot().activeId || store.getSnapshot().activeId === id) {
         store.setActive(id);
+      }
+      if (isRemote) {
+        // 用户点主机就是为了用这条远程会话：建好后把焦点切过去
+        // （本地首个标签是自动建的，不能让远程标签默默藏在后面）。
+        if (pendingRemoteHost && pendingRemoteHost.id === (frame.hostId || null)) {
+          store.setActive(id);
+        }
+        pendingRemoteHost = null;
+        if (hostsPanel) hostsPanel.sync();
       }
       attachActive();
       return;
@@ -135,6 +173,7 @@ function handleFrame(frame) {
       const existing = store.getSession(id);
       if (!existing) {
         // 理论上不该发生（只有已知 id 才 attach），保守起见按新会话处理。
+        const isRemote = frame.kind === "remote";
         store.addSession({
           id,
           shell: shellSummary(frame),
@@ -143,8 +182,12 @@ function handleFrame(frame) {
           exitCode: null,
           cols: frame.cols || 80,
           rows: frame.rows || 24,
+          kind: isRemote ? "remote" : "local",
+          hostId: isRemote ? frame.hostId || null : null,
+          hostName: isRemote ? frame.hostName || frame.host || "远程主机" : null,
         });
       } else {
+        const isRemote = frame.kind === "remote" || existing.kind === "remote";
         store.patchSession(id, {
           shell: shellSummary(frame),
           cwd: frame.cwd || existing.cwd,
@@ -152,6 +195,9 @@ function handleFrame(frame) {
           exitCode: null,
           cols: frame.cols || existing.cols,
           rows: frame.rows || existing.rows,
+          kind: isRemote ? "remote" : "local",
+          hostId: isRemote ? frame.hostId || existing.hostId || null : null,
+          hostName: isRemote ? frame.hostName || existing.hostName || null : null,
         });
       }
       terminalView.ensure(id);
@@ -212,10 +258,14 @@ function handleFrame(frame) {
       if (frame.id && store.getSession(frame.id)) {
         store.patchSession(frame.id, { status: "error" });
         terminalView.writeln(frame.id, `\r\n[错误] ${frame.userText || frame.code}\r\n`);
+        if (hostsPanel) hostsPanel.sync();
       } else {
         showBanner(`${frame.userText || "终端发生错误。"}（${frame.code}）`);
         setTimeout(hideBanner, 6000);
         statusBar.setHealth(health);
+      }
+      if (pendingRemoteHost && (frame.code === "UNKNOWN_HOST_KEY" || frame.code === "HOST_KEY_MISMATCH")) {
+        pendingRemoteHost = null;
       }
       return;
     }
@@ -403,6 +453,46 @@ function init() {
     onToggleAi: toggleAi,
   });
   rail.init();
+
+  // `data-role=rail-hosts` 从 A 卡的占位变成真入口（TASK-V2-B §2.6）。
+  // rail.js / index.html 都不在本卡的文件清单里，所以接线放在这里：
+  // 去掉 HTML 上的 hidden（A 卡留的），并挂上开关主机面板的监听。
+  const railHostsButton = railHost.querySelector('[data-role="rail-hosts"]');
+  if (railHostsButton) {
+    railHostsButton.hidden = false;
+    railHostsButton.title = "主机（SSH）";
+    railHostsButton.addEventListener("click", () => {
+      if (hostsPanel) hostsPanel.toggle();
+    });
+    // 连接中/已连的小绿点（rail 面板与列表同一语义）。
+    store.subscribe((snapshot) => {
+      const connected = snapshot.sessions.some(
+        (s) => s.kind === "remote" && s.status === "running",
+      );
+      railHostsButton.setAttribute("data-connected", connected ? "true" : "false");
+    });
+  }
+
+  hostsPanel = createHostsPanel({
+    api,
+    store,
+    // 面板盖住终端区，但不遮标签栏 / AI 条 / 状态栏。
+    anchor: tabbarHost,
+    bottomAnchors: [
+      document.querySelector('[data-role="aibar"]'),
+      statusHost,
+    ],
+    onCreateSession: (host) => createRemoteTab(host),
+    onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
+    // 双击文件 → 只把路径填进当前远程终端输入，不执行（让用户自己确认再回车）。
+    onPickFile: (remotePath) => {
+      const active = store.getActive();
+      if (!active || active.kind !== "remote") return;
+      wsClient.send({ type: "pty.input", id: active.id, data: remotePath });
+      statusBar.setNotice(`已填入路径：${remotePath}（回车才执行）`, "info");
+    },
+  });
+  hostsPanel.init();
 
   aiPanel = createAiPanel({
     host: aiLayer,

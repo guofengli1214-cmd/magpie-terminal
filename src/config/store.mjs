@@ -12,6 +12,7 @@
 // 路径用 `configPath()` 现算而不是模块级常量：测试通过
 // MAGPIE_TERMINAL_CONFIG_PATH 指到临时目录，模块级缓存会让两次测试互相污染。
 
+import crypto from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,8 +20,22 @@ import path from "node:path";
 /** 环境变量覆盖路径：只给测试用，生产不设。 */
 export const CONFIG_PATH_ENV = "MAGPIE_TERMINAL_CONFIG_PATH";
 
-/** 已知字段（本卡只有 model）。下一张卡在这里追加 hosts。 */
+/**
+ * 已知字段（`updateConfig` 的补丁白名单）。
+ *
+ * TASK-V2-A 的单测把这里锁成 `["model"]`，本卡不降低那条期望：`hosts` 不从这里走，
+ * 它由下面的 `addHost/updateHost/removeHost` 直接读-改-写整份配置（未知字段本来
+ * 就是原样保留的，所以两者不会互相踩）。
+ */
 export const KNOWN_FIELDS = Object.freeze(["model"]);
+
+/** 主机认证方式（TASK-V2-B §2.2）。 */
+export const AUTH_TYPES = Object.freeze(["password", "privateKey"]);
+
+/** 与本模块同目录的状态文件名（全部在 .gitignore 里）。 */
+export const SECRETS_FILE = "secrets.json";
+export const SECRETS_KEY_FILE = "secrets.key";
+export const KNOWN_HOSTS_FILE = "known_hosts.json";
 
 /** 文件不存在 / 损坏时返回的值。调用方可以再与网关清单求默认。 */
 export const DEFAULT_CONFIG = Object.freeze({
@@ -35,6 +50,31 @@ export function configPath() {
   const override = process.env[CONFIG_PATH_ENV];
   if (typeof override === "string" && override.trim().length > 0) return path.resolve(override.trim());
   return path.join(os.homedir(), ".config", "magpie-terminal", "config.json");
+}
+
+/**
+ * 状态目录：config.json 所在目录。
+ * 凭据与 known_hosts 都放这里，而不是各自再算一次 `~/.config/...`：
+ * 测试用 MAGPIE_TERMINAL_CONFIG_PATH 指到临时目录时，三个文件必须一起跟着走。
+ * @returns {string}
+ */
+export function stateDir() {
+  return path.dirname(configPath());
+}
+
+/** @returns {string} secrets.json（AES-256-GCM 密文） */
+export function secretsPath() {
+  return path.join(stateDir(), SECRETS_FILE);
+}
+
+/** @returns {string} secrets.key（32 字节随机密钥，600） */
+export function secretsKeyPath() {
+  return path.join(stateDir(), SECRETS_KEY_FILE);
+}
+
+/** @returns {string} known_hosts.json（host:port -> {algo, fingerprint}） */
+export function knownHostsPath() {
+  return path.join(stateDir(), KNOWN_HOSTS_FILE);
 }
 
 /**
@@ -63,6 +103,40 @@ export async function readConfig() {
     return { ok: false, reason: "corrupt", config: { ...DEFAULT_CONFIG } };
   }
   return { ok: true, reason: null, config: { ...parsed } };
+}
+
+/** 原子写任意 JSON 文件：目录 700 → 临时文件 600 → rename。 */
+async function writeJsonAtomic(file, value) {
+  const dir = path.dirname(file);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const body = `${JSON.stringify(value, null, 2)}\n`;
+  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
+  await writeFile(tmp, body, { encoding: "utf8", mode: 0o600 });
+  try {
+    await rename(tmp, file);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err;
+  }
+  return value;
+}
+
+/** 读 JSON 文件；不存在 / 损坏 / 形状不对 → null。永不抛。 */
+async function readJsonMaybe(file) {
+  let raw;
+  try {
+    raw = await readFile(file, "utf8");
+  } catch {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  return parsed;
 }
 
 /** 只挑已知字段做类型归一；其余字段原样保留，不做断言。 */
@@ -114,4 +188,343 @@ export async function updateConfig(patch) {
   const next = normalize(merged);
   await writeConfig(next);
   return next;
+}
+
+/* ------------------------------------------------------------------ *
+ * 主机清单（TASK-V2-B §2.2）
+ *
+ * 落盘字段与卡片给的结构一致；但 **config.json 里永远不写密码 / 私钥正文 /
+ * passphrase**，那些只进 secrets.json 的密文。`hasSecret` 在读取时按「密文能不能
+ * 解密」现算：换机器 / 密钥文件丢了 / 密文被改过一个字节，都只表现为 false，
+ * 不抛错、不崩服务。
+ * ------------------------------------------------------------------ */
+
+/** 生成 `h-1a2b3c` 形式的 id。 */
+function newHostId() {
+  return `h-${crypto.randomBytes(3).toString("hex")}`;
+}
+
+/** 去掉任何凭据字段，只留可展示的元数据。 */
+function projectHost(host) {
+  const clean = {
+    id: host.id,
+    name: host.name,
+    host: host.host,
+    port: host.port,
+    username: host.username,
+    authType: host.authType,
+    hasSecret: host.hasSecret === true,
+    createdAt: host.createdAt || null,
+    lastConnectedAt: host.lastConnectedAt || null,
+  };
+  if (typeof host.privateKeyPath === "string" && host.privateKeyPath.length > 0) {
+    clean.privateKeyPath = host.privateKeyPath;
+  }
+  if (host.hasInlineKey === true) clean.hasInlineKey = true;
+  return clean;
+}
+
+async function readHostsRaw() {
+  const { config } = await readConfig();
+  const hosts = Array.isArray(config.hosts) ? config.hosts : [];
+  return hosts.filter((h) => h && typeof h === "object" && typeof h.id === "string");
+}
+
+async function writeHostsRaw(hosts) {
+  const { config } = await readConfig();
+  const next = { ...config, hosts };
+  await writeConfig(next);
+  return hosts;
+}
+
+/**
+ * 主机清单（可展示形态）。`hasSecret` 来自「能不能真的解出密文」。
+ * @returns {Promise<Array<object>>}
+ */
+export async function listHosts() {
+  const hosts = await readHostsRaw();
+  const secrets = await readSecrets();
+  return hosts.map((host) =>
+    projectHost({ ...host, hasSecret: secrets.ok && secrets.byId.has(host.id) }),
+  );
+}
+
+/** 单条主机（可展示形态）；不存在返回 null。 */
+export async function getHostRecord(id) {
+  const hosts = await readHostsRaw();
+  const host = hosts.find((h) => h.id === id);
+  if (!host) return null;
+  const secrets = await readSecrets();
+  return projectHost({ ...host, hasSecret: secrets.ok && secrets.byId.has(id) });
+}
+
+/**
+ * 新增一条主机（元数据）。凭据请随后调用 saveSecret(host.id, …)。
+ * @param {object} input 已通过 HTTP 层 zod 校验
+ * @returns {Promise<object>} 可展示形态的主机
+ */
+export async function addHost(input) {
+  const hosts = await readHostsRaw();
+  const host = {
+    id: newHostId(),
+    name: input.name,
+    host: input.host,
+    port: input.port,
+    username: input.username,
+    authType: input.authType,
+    hasSecret: false,
+    createdAt: new Date().toISOString(),
+    lastConnectedAt: null,
+  };
+  if (input.authType === "privateKey") {
+    if (typeof input.privateKeyPath === "string" && input.privateKeyPath.length > 0) {
+      host.privateKeyPath = input.privateKeyPath;
+    } else {
+      host.hasInlineKey = true;
+    }
+  }
+  hosts.push(host);
+  await writeHostsRaw(hosts);
+  return projectHost(host);
+}
+
+/**
+ * 改一条主机的元数据。只合并 patch 里出现过的字段；id/createdAt 不可改。
+ * @returns {Promise<object|null>} 改完后的可展示形态；主机不存在返回 null
+ */
+export async function updateHost(id, patch) {
+  const hosts = await readHostsRaw();
+  const index = hosts.findIndex((h) => h.id === id);
+  if (index === -1) return null;
+  const current = { ...hosts[index] };
+  if (patch && typeof patch === "object") {
+    for (const field of ["name", "host", "port", "username", "authType", "privateKeyPath"]) {
+      if (patch[field] === undefined) continue;
+      current[field] = patch[field];
+    }
+    // 认证方式切换时清掉另一套的痕迹，避免「密码主机还带 privateKeyPath」。
+    if (patch.authType === "password") {
+      delete current.privateKeyPath;
+      delete current.hasInlineKey;
+    } else if (patch.authType === "privateKey") {
+      if (typeof patch.privateKeyPath === "string" && patch.privateKeyPath.length > 0) {
+        current.privateKeyPath = patch.privateKeyPath;
+        delete current.hasInlineKey;
+      }
+    }
+    if (patch.hasInlineKey === true && current.authType === "privateKey") {
+      current.hasInlineKey = true;
+      delete current.privateKeyPath;
+    }
+  }
+  hosts[index] = current;
+  await writeHostsRaw(hosts);
+  return projectHost(current);
+}
+
+/**
+ * 删一条主机（元数据 + 凭据 + known_hosts 那条）。
+ * @returns {Promise<object|null>} 被删掉的主机；不存在返回 null
+ */
+export async function removeHost(id) {
+  const hosts = await readHostsRaw();
+  const index = hosts.findIndex((h) => h.id === id);
+  if (index === -1) return null;
+  const [removed] = hosts.splice(index, 1);
+  await writeHostsRaw(hosts);
+  await deleteSecret(id);
+  if (removed && typeof removed.host === "string") {
+    await forgetKnownHost(removed.host, removed.port);
+  }
+  return projectHost(removed);
+}
+
+/** 连接成功后盖一个 lastConnectedAt。 */
+export async function touchHost(id) {
+  const hosts = await readHostsRaw();
+  const index = hosts.findIndex((h) => h.id === id);
+  if (index === -1) return false;
+  hosts[index] = { ...hosts[index], lastConnectedAt: new Date().toISOString() };
+  await writeHostsRaw(hosts);
+  return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * 凭据：AES-256-GCM + 独立密钥文件
+ * ------------------------------------------------------------------ */
+
+async function readKeyRaw() {
+  let buffer;
+  try {
+    buffer = await readFile(secretsKeyPath());
+  } catch {
+    return null;
+  }
+  if (!Buffer.isBuffer(buffer) || buffer.length !== 32) return null;
+  return buffer;
+}
+
+/** 写凭据时才建密钥；解密路径绝不「顺手重建」（重建等于永久丢掉旧密文）。 */
+async function getOrCreateKey() {
+  const existing = await readKeyRaw();
+  if (existing) return existing;
+  const key = crypto.randomBytes(32);
+  const dir = stateDir();
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeFile(secretsKeyPath(), key, { mode: 0o600 });
+  return key;
+}
+
+function encryptWith(key, plaintext) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const data = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  return {
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    data: data.toString("base64"),
+  };
+}
+
+function decryptWith(key, entry) {
+  try {
+    const iv = Buffer.from(String(entry.iv), "base64");
+    const tag = Buffer.from(String(entry.tag), "base64");
+    const data = Buffer.from(String(entry.data), "base64");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    const plain = Buffer.concat([decipher.update(data), decipher.final()]);
+    return plain.toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 读全部凭据并解密。
+ *
+ * `ok:false` 的四种情况（都不抛错，只表现为「凭据丢失」）：
+ * key 文件不存在 / key 长度不对 / secrets.json 损坏 / 某条密文解不开。
+ *
+ * @returns {Promise<{ok:boolean, reason:string|null, byId:Map<string,object>}>}
+ */
+export async function readSecrets() {
+  const key = await readKeyRaw();
+  if (!key) return { ok: false, reason: "key-missing", byId: new Map() };
+  const file = await readJsonMaybe(secretsPath());
+  if (!file) {
+    // 文件不存在 = 还没存过任何凭据，这不算「坏」；存在但读不出来才算。
+    const exists = await readFile(secretsPath(), "utf8").then(
+      () => true,
+      () => false,
+    );
+    return exists
+      ? { ok: false, reason: "corrupt", byId: new Map() }
+      : { ok: true, reason: null, byId: new Map() };
+  }
+  const entries = file.entries && typeof file.entries === "object" ? file.entries : {};
+  const byId = new Map();
+  for (const [id, entry] of Object.entries(entries)) {
+    if (!entry || typeof entry !== "object") continue;
+    const plain = decryptWith(key, entry);
+    if (typeof plain !== "string") continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(plain);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    byId.set(id, parsed);
+  }
+  return { ok: true, reason: null, byId };
+}
+
+/**
+ * 存一条主机的凭据。只接受 whitelist 里的三个字段，空串视为「没给」。
+ * @param {string} hostId
+ * @param {{password?:string, privateKey?:string, passphrase?:string}} fields
+ */
+export async function saveSecret(hostId, fields) {
+  const key = await getOrCreateKey();
+  const file = (await readJsonMaybe(secretsPath())) || { version: 1, entries: {} };
+  const entries = file.entries && typeof file.entries === "object" ? { ...file.entries } : {};
+  const payload = {};
+  for (const field of ["password", "privateKey", "passphrase"]) {
+    const value = fields ? fields[field] : undefined;
+    if (typeof value === "string" && value.length > 0) payload[field] = value;
+  }
+  if (Object.keys(payload).length === 0) return false;
+  entries[hostId] = encryptWith(key, JSON.stringify(payload));
+  await writeJsonAtomic(secretsPath(), { version: file.version || 1, entries });
+  return true;
+}
+
+/**
+ * 取一条主机的凭据（明文，只在服务端内存里用）。解不开 / 不存在 → null。
+ * @returns {Promise<{password?:string, privateKey?:string, passphrase?:string}|null>}
+ */
+export async function readSecret(hostId) {
+  const secrets = await readSecrets();
+  return secrets.byId.get(hostId) || null;
+}
+
+/** 删一条主机的凭据（文件不存在也返回 true，幂等）。 */
+export async function deleteSecret(hostId) {
+  const file = await readJsonMaybe(secretsPath());
+  if (!file) return true;
+  const entries = file.entries && typeof file.entries === "object" ? { ...file.entries } : {};
+  if (!Object.prototype.hasOwnProperty.call(entries, hostId)) return true;
+  delete entries[hostId];
+  await writeJsonAtomic(secretsPath(), { version: file.version || 1, entries });
+  return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * known_hosts.json：host:port -> {algo, fingerprint}
+ * 指纹是 ssh-keyscan 风格的 base64 摘要（`SHA256:……`），不含私密信息。
+ * ------------------------------------------------------------------ */
+
+function knownHostKey(host, port) {
+  return `${host}:${port}`;
+}
+
+/** @returns {Promise<Record<string,{algo:string,fingerprint:string}>>} */
+export async function readKnownHosts() {
+  const file = await readJsonMaybe(knownHostsPath());
+  if (!file) return {};
+  const out = {};
+  for (const [key, value] of Object.entries(file)) {
+    if (!value || typeof value !== "object") continue;
+    if (typeof value.fingerprint !== "string" || value.fingerprint.length === 0) continue;
+    out[key] = {
+      algo: typeof value.algo === "string" ? value.algo : "unknown",
+      fingerprint: value.fingerprint,
+    };
+  }
+  return out;
+}
+
+/** @returns {Promise<{algo:string,fingerprint:string}|null>} */
+export async function lookupKnownHost(host, port) {
+  const all = await readKnownHosts();
+  return all[knownHostKey(host, port)] || null;
+}
+
+/** 记下一条指纹（用户点了「信任并记住」才会走到这里）。 */
+export async function rememberKnownHost(host, port, algo, fingerprint) {
+  const all = await readKnownHosts();
+  all[knownHostKey(host, port)] = { algo: String(algo), fingerprint: String(fingerprint) };
+  await writeJsonAtomic(knownHostsPath(), all);
+  return all[knownHostKey(host, port)];
+}
+
+/** 删掉一条指纹（删主机时同步）。 */
+export async function forgetKnownHost(host, port) {
+  const all = await readKnownHosts();
+  const key = knownHostKey(host, port);
+  if (!Object.prototype.hasOwnProperty.call(all, key)) return false;
+  delete all[key];
+  await writeJsonAtomic(knownHostsPath(), all);
+  return true;
 }

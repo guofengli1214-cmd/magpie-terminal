@@ -61,9 +61,43 @@ async function sendJson(path, method, payload) {
       body && typeof body.userText === "string"
         ? body.userText
         : `本地服务返回 HTTP ${response.status}，请重试。`;
-    return { ok: false, code, userText };
+    // 把服务端附带的诊断字段（指纹之类）一并透出，前端卡片要显示新旧指纹。
+    const extra = {};
+    if (body && typeof body === "object") {
+      for (const key of ["algo", "fingerprint", "knownFingerprint", "knownAlgo"]) {
+        if (typeof body[key] === "string") extra[key] = body[key];
+      }
+    }
+    return { ok: false, code, userText, ...extra };
   }
   return { ok: true, data: body };
+}
+
+/** DELETE 没有响应体，单独走一条。 */
+async function del(path) {
+  let response;
+  try {
+    response = await fetch(path, {
+      method: "DELETE",
+      credentials: "omit",
+      headers: { accept: "application/json", "x-magpie-term-token": readToken() },
+    });
+  } catch (err) {
+    return apiError("NETWORK", `连不上本地服务：${err && err.message ? err.message : "网络错误"}`);
+  }
+  if (response.status === 204) return { ok: true, data: null };
+  let body = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  const code = body && typeof body.code === "string" ? body.code : `HTTP_${response.status}`;
+  const userText =
+    body && typeof body.userText === "string"
+      ? body.userText
+      : `本地服务返回 HTTP ${response.status}，请重试。`;
+  return { ok: false, code, userText };
 }
 
 export default {
@@ -84,5 +118,41 @@ export default {
   /** PUT /api/config：只提交已知字段；失败返回可展示错误。 */
   saveConfig(patch) {
     return sendJson("/api/config", "PUT", patch);
+  },
+
+  /* ---- 主机（TASK-V2-B §2.5） ---- */
+
+  /** GET /api/hosts -> { hosts } */
+  hosts() {
+    return getJson("/api/hosts");
+  },
+  /** POST /api/hosts -> 201 { host } */
+  createHost(payload) {
+    return sendJson("/api/hosts", "POST", payload);
+  },
+  /** PUT /api/hosts/:id */
+  updateHost(id, payload) {
+    return sendJson(`/api/hosts/${encodeURIComponent(id)}`, "PUT", payload);
+  },
+  /** DELETE /api/hosts/:id -> 204 */
+  deleteHost(id) {
+    return del(`/api/hosts/${encodeURIComponent(id)}`);
+  },
+  /** POST /api/hosts/:id/test（失败也是 200 {ok:false, code, userText}） */
+  testHost(id) {
+    return sendJson(`/api/hosts/${encodeURIComponent(id)}/test`, "POST", {});
+  },
+  /** GET /api/hosts/:id/fingerprint -> { algo, fingerprint, known } */
+  hostFingerprint(id) {
+    return getJson(`/api/hosts/${encodeURIComponent(id)}/fingerprint`);
+  },
+  /** POST /api/hosts/:id/trust -> { algo, fingerprint, known:true } */
+  trustHost(id, fingerprint) {
+    return sendJson(`/api/hosts/${encodeURIComponent(id)}/trust`, "POST", { fingerprint });
+  },
+  /** GET /api/hosts/:id/files?path=… -> { path, entries } */
+  hostFiles(id, remotePath) {
+    const query = new URLSearchParams({ path: remotePath || "." });
+    return getJson(`/api/hosts/${encodeURIComponent(id)}/files?${query.toString()}`);
   },
 };

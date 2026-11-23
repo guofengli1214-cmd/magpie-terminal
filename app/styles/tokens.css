@@ -65,6 +65,11 @@
   --term-mono: ui-monospace, Menlo, Consolas, "Cascadia Mono", monospace;
   --term-font-size: 13px;
   --term-line-height: 1.2;
+
+  /* TASK-V2-B：主机面板 / 文件树（覆盖层，不参与 .main 的 flex） */
+  --term-hosts-width: 212px;
+  --term-file-meta-width: 74px;
+  --term-panel-radius: 8px;
 }
 
 @media (prefers-color-scheme: dark) {

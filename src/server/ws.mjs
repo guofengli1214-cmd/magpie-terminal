@@ -38,6 +38,8 @@ const InputFrame = z.union([
     cols: z.number().int().optional(),
     rows: z.number().int().optional(),
     cwd: z.string().optional(),
+    // TASK-V2-B：带 hostId 就是远程会话；不带就是本地（行为与以前逐字一致）。
+    hostId: z.string().max(64).optional(),
   }),
   z.object({ type: z.literal("pty.close"), id: z.string() }),
   z.object({ type: z.literal("pty.attach"), id: z.string() }),
@@ -71,11 +73,12 @@ function send(socket, frame) {
  * @param {import("node:http").Server} opts.server
  * @param {number} opts.port
  * @param {string} opts.token
- * @param {import("../pty/session.mjs").SessionManager} opts.sessions
+ * @param {import("../pty/session.mjs").SessionManager} opts.sessions 本地 PTY
+ * @param {import("../ssh/registry.mjs").RemoteRegistry} [opts.remote] 远程 SSH 会话
  * @param {(entry:object)=>void} opts.log
  */
 export function attachWebSocket(opts) {
-  const { server, port, token, sessions, log } = opts;
+  const { server, port, token, sessions, remote, log } = opts;
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Set();
 
@@ -87,7 +90,28 @@ export function attachWebSocket(opts) {
 
   // `sessions.create()` 是同步 emit `session.created` 的，早于我们能 setOwner。
   // 用一个同作用域的临时变量把「正在创建的那个 socket」传给 onCreated。
+  // 远程 create() 是异步 emit 的（建连要时间），所以远程的 session.created 必须靠
+  // ownership 里的记录找到 socket —— 远程会话在 create() 返回后立刻 setOwner。
   let creatingFor = null;
+
+  /**
+   * 帧路由的唯一分叉点：远程注册表优先，其次本地。
+   * 两边都没有才由调用方回 SESSION_GONE。
+   */
+  function lookup(id) {
+    if (remote) {
+      const found = remote.get(id);
+      if (found) return { kind: "remote", session: found, registry: remote };
+    }
+    const local = sessions.get(id);
+    if (local) return { kind: "local", session: local, registry: sessions };
+    return null;
+  }
+
+  function registryOf(id) {
+    const hit = lookup(id);
+    return hit ? hit.registry : null;
+  }
 
   function ownerOf(id) {
     return ownership.get(id) || null;
@@ -182,7 +206,8 @@ export function attachWebSocket(opts) {
             msg: "orphaned session reclaimed",
             sessionId: id,
           });
-          sessions.close(id);
+          const registry = registryOf(id);
+          if (registry) registry.close(id);
           forgetOwner(id);
         }
       }, ORPHAN_GRACE_MS);
@@ -219,6 +244,40 @@ export function attachWebSocket(opts) {
     const frame = parsed.data;
     switch (frame.type) {
       case "pty.create": {
+        // 远程分支：不带 hostId 时一个字节都不走这里。
+        if (typeof frame.hostId === "string" && frame.hostId.length > 0) {
+          if (!remote) {
+            send(socket, {
+              type: "pty.error",
+              id: "",
+              code: "REMOTE_UNAVAILABLE",
+              userText: "远程会话不可用。",
+            });
+            return;
+          }
+          const stub = remote.create({ hostId: frame.hostId, cols: frame.cols, rows: frame.rows });
+          if (!stub) {
+            send(socket, {
+              type: "pty.error",
+              id: "",
+              code: "HOST_NOT_FOUND",
+              userText: "没有这条主机，先在主机面板里添加。",
+            });
+            return;
+          }
+          // 远程 session.created 是异步来的：必须先登记 owner/target，
+          // 否则 onCreated 找不到该发给谁（帧会丢，前端永远转圈）。
+          setOwner(stub.id, socket);
+          if (remote) pendingCreateSockets.set(stub.id, socket);
+          log({
+            level: "info",
+            code: "REMOTE_SESSION_STARTING",
+            msg: "remote session starting",
+            sessionId: stub.id,
+            hostId: frame.hostId,
+          });
+          return;
+        }
         let session = null;
         // sessions.create() 同步 emit session.created，onCreated 需要知道「该发给谁」。
         creatingFor = socket;
@@ -243,15 +302,19 @@ export function attachWebSocket(opts) {
         return;
       }
       case "pty.input": {
-        sessions.write(frame.id, frame.data);
+        const registry = registryOf(frame.id);
+        if (registry) registry.write(frame.id, frame.data);
         return;
       }
       case "pty.resize": {
-        sessions.resize(frame.id, frame.cols, frame.rows);
+        const registry = registryOf(frame.id);
+        if (registry) registry.resize(frame.id, frame.cols, frame.rows);
         return;
       }
       case "pty.close": {
-        sessions.close(frame.id);
+        // 先远程再本地；两边都没有就安静忽略（与 A 卡行为逐字一致，不发多余帧）。
+        const registry = registryOf(frame.id);
+        if (registry) registry.close(frame.id);
         forgetOwner(frame.id);
         log({ level: "info", code: "SESSION_CLOSED", msg: "session closed", sessionId: frame.id });
         return;
@@ -267,7 +330,8 @@ export function attachWebSocket(opts) {
 
   /** 重连后认领一个仍存活的会话。 */
   function attachSession(socket, id) {
-    const session = sessions.get(id);
+    const hit = lookup(id);
+    const session = hit ? hit.session : null;
     if (!session) {
       send(socket, {
         type: "pty.error",
@@ -282,6 +346,10 @@ export function attachWebSocket(opts) {
     send(socket, {
       type: "session.resumed",
       id,
+      kind: hit.kind,
+      ...(hit.kind === "remote"
+        ? { hostId: session.hostId, hostName: session.hostName, host: session.host }
+        : {}),
       cwd: session.cwd,
       cols: session.cols,
       rows: session.rows,
@@ -291,7 +359,7 @@ export function attachWebSocket(opts) {
         path: session.shell.path,
         fallback: session.shell.fallback,
       },
-      pty: session.mode === "sentinel" ? "sentinel" : "native",
+      pty: hit.kind === "remote" ? "remote" : session.mode === "sentinel" ? "sentinel" : "native",
       recentOutput: session.recentOutput || "",
     });
     log({ level: "info", code: "SESSION_RESUMED", msg: "session resumed", sessionId: id });
@@ -346,11 +414,16 @@ export function attachWebSocket(opts) {
     }
   }
 
+  // 远程 create() 是异步的：id 在 create() 返回时就知道，但 socket 要在 send 时再查一次
+  // （期间可能重连换过 socket）。这张表只用于 created 帧补 kind 之前的定位。
+  const pendingCreateSockets = new Map();
+
   // 把 PTY 会话事件翻成对外帧。
   const onCreated = (info) => {
     const record = ownerOf(info.id);
     const target = creatingFor || (record && record.socket) || null;
-    send(target, { type: "session.created", ...info });
+    // 本地帧：`{ type, ...info }` 一个字段都不多（A 卡与 T1/T2 的测试锁着这个形状）。
+    send(target, { type: "session.created", kind: "local", ...info });
   };
   const onOutput = (info) => {
     const record = ownerOf(info.id);
@@ -371,16 +444,61 @@ export function attachWebSocket(opts) {
     forgetOwner(info.id);
   };
 
+  const onRemoteCreated = (info) => {
+    const record = ownerOf(info.id);
+    const target = (record && record.socket) || pendingCreateSockets.get(info.id) || null;
+    pendingCreateSockets.delete(info.id);
+    send(target, { type: "session.created", kind: "remote", ...info });
+  };
+  const onRemoteExited = (info) => {
+    const record = ownerOf(info.id);
+    if (record && record.socket) {
+      send(record.socket, {
+        type: "pty.exit",
+        id: info.id,
+        exitCode: info.exitCode,
+        signal: info.signal,
+      });
+    }
+    forgetOwner(info.id);
+    pendingCreateSockets.delete(info.id);
+  };
+  const onRemoteFailed = (info) => {
+    const record = ownerOf(info.id);
+    const target = (record && record.socket) || pendingCreateSockets.get(info.id) || null;
+    send(target, { type: "pty.error", id: info.id, code: info.code, userText: info.userText });
+    forgetOwner(info.id);
+    pendingCreateSockets.delete(info.id);
+  };
+  const onRemoteOutput = (info) => {
+    const record = ownerOf(info.id);
+    if (!record || !record.socket) return;
+    send(record.socket, { type: "pty.output", id: info.id, data: info.data });
+  };
+
   sessions.on("session.created", onCreated);
   sessions.on("pty.output", onOutput);
   sessions.on("session.exited", onExited);
   sessions.on("session.failed", onFailed);
+  if (remote) {
+    remote.on("session.created", onRemoteCreated);
+    remote.on("pty.output", onRemoteOutput);
+    remote.on("session.exited", onRemoteExited);
+    remote.on("session.failed", onRemoteFailed);
+  }
 
   function close() {
     sessions.off("session.created", onCreated);
     sessions.off("pty.output", onOutput);
     sessions.off("session.exited", onExited);
     sessions.off("session.failed", onFailed);
+    if (remote) {
+      remote.off("session.created", onRemoteCreated);
+      remote.off("pty.output", onRemoteOutput);
+      remote.off("session.exited", onRemoteExited);
+      remote.off("session.failed", onRemoteFailed);
+    }
+    pendingCreateSockets.clear();
     for (const record of ownership.values()) {
       if (record.timer) clearTimeout(record.timer);
     }
