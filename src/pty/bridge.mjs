@@ -71,6 +71,26 @@ function envBashCandidates() {
   return list;
 }
 
+/**
+ * 沿「环境变量候选 → PATH 候选」的顺序找第一个可用的 MSYS bash。
+ * TASK-V4-F：抽出来给 `shells.mjs` 复用（行为与 detectShell 逐字一致）。
+ *
+ * @returns {{path:string, version:string}|null}
+ */
+export function findMsysBash() {
+  for (const candidate of envBashCandidates()) {
+    if (!isValidMsysBash(candidate)) continue;
+    const out = runVersion(candidate, ["--version"]) || "";
+    return { path: candidate, version: parseBashVersion(out) };
+  }
+  for (const candidate of pathCandidatesForBash()) {
+    if (!isValidMsysBash(candidate)) continue;
+    const out = runVersion(candidate, ["--version"]) || "";
+    return { path: candidate, version: parseBashVersion(out) };
+  }
+  return null;
+}
+
 function powerShellInfo() {
   const win = process.env.SystemRoot || "C:\\Windows";
   const path = `${win}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
@@ -110,32 +130,16 @@ export function detectShell(options = {}) {
     return shellCache;
   }
 
-  for (const candidate of envBashCandidates()) {
-    if (isValidMsysBash(candidate)) {
-      const out = runVersion(candidate, ["--version"]) || "";
-      shellCache = {
-        name: "bash",
-        version: parseBashVersion(out),
-        path: candidate,
-        fallback: false,
-        args: [],
-      };
-      return shellCache;
-    }
-  }
-
-  for (const candidate of pathCandidatesForBash()) {
-    if (isValidMsysBash(candidate)) {
-      const out = runVersion(candidate, ["--version"]) || "";
-      shellCache = {
-        name: "bash",
-        version: parseBashVersion(out),
-        path: candidate,
-        fallback: false,
-        args: [],
-      };
-      return shellCache;
-    }
+  const bash = findMsysBash();
+  if (bash) {
+    shellCache = {
+      name: "bash",
+      version: bash.version,
+      path: bash.path,
+      fallback: false,
+      args: [],
+    };
+    return shellCache;
   }
 
   shellCache = powerShellInfo();

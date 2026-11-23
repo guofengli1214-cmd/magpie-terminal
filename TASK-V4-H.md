@@ -147,6 +147,8 @@ depends_on: [TASK-V4-E]
 # 8. 执行约束
 
 - 独立新会话；不改 `docs/mockups-v4/`、`app/vendor/`；不新增依赖（`ai` 与 `@ai-sdk/openai-compatible` 已在用）。
+- 附带一处 V4-E 遗留的视觉小修：`app/styles/components.css` 里 `[data-role="model-select"]` 的 `max-width: 58%` 会在 384px 抽屉下把模型名截成「…Command C…」。改成 `max-width: 66%` 或保留尾部（provider）的省略方式，目标是整行可见或省略在 `(latest)` 之后，且不与发送按钮重叠。
+- 附带一处 V4-F 遗留的标签标题小修：`app/ui/tab-bar.js:29` 的 `titleFor()` 用 `String(session.shell).split(" ")[0]`，导致「PowerShell 5」与「PowerShell 7」两个标签都显示 `PowerShell: 41807`，用户分不清。改成能区分的短名（例如 `PS5` / `PS7`，或 `PowerShell 5` / `PowerShell 7` 全名），bash 保持 `bash`。只改 titleFor，不改会话字段。
 - 会话文件绝不进 git（`stateDir()` 在 `~/.config/magpie-terminal/`，本来就不在仓库里；不要改成仓库内路径）。
 - 探针自带 `process.exit` + 60s 硬超时；不许留后台进程。
 - 不 commit。交付标「待验收」。

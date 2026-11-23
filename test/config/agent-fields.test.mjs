@@ -99,15 +99,23 @@ const MODELS = [{ id: "commandcode/deepseek/deepseek-v4.1-flash", magpie_label: 
 
 // ------------------------------------------------------------ store 层：默认值
 
-test("DEFAULT_CONFIG 带上 agent 四字段的默认值（PROTOCOL §1）", () => {
+test("DEFAULT_CONFIG 带上 agent 四字段 + defaultShell 的默认值（PROTOCOL §1 / TASK-V4-F）", () => {
   assert.equal(DEFAULT_CONFIG.autonomy, "balanced");
   assert.deepEqual(DEFAULT_CONFIG.allowlist, []);
   assert.equal(DEFAULT_CONFIG.reviewModel, null);
   assert.equal(DEFAULT_CONFIG.basePrompt, null);
+  assert.equal(DEFAULT_CONFIG.defaultShell, null);
 });
 
-test("KNOWN_FIELDS 是 model + 四个 agent 字段", () => {
-  assert.deepEqual([...KNOWN_FIELDS], ["model", "autonomy", "allowlist", "reviewModel", "basePrompt"]);
+test("KNOWN_FIELDS 是 model + 四个 agent 字段 + defaultShell", () => {
+  assert.deepEqual([...KNOWN_FIELDS], [
+    "model",
+    "autonomy",
+    "allowlist",
+    "reviewModel",
+    "basePrompt",
+    "defaultShell",
+  ]);
 });
 
 test("publicConfig 把缺失字段补成默认值", () => {
@@ -117,6 +125,7 @@ test("publicConfig 把缺失字段补成默认值", () => {
   assert.deepEqual(view.allowlist, []);
   assert.equal(view.reviewModel, null);
   assert.equal(view.basePrompt, null);
+  assert.equal(view.defaultShell, null);
 });
 
 // ------------------------------------------------------------ store 层：往返

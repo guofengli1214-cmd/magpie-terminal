@@ -39,6 +39,7 @@ import { isStaticPath, readAppFile, sendStatic } from "./static.mjs";
 import { attachWebSocket } from "./ws.mjs";
 import { detectShell, loadNodePty, LOCKED_NODE_PTY_VERSION } from "../pty/bridge.mjs";
 import { SessionManager } from "../pty/session.mjs";
+import { detectShells, resolveShellById, resolveShellForRequest } from "../pty/shells.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = "0.1.0";
@@ -326,7 +327,9 @@ export async function startServer(options = {}) {
   const shell = detectShell({ shell: options.shell });
   const ptyLoad = loadNodePty();
   const mode = ptyLoad.ok ? "native" : "sentinel";
-  const sessions = new SessionManager({ shell, ptyLoad, mode });
+  // TASK-V4-F：默认 shell 仍由 detectShell() 决定（/api/health 不变）；
+  // 每个会话可以用 shellId 现取自己的 shell。
+  const sessions = new SessionManager({ shell, ptyLoad, mode, resolveShell: resolveShellById });
   sessions.ensureExitHook();
 
   // 远程 SSH 会话层（TASK-V2-B）。与本地 SessionManager 并存，互不影响。
@@ -790,6 +793,35 @@ export async function startServer(options = {}) {
         return;
       }
 
+      // GET /api/shells：本机可用 shell 清单（TASK-V4-F §5.3）。
+      // 与 /api/models 同级：走同一道 token 门，不做例外。
+      if (req.method === "GET" && pathname === "/api/shells") {
+        const { config } = await readConfig();
+        const view = publicConfig(config);
+        const shells = detectShells().map((item) => ({
+          id: item.id,
+          name: item.name,
+          version: item.version,
+          path: item.path,
+          available: Boolean(item.available),
+        }));
+        const fallbackDefault = resolveShellForRequest({ defaultShell: null });
+        writeJson(
+          res,
+          200,
+          {
+            shells,
+            // 实际生效的默认（config.defaultShell 不可用时也回真实生效的那个）。
+            default: (view.defaultShell && resolveShellById(view.defaultShell) ? view.defaultShell : null) ||
+              (fallbackDefault.ok && fallbackDefault.shell ? fallbackDefault.shell.id : null),
+            configured: view.defaultShell,
+          },
+          {},
+          cors,
+        );
+        return;
+      }
+
       // GET /api/config：只暴露已知字段；文件缺失/损坏时返回默认值。
       if (req.method === "GET" && pathname === "/api/config") {
         const { config } = await readConfig();
@@ -804,6 +836,7 @@ export async function startServer(options = {}) {
             allowlist: view.allowlist,
             reviewModel: view.reviewModel,
             basePrompt: view.basePrompt,
+            defaultShell: view.defaultShell,
           },
           {},
           cors,
@@ -911,6 +944,7 @@ export async function startServer(options = {}) {
             allowlist: view.allowlist,
             reviewModel: view.reviewModel,
             basePrompt: view.basePrompt,
+            defaultShell: view.defaultShell,
           },
           {},
           cors,
@@ -975,7 +1009,23 @@ export async function startServer(options = {}) {
     server.listen({ host, port });
   });
 
-  wsHandle = attachWebSocket({ server, port, token, sessions, remote, log });
+  wsHandle = attachWebSocket({
+    server,
+    port,
+    token,
+    sessions,
+    remote,
+    log,
+    // TASK-V4-F §5.2：每次 pty.create 现读 config.defaultShell（不重启就生效）。
+    getDefaultShell: async () => {
+      try {
+        const { config } = await readConfig();
+        return config && typeof config.defaultShell === "string" ? config.defaultShell : null;
+      } catch {
+        return null;
+      }
+    },
+  });
 
   const handle = {
     port,
@@ -993,6 +1043,13 @@ export async function startServer(options = {}) {
       wsHandle.close();
       try {
         remote.killAllSync();
+      } catch {
+        // 忽略。
+      }
+      // TASK-V4-F-FIX1：本地 PTY 也必须杀。node-pty 的原生句柄不随 server.close()
+      // 释放，漏杀会让 Node 进程永远退不出去（`node --test` 挂死的根因）。
+      try {
+        sessions.killAllSync();
       } catch {
         // 忽略。
       }

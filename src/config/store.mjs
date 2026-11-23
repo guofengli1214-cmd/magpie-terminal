@@ -16,6 +16,7 @@ import crypto from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { SHELL_IDS } from "../pty/shells.mjs";
 
 /** 环境变量覆盖路径：只给测试用，生产不设。 */
 export const CONFIG_PATH_ENV = "MAGPIE_TERMINAL_CONFIG_PATH";
@@ -26,6 +27,9 @@ export const CONFIG_PATH_ENV = "MAGPIE_TERMINAL_CONFIG_PATH";
  * TASK-V3-D 按 docs/PROTOCOL-AGENT.md §1 从 `["model"]` 扩成五项：
  * `hosts` 仍然不从这里走，它由下面的 `addHost/updateHost/removeHost` 直接
  * 读-改-写整份配置（未知字段本来就是原样保留的，所以两者不会互相踩）。
+ *
+ * TASK-V4-F §5.3 又加了 `defaultShell`（本机默认 shell 的 id，取值见
+ * `src/pty/shells.mjs` 的 `SHELL_IDS`）。
  */
 export const KNOWN_FIELDS = Object.freeze([
   "model",
@@ -33,6 +37,7 @@ export const KNOWN_FIELDS = Object.freeze([
   "allowlist",
   "reviewModel",
   "basePrompt",
+  "defaultShell",
 ]);
 
 /** 自动执行档位（PROTOCOL §1）。 */
@@ -62,6 +67,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   allowlist: [],
   reviewModel: null,
   basePrompt: null,
+  // null = 不指定，按 MAGPIE_TERMINAL_SHELL → 自动探测（git bash 优先）。
+  defaultShell: null,
 });
 
 /**
@@ -235,6 +242,17 @@ export function validateConfigPatch(patch) {
     }
   }
 
+  // TASK-V4-F §5.3：只接受 SHELL_IDS 里的值或 null（null = 回到自动探测）。
+  if (has("defaultShell")) {
+    const value = patch.defaultShell;
+    if (value !== null && !SHELL_IDS.includes(value)) {
+      return {
+        code: "INVALID_SHELL",
+        userText: `defaultShell 必须是 ${SHELL_IDS.join(" / ")} 之一或 null。`,
+      };
+    }
+  }
+
   return null;
 }
 
@@ -267,6 +285,9 @@ function normalize(config) {
     next.basePrompt = null;
   }
 
+  // defaultShell：非法值一律回落 null（不抛错，下次再选就好）。
+  if (!SHELL_IDS.includes(next.defaultShell)) next.defaultShell = null;
+
   return next;
 }
 
@@ -280,6 +301,7 @@ export function publicConfig(config) {
     allowlist: normalized.allowlist,
     reviewModel: normalized.reviewModel,
     basePrompt: normalized.basePrompt,
+    defaultShell: normalized.defaultShell,
   };
 }
 

@@ -49,9 +49,17 @@ test("configPath 默认落在 ~/.config/magpie-terminal/config.json", () => {
   }
 });
 
-// TASK-V3-D §6.2 授权本卡把这条期望从 ["model"] 扩到新字段列表。
-test("KNOWN_FIELDS = model + agent 四字段（TASK-V3-D §6.2）", () => {
-  assert.deepEqual([...KNOWN_FIELDS], ["model", "autonomy", "allowlist", "reviewModel", "basePrompt"]);
+// TASK-V3-D §6.2 授权本卡把这条期望从 ["model"] 扩到新字段列表；
+// TASK-V4-F §5.3 又授权加上 defaultShell（本机默认 shell）。
+test("KNOWN_FIELDS = model + agent 四字段 + defaultShell（TASK-V4-F §5.3）", () => {
+  assert.deepEqual([...KNOWN_FIELDS], [
+    "model",
+    "autonomy",
+    "allowlist",
+    "reviewModel",
+    "basePrompt",
+    "defaultShell",
+  ]);
 });
 
 test("文件不存在 → 默认值，不抛错（ok:false reason:missing）", async () => {

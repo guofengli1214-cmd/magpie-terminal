@@ -52,13 +52,18 @@ function refreshPid(session) {
  */
 export class SessionManager extends EventEmitter {
   /**
-   * @param {{shell: object, ptyLoad: {ok:boolean, module:any, version:string|null}, mode?: "native"|"sentinel"}} opts
+   * @param {{shell?: object, ptyLoad: {ok:boolean, module:any, version:string|null}, mode?: "native"|"sentinel", resolveShell?: (id:string)=>object|null}} opts
+   *
+   * TASK-V4-F：`shell` 仍是「默认 shell」（不带 shellId 时用它），
+   * `resolveShell(shellId)` 可选，用来按 id 现取每个会话自己的 shell。
    */
   constructor(opts) {
     super();
     this.shell = opts.shell;
     this.ptyLoad = opts.ptyLoad;
     this.mode = opts.mode || (opts.ptyLoad.ok ? "native" : "sentinel");
+    // 不传就退回「只认默认 shell」（保持旧构造签名可用）。
+    this.resolveShell = typeof opts.resolveShell === "function" ? opts.resolveShell : () => null;
     this.sessions = new Map();
     this.exitHookInstalled = false;
   }
@@ -75,15 +80,17 @@ export class SessionManager extends EventEmitter {
     return this.sessions.size;
   }
 
-  create({ cols, rows, cwd } = {}) {
+  create({ cols, rows, cwd, shell } = {}) {
     const id = crypto.randomUUID();
     const startCols = clampInt(cols, MIN_COLS, MAX_COLS) || DEFAULT_COLS;
     const startRows = clampInt(rows, MIN_ROWS, MAX_ROWS) || DEFAULT_ROWS;
     const workdir = cwd && typeof cwd === "string" ? cwd : os.homedir();
+    // 每会话自己的 shell（TASK-V4-F）：`shell` 参数优先，其次默认。
+    const useShell = shell && typeof shell === "object" ? shell : this.shell;
 
     const session = {
       id,
-      shell: this.shell,
+      shell: useShell,
       cwd: workdir,
       cols: startCols,
       rows: startRows,
@@ -108,7 +115,7 @@ export class SessionManager extends EventEmitter {
 
     try {
       if (this.mode === "native") {
-        const handle = spawnPty(this.ptyLoad.module, this.shell, {
+        const handle = spawnPty(this.ptyLoad.module, useShell, {
           cols: startCols,
           rows: startRows,
           cwd: workdir,
@@ -124,7 +131,7 @@ export class SessionManager extends EventEmitter {
         handle.onExit(({ exitCode, signal }) => this.handleExit(session, exitCode, signal));
       } else {
         const handle = createSentinelSession({
-          shell: this.shell,
+          shell: useShell,
           cwd: workdir,
           onData: (data) => this.handleOutput(session, data),
           onExit: ({ exitCode, signal }) => this.handleExit(session, exitCode, signal),
@@ -141,7 +148,7 @@ export class SessionManager extends EventEmitter {
       this.emit("session.failed", {
         id,
         code: "PTY_SPAWN_FAILED",
-        userText: `无法启动终端：${this.shell.name}（${err && err.message ? err.message : "spawn failed"}）`,
+        userText: `无法启动终端：${useShell.name}（${err && err.message ? err.message : "spawn failed"}）`,
         err,
       });
       return null;
@@ -151,10 +158,10 @@ export class SessionManager extends EventEmitter {
     this.emit("session.created", {
       id,
       shell: {
-        name: this.shell.name,
-        version: this.shell.version,
-        path: this.shell.path,
-        fallback: this.shell.fallback,
+        name: useShell.name,
+        version: useShell.version,
+        path: useShell.path,
+        fallback: useShell.fallback,
       },
       cwd: session.cwd,
       cols: session.cols,
@@ -214,7 +221,7 @@ export class SessionManager extends EventEmitter {
     this.emit("session.failed", {
       id: session.id,
       code: "PTY_SPAWN_FAILED",
-      userText: `无法启动终端：${this.shell.name}`,
+      userText: `无法启动终端：${session.shell ? session.shell.name : this.shell.name}`,
       err,
     });
   }

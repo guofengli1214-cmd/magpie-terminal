@@ -119,6 +119,10 @@ export default {
   saveConfig(patch) {
     return sendJson("/api/config", "PUT", patch);
   },
+  /** GET /api/shells：本机可用 shell 清单 + 生效的默认 shell（TASK-V4-F）。 */
+  shells() {
+    return getJson("/api/shells");
+  },
 
   /* ---- 主机（TASK-V2-B §2.5） ---- */
 

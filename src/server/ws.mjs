@@ -17,6 +17,7 @@ import { askGateway } from "../ai/gateway.mjs";
 import { createAgentRunner } from "../ai/agent.mjs";
 import { createCommandRunner } from "../ai/runner.mjs";
 import { readConfig } from "../config/store.mjs";
+import { resolveShellForRequest } from "../pty/shells.mjs";
 
 export const WS_PATH = "/ws";
 
@@ -43,6 +44,10 @@ const InputFrame = z.union([
     cwd: z.string().optional(),
     // TASK-V2-B：带 hostId 就是远程会话；不带就是本地（行为与以前逐字一致）。
     hostId: z.string().max(64).optional(),
+    // TASK-V4-F：本机会话可以指定 shell（bash / pwsh / powershell）。
+    // 刻意不用 z.enum：非法值要回 session.failed + PTY_UNKNOWN_SHELL，
+    // 而不是被 zod 打成 BAD_FRAME（卡片 §5.2 / AC4）。合法性在 resolveShellForRequest 里判。
+    shellId: z.string().max(32).optional(),
   }),
   z.object({ type: z.literal("pty.close"), id: z.string() }),
   z.object({ type: z.literal("pty.attach"), id: z.string() }),
@@ -108,6 +113,8 @@ function send(socket, frame) {
  */
 export function attachWebSocket(opts) {
   const { server, port, token, sessions, remote, log } = opts;
+  // TASK-V4-F：config.defaultShell 现取（PUT /api/config 后不重启也生效）。
+  const getDefaultShell = typeof opts.getDefaultShell === "function" ? opts.getDefaultShell : () => null;
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Set();
 
@@ -131,6 +138,9 @@ export function attachWebSocket(opts) {
   // 远程 create() 是异步 emit 的（建连要时间），所以远程的 session.created 必须靠
   // ownership 里的记录找到 socket —— 远程会话在 create() 返回后立刻 setOwner。
   let creatingFor = null;
+
+  // 每个 socket 一个串行队列（TASK-V4-F）：handleMessage 要 await 配置读取。
+  const queues = new Map();
 
   /**
    * 帧路由的唯一分叉点：远程注册表优先，其次本地。
@@ -225,12 +235,21 @@ export function attachWebSocket(opts) {
     });
 
     socket.on("message", (raw) => {
-      handleMessage(socket, raw);
+      // TASK-V4-F：pty.create 现在要读 config.defaultShell（异步），所以 handleMessage
+      // 变成 async；为了不把原来的「帧按到达顺序处理」语义弄丢，按 socket 串行排队。
+      const previous = queues.get(socket) || Promise.resolve();
+      const next = previous
+        .then(() => handleMessage(socket, raw))
+        .catch(() => {
+          // 单帧处理失败不能把整个 socket 的队列钉死。
+        });
+      queues.set(socket, next);
     });
   });
 
   /** socket 关闭时，它持有的所有会话转入孤儿态并起宽限定时器。 */
   function orphanOwnedBy(socket) {
+    queues.delete(socket);
     for (const [id, record] of ownership) {
       if (record.socket !== socket) continue;
       record.socket = null;
@@ -262,7 +281,7 @@ export function attachWebSocket(opts) {
     }
   }
 
-  function handleMessage(socket, raw) {
+  async function handleMessage(socket, raw) {
     let json;
     try {
       json = JSON.parse(String(raw));
@@ -321,10 +340,36 @@ export function attachWebSocket(opts) {
           return;
         }
         let session = null;
+        // 解析本次会话要用的 shell（shellId → config.defaultShell → 自动探测）。
+        const resolution = resolveShellForRequest({
+          shellId: frame.shellId,
+          defaultShell: await getDefaultShell(),
+        });
+        if (!resolution.ok) {
+          // 非法 / 不可用的 shellId：回 session.failed，不抛未捕获异常，不影响其它会话。
+          send(socket, {
+            type: "session.failed",
+            id: "",
+            code: resolution.code,
+            userText: resolution.userText,
+          });
+          log({
+            level: "warn",
+            code: resolution.code,
+            msg: "pty.create rejected: unknown shell",
+            shellId: frame.shellId,
+          });
+          return;
+        }
         // sessions.create() 同步 emit session.created，onCreated 需要知道「该发给谁」。
         creatingFor = socket;
         try {
-          session = sessions.create({ cols: frame.cols, rows: frame.rows, cwd: frame.cwd });
+          session = sessions.create({
+            cols: frame.cols,
+            rows: frame.rows,
+            cwd: frame.cwd,
+            shell: resolution.shell,
+          });
         } finally {
           creatingFor = null;
         }
@@ -540,8 +585,9 @@ export function attachWebSocket(opts) {
   };
   const onFailed = (info) => {
     const record = ownerOf(info.id);
+    const target = (record && record.socket) || creatingFor || null;
     const frame = { type: "pty.error", id: info.id, code: info.code, userText: info.userText };
-    if (record && record.socket) send(record.socket, frame);
+    send(target, frame);
     forgetOwner(info.id);
     runner.dispose(info.id);
   };

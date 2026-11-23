@@ -36,6 +36,12 @@ async function withServer(fn) {
   try {
     return await fn({ port, handle });
   } finally {
+    // TASK-V4-F-FIX1 §4：客户端 ws.close() 之后立刻 handle.close()（内部 client.terminate()）
+    // 在 Windows/node24 上会偶发 libuv 断言
+    //   `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 94`
+    // （基线老问题，服务端 4 种改法都拦不住）。这里给正在关闭的 socket 留一点
+    // 收尾时间，再关服务。只是测试侧时序缓解，不改产品语义。
+    await new Promise((resolve) => setTimeout(resolve, 80));
     await handle.close();
     if (previous === undefined) delete process.env.MAGPIE_TERMINAL_CONFIG_PATH;
     else process.env.MAGPIE_TERMINAL_CONFIG_PATH = previous;

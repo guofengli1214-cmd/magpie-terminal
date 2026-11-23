@@ -86,7 +86,9 @@ function parseQuery() {
 const options = parseQuery();
 if (options.lang) document.documentElement.lang = options.lang;
 
-function createTab() {
+function createTab(frameOptions) {
+  const shellId =
+    frameOptions && typeof frameOptions.shellId === "string" ? frameOptions.shellId : null;
   if (store.getSnapshot().sessions.length >= constants.TAB_LIMIT) {
     showBanner(`标签数量已达上限（${constants.TAB_LIMIT}）。关掉一个再新建。`);
     setTimeout(hideBanner, 5000);
@@ -95,7 +97,10 @@ function createTab() {
   // 一次就以终端真实尺寸建 PTY：服务端不会按 80×24 建完再被 resize 触发 SIGWINCH，
   // bash 少一次重画提示符（V4-E 第 6 步）。
   const size = terminalView ? terminalView.proposeDimensions() : { cols: 80, rows: 24 };
-  const sent = wsClient.send({ type: "pty.create", cols: size.cols, rows: size.rows });
+  const frame = { type: "pty.create", cols: size.cols, rows: size.rows };
+  // TASK-V4-F：只有显式指定时才带 shellId（不带 = 保持旧行为）。
+  if (shellId) frame.shellId = shellId;
+  const sent = wsClient.send(frame);
   if (!sent) {
     statusBar.setHealth(health);
     showBanner("新建标签没发出去：连接还没就绪。点状态栏「重连」后重试。");
@@ -537,7 +542,21 @@ function init() {
   tabBar = createTabBar({
     host: tabbarHost,
     store,
-    onCreate: createTab,
+    onCreate: (options) => createTab(options),
+    // 「+」菜单里的主机分组：连主机走同一个建连函数（不复制逻辑）。
+    onConnectHost: (host) => createRemoteTab(host),
+    onOpenHosts: () => {
+      if (hostsPanel) hostsPanel.open();
+    },
+    // 菜单数据：本机 shell 清单 + 已配置主机。任一边读不到都不抦整个菜单。
+    loadMenu: async () => {
+      const [shells, hosts] = await Promise.all([api.shells(), api.hosts()]);
+      return {
+        shells: shells.ok && shells.data && Array.isArray(shells.data.shells) ? shells.data.shells : [],
+        defaultShell: shells.ok && shells.data ? shells.data.default : null,
+        hosts: hosts.ok && hosts.data && Array.isArray(hosts.data.hosts) ? hosts.data.hosts : [],
+      };
+    },
     onClose: (id) => {
       wsClient.send({ type: "pty.close", id });
       terminalView.dispose(id);
@@ -587,6 +606,8 @@ function init() {
     anchor: tabbarHost,
     bottomAnchors: [statusHost],
     onCreateSession: (host) => createRemoteTab(host),
+    // TASK-V4-F：主机面板顶部的「本机」条目点击 = 用当前默认 shell 新开一个标签。
+    onCreateLocal: (shellId) => createTab(shellId ? { shellId } : null),
     onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
     // 双击文件 → 只把路径填进当前远程终端输入，不执行（让用户自己确认再回车）。
     onPickFile: (remotePath) => {
