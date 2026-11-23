@@ -4,7 +4,6 @@ export default function createStatusBar(elements) {
   const host = elements.host;
   const store = elements.store;
   const onRetry = typeof elements.onRetry === "function" ? elements.onRetry : () => {};
-  const onToggleAi = typeof elements.onToggleAi === "function" ? elements.onToggleAi : () => {};
 
   let healthInfo = null;
   let waitingSince = 0;
@@ -130,13 +129,6 @@ export default function createStatusBar(elements) {
     retry.textContent = snapshot.connection === "closed" ? "重连" : "立即重连";
     retry.addEventListener("click", () => onRetry());
     host.appendChild(retry);
-
-    const aiToggle = document.createElement("button");
-    aiToggle.type = "button";
-    aiToggle.setAttribute("data-role", "status-ai-toggle");
-    aiToggle.textContent = snapshot.aiOpen === true ? "收起 AI" : "AI 助手";
-    aiToggle.addEventListener("click", () => onToggleAi());
-    host.appendChild(aiToggle);
   }
 
   return {

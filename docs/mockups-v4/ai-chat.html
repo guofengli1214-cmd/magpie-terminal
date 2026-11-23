@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>magpie V4 · AI 会话细节</title>
+<link rel="stylesheet" href="assets/v4.css">
+<script src="assets/v4.js" defer></script>
+</head>
+<body>
+<div class="spec">
+
+  <header class="spec-head">
+    <div class="spec-title">
+      <h1>AI 会话 · 交互细节</h1>
+      <p>覆盖式抽屉 / 480px 放大 1.25× / 会话跟随终端标签</p>
+    </div>
+    <div class="spec-spacer"></div>
+    <div class="seg" role="tablist" aria-label="会话状态">
+      <button data-view="chat" aria-selected="true" role="tab">会话中</button>
+      <button data-view="empty" aria-selected="false" role="tab">空状态</button>
+      <button data-view="sessions" aria-selected="false" role="tab">会话列表</button>
+      <button data-view="settings" aria-selected="false" role="tab">设置 · 审阅</button>
+    </div>
+    <span class="spec-stamp">V4 · 2026-11-23</span>
+  </header>
+
+  <div class="spec-body">
+
+    <div class="spec-left">
+
+      <!-- ============================================================ -->
+      <!-- 会话中                                                       -->
+      <!-- ============================================================ -->
+      <div data-spec-panel="chat" style="height:100%">
+        <div class="board col">
+          <div class="board-head">
+            <span class="b-dots"><i></i><i></i><i></i></span>
+            <span class="b-title">AI 抽屉 · 384 → 480px</span>
+            <span class="zoom-tag" style="margin-left:auto">覆盖终端 · 列数不变</span>
+          </div>
+
+          <aside class="drawer-zoom" aria-label="AI 会话">
+            <div class="ai-head">
+              <button class="sess" data-menu-toggle="menu-sessions" aria-expanded="false" title="切换 bash: 41807 的会话">
+                <span class="sess-mark"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                <span class="sess-main">
+                  <span class="sess-top">
+                    <span class="sess-title trunc">bash: 41807</span>
+                    <span class="sess-sep" aria-hidden="true">·</span>
+                    <span class="sess-count">3 个会话</span>
+                  </span>
+                  <span class="sess-sub trunc">修复 PTY 尺寸同步 · 12 条消息</span>
+                </span>
+                <svg class="ico ico-12" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+              </button>
+              <button class="icon-btn" title="新建会话（bash: 41807）">
+                <svg class="ico ico-14" aria-hidden="true"><use href="#i-plus"/></svg>
+              </button>
+
+              <div class="menu sess-menu" id="menu-sessions" style="top:46px;left:8px;right:8px;min-width:0" hidden>
+                <div class="menu-label">
+                  <svg class="ico" aria-hidden="true"><use href="#i-history"/></svg>
+                  会话 · 按终端分组
+                </div>
+
+                <div class="sess-group" data-current="true">
+                  <button class="sess-group-head" aria-expanded="true">
+                    <svg class="ico ico-12 gr-chev" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                    <span class="gr-ico"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                    <span class="gr-main"><b>bash: 41807</b><small>本机 · bash · 41807@local</small></span>
+                    <span class="gr-count">3</span>
+                  </button>
+                  <div class="sess-items">
+                    <button class="menu-item sess-item" data-active="true">
+                      <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg></span>
+                      <span class="mi-main"><b>修复 PTY 尺寸同步</b><small>今天 17:08 · 12 条 · 当前</small></span>
+                      <span class="mi-right"><span class="src-badge k-local" title="本机 · bash"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">bash</span></span></span>
+                    </button>
+                    <button class="menu-item sess-item">
+                      <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                      <span class="mi-main"><b>文件面板实时索引</b><small>今天 15:42 · 8 条</small></span>
+                      <span class="mi-right"><span class="src-badge k-local" title="本机 · bash"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">bash</span></span></span>
+                    </button>
+                    <button class="menu-item sess-item">
+                      <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                      <span class="mi-main"><b>审批流超时处理</b><small>昨天 21:10 · 23 条</small></span>
+                      <span class="mi-right"><span class="src-badge k-local" title="本机 · bash"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">bash</span></span></span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="sess-group">
+                  <button class="sess-group-head" aria-expanded="false">
+                    <svg class="ico ico-12 gr-chev" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                    <span class="gr-ico"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                    <span class="gr-main"><b>pwsh 7: 25812</b><small>本机 · PowerShell 7</small></span>
+                    <span class="gr-count">1</span>
+                  </button>
+                </div>
+
+                <div class="sess-group">
+                  <button class="sess-group-head" aria-expanded="false">
+                    <svg class="ico ico-12 gr-chev" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                    <span class="gr-ico"><svg class="ico" aria-hidden="true"><use href="#i-server"/></svg></span>
+                    <span class="gr-main"><b>局域网linux</b><small>192.168.10.24 · 密钥</small></span>
+                    <span class="gr-count">2</span>
+                  </button>
+                </div>
+
+                <div class="menu-note">
+                  只有当前终端那组默认展开，其余点开再看。切标签时抽屉回到那个终端最近的会话。
+                </div>
+              </div>
+            </div>
+
+            <div class="ai-ctx">
+              <svg class="ico ico-12" aria-hidden="true"><use href="#i-terminal"/></svg>
+              <b>本机</b>
+              <span>·</span>
+              <span>bash</span>
+              <span>·</span>
+              <span class="ctx-path">~/magpie-terminal</span>
+              <button style="margin-left:auto" title="选择上下文">
+                <svg class="ico ico-12" aria-hidden="true"><use href="#i-folder-open"/></svg>
+                2 个文件
+              </button>
+            </div>
+
+            <div class="ai-msgs">
+              <div class="msg-user">抽屉一开，终端就多一行空回车，提示符还重复了一次。</div>
+
+              <div class="msg-ai">
+                <div class="ai-name"><svg class="ico" aria-hidden="true"><use href="#i-sparkle"/></svg> Magpie · 17:08</div>
+                <div class="think">
+                  <button class="think-btn" data-acc="think-1" aria-expanded="false">
+                    <svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg>
+                    思考了 4 秒
+                  </button>
+                  <div class="think-body" id="think-1" hidden>
+                    <p>提示符重复与抽屉开合同时发生。先查 PTY 的 cols 是否被改变，再看 SIGWINCH 之后 bash 是否重画 PS1。</p>
+                    <p>V3 用 grid 压缩终端，宽度从 1fr 变成 1fr 减 360px，必然触发 resize。</p>
+                  </div>
+                </div>
+                <div class="ai-text">不是 bash 打印了两次，是抽屉挤压终端触发了 PTY resize，bash 收到 SIGWINCH 后重画提示符。改成覆盖式抽屉后，终端列数不再变化。</div>
+
+                <div class="tool">
+                  <div class="tool-head">
+                    <span class="tool-ico"><svg class="ico ico-14" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                    <span class="tool-name">run_command</span>
+                    <span class="tool-sep">·</span>
+                    <span class="tool-sub">1 个文件变更</span>
+                    <span class="tool-right"><span class="dot dot-ok" title="成功"></span><span class="tool-time">0.3s</span></span>
+                  </div>
+                  <code class="tool-cmd"><span class="pfx">$ </span>git diff --stat app/styles/layout.css</code>
+                  <div class="tool-out" id="out-1"> app/styles/layout.css | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)</div>
+                  <div class="tool-foot" data-acc="out-1" aria-expanded="true">
+                    <svg class="ico" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                    收起输出
+                  </div>
+                </div>
+              </div>
+
+              <div class="msg-user">顺手把 test/fixtures 下的旧日志清掉。</div>
+
+              <div class="msg-ai">
+                <div class="ai-name"><svg class="ico" aria-hidden="true"><use href="#i-sparkle"/></svg> Magpie · 17:09</div>
+                <div class="ai-text">找到 3 个 30 天前的 <code>.log</code>，共 1.8 MB。删除后不可恢复，先等你确认。</div>
+
+                <div class="approval" data-review="caution">
+                  <div class="approval-head">
+                    <svg class="ico" aria-hidden="true"><use href="#i-alert-triangle"/></svg>
+                    需要你批准：删除 3 个文件
+                  </div>
+                  <code class="approval-cmd">rm -f test/fixtures/*.log</code>
+                  <p class="approval-why">只匹配 <code>.log</code>，不会动同目录的 <code>.json</code> 快照。确认后立即执行，删除后不可恢复。</p>
+                  <p class="approval-effect" hidden><b>执行后会发生什么：</b>test/fixtures 下 3 个 30 天前的 .log 被删除，释放 1.8 MB；同目录 4 个 .json 快照不受影响。</p>
+                  <div class="approval-acts">
+                    <button class="btn btn-sm btn-danger" data-approve="one">执行这一条</button>
+                    <button class="btn btn-sm" data-approve="all" disabled title="只有 1 条待审批">全部执行</button>
+                    <button class="btn btn-sm btn-quiet skip" data-approve="skip">跳过</button>
+                  </div>
+                  <span class="review-mark" data-review="caution" tabindex="0" role="img" aria-label="审核 AI 判定：caution，需要注意">
+                    <svg class="ico" aria-hidden="true"><use href="#i-shield-alert"/></svg>
+                    <span class="review-tip" role="tooltip">
+                      <b>执行后会发生什么</b>
+                      <p>test/fixtures 下 3 个 30 天前的 .log 被删除，释放 1.8 MB。同目录的 4 个 .json 快照、以及 .gitignore 里的 fixture 规则都不受影响。</p>
+                      <div class="rt-sep"></div>
+                      <b>为什么需要你确认</b>
+                      <p>审核判定为 caution 且不可逆：rm 不进回收站，删完没法从终端恢复。平衡档只自动放行只读或幂等的命令，所以这一条留给你拍板。</p>
+                      <div class="rt-foot">审核 AI · Claude Sonnet 4.5 · risk=caution · reversible=false · 0.9s</div>
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div class="composer">
+              <div class="composer-box">
+                <div class="composer-grip" data-composer-grip title="拖动调整输入框高度（最高到抽屉高度的 40%）"></div>
+                <textarea rows="1" placeholder="继续追问，或描述下一步…" aria-label="发送给 AI 的消息"></textarea>
+                <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+              </div>
+              <div class="composer-bar">
+                <span class="safety"><svg class="ico" aria-hidden="true"><use href="#i-lock"/></svg> 写操作需审批</span>
+                <button class="model-text" data-menu-toggle="menu-model" aria-expanded="false" title="切换模型：DeepSeek V4.1">
+                  DeepSeek V4.1
+                  <svg class="ico" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                </button>
+                <div class="menu" id="menu-model" style="bottom:40px;right:8px;left:auto;min-width:236px" hidden>
+                  <div class="menu-label">模型</div>
+                  <button class="menu-item"><span class="mi-main"><b>DeepSeek V4.1</b><small>128K 上下文 · 当前</small></span><span class="mi-right"><svg class="ico ico-12" aria-hidden="true"><use href="#i-check"/></svg></span></button>
+                  <button class="menu-item"><span class="mi-main"><b>Claude Sonnet 4.5</b><small>200K 上下文</small></span></button>
+                  <button class="menu-item"><span class="mi-main"><b>GPT-5.1</b><small>128K 上下文</small></span></button>
+                </div>
+                <button class="send" data-send title="发送 (Enter)">
+                  <svg class="ico" aria-hidden="true"><use href="#i-arrow-up"/></svg>
+                </button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- 空会话                                                       -->
+      <!-- ============================================================ -->
+      <div data-spec-panel="empty" hidden style="height:100%">
+        <div class="board col">
+          <div class="board-head">
+            <span class="b-dots"><i></i><i></i><i></i></span>
+            <span class="b-title">同一个抽屉 · ssh: prod-web-01</span>
+            <span class="zoom-tag" style="margin-left:auto">空状态 · 未创建</span>
+          </div>
+
+          <aside class="drawer-zoom" aria-label="空 AI 会话">
+            <div class="ai-head">
+              <div class="sess" role="button" aria-disabled="true" title="这个终端还没有会话">
+                <span class="sess-mark"><svg class="ico" aria-hidden="true"><use href="#i-server"/></svg></span>
+                <span class="sess-main">
+                  <span class="sess-top">
+                    <span class="sess-title trunc">ssh: prod-web-01</span>
+                    <span class="sess-sep" aria-hidden="true">·</span>
+                    <span class="sess-count">0 个会话</span>
+                  </span>
+                  <span class="sess-sub trunc">还没有会话</span>
+                </span>
+                <svg class="ico ico-12" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+              </div>
+              <button class="icon-btn" disabled title="发送第一条消息时创建会话">
+                <svg class="ico ico-14" aria-hidden="true"><use href="#i-plus"/></svg>
+              </button>
+            </div>
+
+            <div class="ai-ctx">
+              <svg class="ico ico-12" aria-hidden="true"><use href="#i-server"/></svg>
+              <b>prod-web-01</b>
+              <span>·</span>
+              <span>ssh</span>
+              <span>·</span>
+              <span class="ctx-path">/srv/app</span>
+              <button style="margin-left:auto" title="选择上下文">
+                <svg class="ico ico-12" aria-hidden="true"><use href="#i-folder-open"/></svg>
+                未选择
+              </button>
+            </div>
+
+            <div class="ai-msgs">
+              <div class="empty-chat">
+                <div class="ec-ico"><svg class="ico" aria-hidden="true"><use href="#i-sparkle"/></svg></div>
+                <h4>ssh: prod-web-01 还没有会话</h4>
+                <p>每条终端标签有自己的会话组。发送第一条消息时创建，<br>切回 bash: 41807 会恢复它最近的会话。</p>
+                <div class="chip-list">
+                  <button class="chip">
+                    <svg class="ico ico-12" aria-hidden="true"><use href="#i-search"/></svg>
+                    看这次部署为什么失败
+                  </button>
+                  <button class="chip">
+                    <svg class="ico ico-12" aria-hidden="true"><use href="#i-terminal"/></svg>
+                    对比 staging 与 prod 的 nginx 配置
+                  </button>
+                  <button class="chip">
+                    <svg class="ico ico-12" aria-hidden="true"><use href="#i-file-text"/></svg>
+                    查最近 30 分钟的 error 日志
+                  </button>
+                </div>
+                <div class="empty-note" style="margin-top:12px">
+                  <svg class="ico ico-12" aria-hidden="true"><use href="#i-lock"/></svg>
+                  会话属于 ssh: prod-web-01，在列表里单独成组。发首条消息前不写记录。
+                </div>
+              </div>
+            </div>
+
+            <div class="composer">
+              <div class="composer-box">
+                <div class="composer-grip" data-composer-grip title="拖动调整输入框高度（最高到抽屉高度的 40%）"></div>
+                <textarea rows="1" placeholder="问这台机器上的事…" aria-label="发送给 AI 的消息"></textarea>
+                <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+              </div>
+              <div class="composer-bar">
+                <span class="bar-note"><svg class="ico" aria-hidden="true"><use href="#i-server"/></svg> 发送后创建会话 · 仅限 ssh: prod-web-01</span>
+                <button class="model-text" data-menu-toggle="menu-model-empty" aria-expanded="false" title="切换模型：DeepSeek V4.1">
+                  DeepSeek V4.1
+                  <svg class="ico" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                </button>
+                <div class="menu" id="menu-model-empty" style="bottom:40px;right:8px;left:auto;min-width:236px" hidden>
+                  <div class="menu-label">模型</div>
+                  <button class="menu-item"><span class="mi-main"><b>DeepSeek V4.1</b><small>128K 上下文 · 当前</small></span><span class="mi-right"><svg class="ico ico-12" aria-hidden="true"><use href="#i-check"/></svg></span></button>
+                  <button class="menu-item"><span class="mi-main"><b>Claude Sonnet 4.5</b><small>200K 上下文</small></span></button>
+                  <button class="menu-item"><span class="mi-main"><b>GPT-5.1</b><small>128K 上下文</small></span></button>
+                </div>
+                <button class="send" data-send disabled title="输入后发送，发送即创建会话">
+                  <svg class="ico" aria-hidden="true"><use href="#i-arrow-up"/></svg>
+                </button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- 会话列表：分组 + 来源徽标                                     -->
+      <!-- ============================================================ -->
+      <div data-spec-panel="sessions" hidden style="height:100%">
+        <div class="board col">
+          <div class="board-head">
+            <span class="b-dots"><i></i><i></i><i></i></span>
+            <span class="b-title">会话下拉 · 384 → 480px</span>
+            <span class="zoom-tag" style="margin-left:auto">按终端分组 · 当前组置顶</span>
+          </div>
+
+          <aside class="drawer-zoom" aria-label="会话列表">
+            <div class="ai-head">
+              <button class="sess" aria-expanded="true" title="切换 bash: 41807 的会话（本图为展开态）">
+                <span class="sess-mark"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                <span class="sess-main">
+                  <span class="sess-top">
+                    <span class="sess-title trunc">bash: 41807</span>
+                    <span class="sess-sep" aria-hidden="true">·</span>
+                    <span class="sess-count">3 个会话</span>
+                  </span>
+                  <span class="sess-sub trunc">修复 PTY 尺寸同步 · 12 条消息</span>
+                </span>
+                <svg class="ico ico-12" aria-hidden="true"><use href="#i-chevron-up"/></svg>
+              </button>
+              <button class="icon-btn" title="新建会话（bash: 41807）">
+                <svg class="ico ico-14" aria-hidden="true"><use href="#i-plus"/></svg>
+              </button>
+
+              <div class="menu sess-menu" id="menu-sessions-spec" data-static-open style="top:46px;left:8px;right:8px;min-width:0">
+                <div class="menu-label">
+                  <svg class="ico" aria-hidden="true"><use href="#i-history"/></svg>
+                  会话 · 按终端分组
+                </div>
+
+                <div class="sess-group" data-current="true">
+                  <button class="sess-group-head" aria-expanded="true">
+                    <svg class="ico ico-12 gr-chev" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                    <span class="gr-ico"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                    <span class="gr-main"><b>bash: 41807</b><small>本机 · bash · 41807@local</small></span>
+                    <span class="gr-count">3</span>
+                  </button>
+                  <div class="sess-items">
+                    <button class="menu-item sess-item" data-active="true">
+                      <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg></span>
+                      <span class="mi-main"><b>修复 PTY 尺寸同步</b><small>今天 17:08 · 12 条 · 当前</small></span>
+                      <span class="mi-right"><span class="src-badge k-local" title="本机 · bash"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">bash</span></span></span>
+                    </button>
+                    <button class="menu-item sess-item">
+                      <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                      <span class="mi-main"><b>文件面板实时索引</b><small>今天 15:42 · 8 条</small></span>
+                      <span class="mi-right"><span class="src-badge k-local" title="本机 · bash"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">bash</span></span></span>
+                    </button>
+                    <button class="menu-item sess-item">
+                      <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                      <span class="mi-main"><b>审批流超时处理</b><small>昨天 21:10 · 23 条</small></span>
+                      <span class="mi-right"><span class="src-badge k-local" title="本机 · bash"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">bash</span></span></span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="sess-group">
+                  <button class="sess-group-head" aria-expanded="false">
+                    <svg class="ico ico-12 gr-chev" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                    <span class="gr-ico"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                    <span class="gr-main"><b>pwsh 7: 25812</b><small>本机 · PowerShell 7</small></span>
+                    <span class="gr-count">2</span>
+                  </button>
+                  <div class="sess-items" hidden>
+                    <button class="menu-item sess-item">
+                      <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                      <span class="mi-main"><b>构建脚本迁移</b><small>今天 14:20 · 6 条</small></span>
+                      <span class="mi-right"><span class="src-badge k-local" title="本机 · pwsh 7"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">pwsh 7</span></span></span>
+                    </button>
+                    <button class="menu-item sess-item">
+                      <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                      <span class="mi-main"><b>PowerShell 5 兼容性</b><small>昨天 10:05 · 15 条</small></span>
+                      <span class="mi-right"><span class="src-badge k-local" title="本机 · pwsh 5.1"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">pwsh 5.1</span></span></span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="sess-group">
+                  <button class="sess-group-head" aria-expanded="false">
+                    <svg class="ico ico-12 gr-chev" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                    <span class="gr-ico"><svg class="ico" aria-hidden="true"><use href="#i-server"/></svg></span>
+                    <span class="gr-main"><b>局域网linux</b><small>192.168.10.24 · 密钥</small></span>
+                    <span class="gr-count">2</span>
+                  </button>
+                  <div class="sess-items" hidden>
+                    <button class="menu-item sess-item">
+                      <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                      <span class="mi-main"><b>nginx 日志轮转</b><small>昨天 22:31 · 9 条</small></span>
+                      <span class="mi-right"><span class="src-badge k-ssh" title="ssh 局域网linux · 192.168.10.24"><span class="sb-t">局域网linux</span><span class="addr">192.168.10.24</span></span></span>
+                    </button>
+                    <button class="menu-item sess-item">
+                      <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                      <span class="mi-main"><b>磁盘占用排查</b><small>11-21 16:02 · 7 条</small></span>
+                      <span class="mi-right"><span class="src-badge k-ssh" title="ssh 局域网linux · 192.168.10.24"><span class="sb-t">局域网linux</span><span class="addr">192.168.10.24</span></span></span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="menu-note">
+                  当前终端那组置顶展开，其余组折叠。切换终端标签时，抽屉自动落到该终端最近的会话。
+                </div>
+              </div>
+            </div>
+
+            <div class="ai-ctx">
+              <svg class="ico ico-12" aria-hidden="true"><use href="#i-terminal"/></svg>
+              <b>本机</b>
+              <span>·</span>
+              <span>bash</span>
+              <span>·</span>
+              <span class="ctx-path">~/magpie-terminal</span>
+            </div>
+
+            <div class="ai-msgs">
+              <div class="msg-user">抽屉一开，终端就多一行空回车，提示符还重复了一次。</div>
+
+              <div class="msg-ai">
+                <div class="ai-name"><svg class="ico" aria-hidden="true"><use href="#i-sparkle"/></svg> Magpie · 17:08</div>
+                <div class="ai-text">不是 bash 打印了两次，是抽屉挤压终端触发了 PTY resize，bash 收到 SIGWINCH 后重画提示符。改成覆盖式抽屉后终端列数不再变化。</div>
+              </div>
+            </div>
+
+            <div class="composer">
+              <div class="composer-box">
+                <div class="composer-grip" data-composer-grip title="拖动调整输入框高度（最高到抽屉高度的 40%）"></div>
+                <textarea rows="1" placeholder="问这台机器上的事…" aria-label="发送给 AI 的消息"></textarea>
+                <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+              </div>
+              <div class="composer-bar">
+                <span class="bar-note"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg> 会话只能挂在终端上</span>
+                <button class="model-text" data-menu-toggle="menu-model-sessions" aria-expanded="false" title="切换模型：DeepSeek V4.1">
+                  DeepSeek V4.1
+                  <svg class="ico" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                </button>
+                <div class="menu" id="menu-model-sessions" style="bottom:40px;right:8px;left:auto;min-width:236px" hidden>
+                  <div class="menu-label">模型</div>
+                  <button class="menu-item"><span class="mi-main"><b>DeepSeek V4.1</b><small>128K 上下文 · 当前</small></span><span class="mi-right"><svg class="ico ico-12" aria-hidden="true"><use href="#i-check"/></svg></span></button>
+                  <button class="menu-item"><span class="mi-main"><b>Claude Sonnet 4.5</b><small>200K 上下文</small></span></button>
+                  <button class="menu-item"><span class="mi-main"><b>GPT-5.1</b><small>128K 上下文</small></span></button>
+                </div>
+                <button class="send" data-send title="发送">
+                  <svg class="ico" aria-hidden="true"><use href="#i-arrow-up"/></svg>
+                </button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- 设置：档位 / 审阅 / 确认卡                                     -->
+      <!-- ============================================================ -->
+      <div data-spec-panel="settings" hidden style="height:100%">
+        <div class="board col">
+          <div class="board-head">
+            <span class="b-dots"><i></i><i></i><i></i></span>
+            <span class="b-title">设置 · 档位 / 审阅 / 确认卡</span>
+            <span class="zoom-tag" style="margin-left:auto">审阅是固定一步，不能关</span>
+          </div>
+
+          <div class="drawer-zoom" style="display:flex;flex-direction:column">
+            <div class="ai-head">
+              <span class="sess" role="button" aria-disabled="true" style="cursor:default">
+                <span class="sess-mark"><svg class="ico" aria-hidden="true"><use href="#i-settings"/></svg></span>
+                <span class="sess-main">
+                  <span class="sess-top">
+                    <span class="sess-title">设置</span>
+                    <span class="sess-sep" aria-hidden="true">·</span>
+                    <span class="sess-count">4 项</span>
+                                      </span>
+                                      <span class="sess-sub trunc">自动执行档位 · 审阅模型 · 确认卡 · 审核角标</span>
+                </span>
+              </span>
+            </div>
+
+            <div class="settings-body">
+              <!-- 1. 档位 -->
+              <div class="set-sec">
+                <h3><svg class="ico" aria-hidden="true"><use href="#i-zap"/></svg> 自动执行档位</h3>
+                <p class="set-desc">档位只决定「审阅结论怎么用」，不决定要不要审。每一档都会先过审核 AI。</p>
+                <div class="set-radio" role="radiogroup" aria-label="自动执行档位">
+                  <button class="set-opt" role="radio" aria-checked="false">
+                    <span class="opt-dot"></span><b>严格</b>
+                    <small>只自动放行内置只读命令，其余全部要你确认</small>
+                  </button>
+                  <button class="set-opt" role="radio" aria-checked="true">
+                    <span class="opt-dot"></span><b>平衡</b>
+                    <small>审阅判定只读、或幂等可重复执行的命令才自动放行</small>
+                  </button>
+                  <button class="set-opt" role="radio" aria-checked="false">
+                    <span class="opt-dot"></span><b>宽松</b>
+                    <small>可撤销的写操作也放行；danger 一律要你确认</small>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 2. 审阅模型：只有模型选择，没有「关闭审阅」 -->
+              <div class="set-sec">
+                <h3><svg class="ico" aria-hidden="true"><use href="#i-shield-check"/></svg> 审阅模型</h3>
+                <p class="set-desc">复审每条将被执行的命令，返回 risk / effect / confirmWhy / reversible。</p>
+                <button class="set-model" data-menu-toggle="menu-review-model" aria-expanded="false" style="width:100%;text-align:left">
+                  <span class="sm-label">模型</span>
+                  <span class="sm-value">Claude Sonnet 4.5</span>
+                  <svg class="ico" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                </button>
+                <div class="menu" id="menu-review-model" style="bottom:auto;top:0;left:0;right:0;min-width:0" hidden>
+                  <div class="menu-label">审阅模型 · 只能选模型</div>
+                  <button class="menu-item"><span class="mi-main"><b>Claude Sonnet 4.5</b><small>判定最稳 · 当前</small></span><span class="mi-right"><svg class="ico ico-12" aria-hidden="true"><use href="#i-check"/></svg></span></button>
+                  <button class="menu-item"><span class="mi-main"><b>DeepSeek V4.1</b><small>更快，约 0.6s</small></span></button>
+                  <button class="menu-item"><span class="mi-main"><b>GPT-5.1</b><small>备用</small></span></button>
+                </div>
+                <div class="set-note">
+                  <svg class="ico" aria-hidden="true"><use href="#i-lock"/></svg>
+                  <span><b>任何档位下都会先由审核 AI 评审，档位只决定评审结果怎么用。</b>这里没有「关闭审阅」：审阅是执行链里固定的一步。</span>
+                </div>
+                <div class="set-note">
+                  <svg class="ico" aria-hidden="true"><use href="#i-alert-triangle"/></svg>
+                  <span>审阅模型不可用（超时 8s / 报错）时，<b>所有命令都要求你确认</b>；降级不会跳过审阅，也不会放行任何命令。</span>
+                </div>
+              </div>
+
+              <!-- 3. 确认卡 -->
+              <div class="set-sec">
+                <h3><svg class="ico" aria-hidden="true"><use href="#i-panel"/></svg> 确认卡</h3>
+                <div class="set-row">
+                  <span class="set-main">
+                    <b>在确认卡上常显 AI 的效果评估</b>
+                    <small>默认关（图中是开启态）。开启后确认卡在按钮上方多一行「执行后会发生什么：……」，不悬停也能读到影响。</small>
+                  </span>
+                  <button class="switch" role="switch" aria-checked="false" data-toggle="effect" aria-label="在确认卡上常显 AI 的效果评估"></button>
+                </div>
+              </div>
+
+              <!-- 4. 角标四态 -->
+              <div class="set-sec">
+                <h3><svg class="ico" aria-hidden="true"><use href="#i-eye"/></svg> 确认卡右下角的审核角标</h3>
+                <p class="set-desc">颜色即结论，悬停（或键盘聚焦）展开两段：执行后会发生什么 / 为什么需要你确认。</p>
+                <div class="review-states">
+                  <div class="review-state">
+                    <span class="review-mark" data-review="ok"><svg class="ico" aria-hidden="true"><use href="#i-shield-check"/></svg></span>
+                    <span><b>绿 · 已审可放行</b><br>risk=safe，按档位可能自动执行</span>
+                  </div>
+                  <div class="review-state">
+                    <span class="review-mark" data-review="caution"><svg class="ico" aria-hidden="true"><use href="#i-shield-alert"/></svg></span>
+                    <span><b>琥珀 · 需要注意</b><br>有改动、可撤销性或范围存疑</span>
+                  </div>
+                  <div class="review-state">
+                    <span class="review-mark" data-review="danger"><svg class="ico" aria-hidden="true"><use href="#i-shield-x"/></svg></span>
+                    <span><b>红 · 危险</b><br>不可逆或影响面大，一律确认</span>
+                  </div>
+                  <div class="review-state">
+                    <span class="review-mark" data-review="none"><svg class="ico" aria-hidden="true"><use href="#i-shield-none"/></svg></span>
+                    <span><b>灰 · 未审阅</b><br>模型不可用 / 超时 / 字段缺失</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- 说明                                                           -->
+    <!-- ============================================================== -->
+    <div class="spec-right">
+      <div class="notes">
+        <div class="note">
+          <span class="note-n">1</span>
+          <div>
+            <h3>会话属于终端，不属于整个应用</h3>
+            <p>标题固定显示当前终端 <code>bash: 41807</code> 与会话总数，副标题才是当前会话名。下拉把会话按终端分组：当前组置顶并展开，其他组折叠可点开。每条会话右侧有来源徽标，本机读 shell（bash / cmd / pwsh 7 / pwsh 5 / WSL），远程读主机名加地址（<code>局域网linux · 192.168.10.24</code>）。</p>
+          </div>
+        </div>
+        <div class="note">
+          <span class="note-n">2</span>
+          <div>
+            <h3>切标签就是切会话，没有额外动作</h3>
+            <p>切到 <code>prod-web-01</code> 时，抽屉自动恢复该终端最近一次会话。没有会话就停在空状态，欢迎语和三条例题代替空白。分组列表里能看见其他终端的会话，但点它们不会跨终端跳转：徽标是只读的来源标注。</p>
+          </div>
+        </div>
+        <div class="note">
+          <span class="note-n">3</span>
+          <div>
+            <h3>空状态不是错误，是未创建</h3>
+            <p>不预建空会话，不写空记录。用户发第一条消息时才创建，会话列表因此没有无标题条目，也不会出现「0 条消息」的死会话。归属字段随首条消息一起落盘。</p>
+          </div>
+        </div>
+        <div class="note">
+          <span class="note-n">4</span>
+          <div>
+            <h3>审阅永远先跑，档位只决定怎么用结论</h3>
+            <p><b>严格 / 平衡 / 宽松三档都会先把命令交给审核 AI</b>，没有任何一档跳过审阅。档位只决定结论怎么用：严格只放行内置只读，平衡只放行审阅判定只读或幂等的，宽松连可撤销的写操作也放行。审阅模型不可用时退化成「所有命令都要求你确认」，而不是跳过审阅。结论落在确认卡右下角的角标上，悬停展开「执行后会发生什么 / 为什么需要你确认」两段。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="spec-h">终端 / 会话归属</div>
+      <div class="scope-board">
+        <div class="scope-head">
+          <span>终端标签</span>
+          <span>最近的会话</span>
+          <span style="justify-self:end">数量</span>
+        </div>
+        <div class="scope-row" data-current="true">
+          <span class="scope-term">
+            <span class="st-ico"><svg class="ico ico-12" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+            <span><b>bash: 41807</b><br><small>本机 · 当前</small></span>
+          </span>
+          <span class="scope-sess">修复 PTY 尺寸同步</span>
+          <span class="scope-count">3</span>
+        </div>
+        <div class="scope-row">
+          <span class="scope-term">
+            <span class="st-ico"><svg class="ico ico-12" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+            <span><b>pwsh: 25812</b><br><small>本机 · PowerShell 7</small></span>
+          </span>
+          <span class="scope-sess">构建脚本迁移</span>
+          <span class="scope-count">1</span>
+        </div>
+        <div class="scope-row">
+          <span class="scope-term">
+            <span class="st-ico"><svg class="ico ico-12" aria-hidden="true"><use href="#i-server"/></svg></span>
+            <span><b>ssh: prod-web-01</b><br><small>deploy@10.0.4.21</small></span>
+          </span>
+          <span class="scope-sess empty">还没有会话，发首条消息创建</span>
+          <span class="scope-count zero">0</span>
+        </div>
+        <div class="scope-foot">
+          <svg class="ico ico-12" aria-hidden="true"><use href="#i-check"/></svg>
+          切标签时按终端找最近会话，找不到就进空状态
+        </div>
+      </div>
+
+      <div class="spec-h">来源徽标 · 会话记录字段</div>
+      <div class="field-card">
+        <div class="fc-row">
+          <span class="fc-k">本机</span>
+          <span class="badge-row">
+            <span class="src-badge k-local"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">bash</span></span>
+            <span class="src-badge k-local"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">cmd</span></span>
+            <span class="src-badge k-local"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">pwsh 7</span></span>
+            <span class="src-badge k-local"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">pwsh 5</span></span>
+            <span class="src-badge k-local"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">WSL</span></span>
+          </span>
+        </div>
+        <div class="fc-row">
+          <span class="fc-k">远程</span>
+          <span class="badge-row">
+            <span class="src-badge k-ssh"><svg class="ico" aria-hidden="true"><use href="#i-server"/></svg><span class="sb-t">局域网linux</span><span class="addr">192.168.10.24</span></span>
+            <span class="src-badge k-ssh"><svg class="ico" aria-hidden="true"><use href="#i-server"/></svg><span class="sb-t">prod-web-01</span><span class="addr">10.0.4.21</span></span>
+          </span>
+        </div>
+        <div class="field-table">
+          <div class="ft-row"><span class="ft-k">terminalKind</span><span class="ft-v"><b>"local" | "ssh"</b>：决定徽标用终端图标还是服务器图标</span></div>
+          <div class="ft-row"><span class="ft-k">shell</span><span class="ft-v"><b>"bash" | "cmd" | "pwsh" | "pwsh5" | "wsl"</b>：仅本机，徽标直接读它</span></div>
+          <div class="ft-row"><span class="ft-k">hostId</span><span class="ft-v"><b>string | null</b>：远程指向 hosts 表，改名不改会话</span></div>
+          <div class="ft-row"><span class="ft-k">hostName</span><span class="ft-v"><b>string</b>：快照显示名，主机被删后仍可读</span></div>
+          <div class="ft-row"><span class="ft-k">hostAddr</span><span class="ft-v"><b>string</b>：快照地址，如 192.168.10.24</span></div>
+          <div class="ft-row"><span class="ft-k">ptySessionId</span><span class="ft-v"><b>string</b>：挂到这个 PTY 上，关了标签会话仍可续</span></div>
+        </div>
+      </div>
+
+      <div class="spec-h">审阅输出 · 扩展字段（risk / effect / confirmWhy / reversible）</div>
+      <div class="field-card">
+        <div class="field-table">
+          <div class="ft-row"><span class="ft-k">risk</span><span class="ft-v"><b>"safe" | "caution" | "danger"</b>：沿用原有判定档</span></div>
+          <div class="ft-row"><span class="ft-k">effect</span><span class="ft-v"><b>string</b>：大白话描述执行后到底会发生什么变化（删了哪几个文件、释放多少、哪些不受影响）</span></div>
+          <div class="ft-row"><span class="ft-k">confirmWhy</span><span class="ft-v"><b>string</b>：为什么这一步需要用户拍板；auto 可以为空</span></div>
+          <div class="ft-row"><span class="ft-k">reversible</span><span class="ft-v"><b>boolean</b>：用户能不能自己轻松恢复（删除未备份文件 = false）</span></div>
+        </div>
+      </div>
+
+      <div class="spec-h">工具状态</div>
+      <div class="state-cards">
+        <div class="state-card">
+          <div class="sc-title"><span class="dot dot-run"></span>执行中</div>
+          <div class="tool">
+            <div class="tool-head">
+              <span class="tool-ico"><svg class="ico ico-14" aria-hidden="true"><use href="#i-zap"/></svg></span>
+              <span class="tool-name">apply_patch</span>
+              <span class="tool-right"><span class="tool-time">写入中</span></span>
+            </div>
+            <code class="tool-cmd">app/ui/chat.js</code>
+            <div class="tool-out">等待文件系统确认…</div>
+          </div>
+        </div>
+
+        <div class="state-card">
+          <div class="sc-title"><span class="dot dot-err"></span>失败</div>
+          <div class="tool">
+            <div class="tool-head">
+              <span class="tool-ico"><svg class="ico ico-14" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+              <span class="tool-name">npm test</span>
+              <span class="tool-right"><span class="tool-time">退出 1</span></span>
+            </div>
+            <code class="tool-cmd">vitest run test/pty-session</code>
+            <div class="tool-out"><span class="err">FAIL</span> expected 120 cols<br><span class="dim">received 118</span></div>
+          </div>
+        </div>
+
+        <div class="state-card">
+          <div class="sc-title"><span class="dot dot-warn"></span>待审批</div>
+          <div class="tool">
+            <div class="tool-head">
+              <span class="tool-ico"><svg class="ico ico-14" aria-hidden="true"><use href="#i-lock"/></svg></span>
+              <span class="tool-name">rm -f</span>
+              <span class="tool-right"><span class="tool-time">1 条</span></span>
+            </div>
+            <code class="tool-cmd">test/fixtures/*.log</code>
+            <div class="tool-out">执行前停在审批，不碰 PTY。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>

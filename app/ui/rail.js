@@ -1,9 +1,9 @@
-// 左侧图标栏：终端 / 主机 / AI / 设置。
+// 左侧图标栏：终端 / 主机 / 设置。
 //
-// TASK-V3-C 起：
+// V4-E：AI 入口已从图标栏删除（rail-ai / rail-unread 不再存在），
+// 开合只由主区右边缘的 ai-handle 负责。
 // - rail-term     默认 active；点击只切「视图名」，为下一张卡的分屏留钩子。
 // - rail-hosts    HTML 里带 hidden，由 app.js 在 init 时解锁并接到主机面板。
-// - rail-ai       开合右侧 AI 抽屉；有待确认时 data-pending>0 并显示小圆点。
 // - rail-settings 真正打开设置模态（V2-A 遗留的空监听体已补上）。
 //
 // 视图只订阅 store，不直接改字段。
@@ -11,7 +11,6 @@
 export default function createRail(elements) {
   const host = elements.host;
   const store = elements.store;
-  const onToggleAi = typeof elements.onToggleAi === "function" ? elements.onToggleAi : () => {};
   const onOpenSettings =
     typeof elements.onOpenSettings === "function" ? elements.onOpenSettings : () => {};
 
@@ -21,19 +20,8 @@ export default function createRail(elements) {
     return host.querySelector(`[data-role="${role}"]`);
   }
 
-  function render(snapshot) {
-    const aiOpen = snapshot.aiOpen === true;
-    const aiButton = button("rail-ai");
-    if (aiButton) {
-      aiButton.setAttribute("aria-pressed", aiOpen ? "true" : "false");
-      // 有未读回答或待确认时点小圆点（V3 的待确认另有把手角标 + toast）。
-      const pending = Number(snapshot.pendingCount) || 0;
-      const unread = snapshot.aiUnread === true || pending > 0;
-      aiButton.setAttribute("data-unread", unread ? "true" : "false");
-      aiButton.setAttribute("data-pending", String(pending));
-      const dot = aiButton.querySelector('[data-role="rail-unread"]');
-      if (dot) dot.hidden = !unread;
-    }
+  function render() {
+    // 图标栏只保留终端 / 主机 / 设置；没有 AI 待确认小圆点。
   }
 
   return {
@@ -54,13 +42,6 @@ export default function createRail(elements) {
         });
       }
 
-      const ai = button("rail-ai");
-      if (ai) {
-        ai.addEventListener("click", () => {
-          onToggleAi();
-        });
-      }
-
       const settings = button("rail-settings");
       if (settings) {
         settings.addEventListener("click", () => {
@@ -69,7 +50,7 @@ export default function createRail(elements) {
       }
 
       unsubscribe = store.subscribe(render);
-      render(store.getSnapshot());
+      render();
     },
     dispose() {
       if (unsubscribe) unsubscribe();

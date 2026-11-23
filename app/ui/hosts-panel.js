@@ -134,6 +134,20 @@ export default function createHostsPanel(elements) {
     if (opened) syncPanelTop();
   });
 
+  /** 面板打开时点外部收起（第 11 条）：捕获阶段挂在 document 上。
+   *  不干扰设置模态、AI 抽屉、确认卡与文件面板里的点击。 */
+  function onDocumentPointerDown(event) {
+    if (!opened) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const exempt = target.closest(
+      '[data-role="hosts-panel"], [data-role="rail-hosts"], [data-role="ai-drawer"], ' +
+        '[data-role="settings-host"], [data-role="confirm-backdrop"]',
+    );
+    if (exempt) return;
+    close();
+  }
+
   const treeHost = el("div", { "data-role": "file-tree" });
   const fileTree = createFileTree({
     host: treeHost,
@@ -740,6 +754,7 @@ export default function createHostsPanel(elements) {
       syncCurrentSession(store.getSnapshot());
       render();
       void refreshHosts();
+      document.addEventListener("mousedown", onDocumentPointerDown, true);
     },
     close,
     toggle() {
@@ -760,6 +775,7 @@ export default function createHostsPanel(elements) {
     opened = false;
     panel.hidden = true;
     panel.setAttribute("data-open", "false");
+    document.removeEventListener("mousedown", onDocumentPointerDown, true);
     formModal.close();
     trustModal.close();
   }

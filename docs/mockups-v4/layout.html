@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>magpie terminal · V4 布局总览</title>
+<link rel="stylesheet" href="assets/v4.css">
+</head>
+<body>
+<div class="app" data-ai="closed">
+
+  <!-- 左侧图标栏：只有终端 / 主机 / 设置，没有 AI 入口 -->
+  <nav class="rail" aria-label="主导航">
+    <button class="rail-btn" aria-pressed="true" title="终端">
+      <svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>
+      <span class="sr-only">终端</span>
+    </button>
+    <button class="rail-btn" data-hosts-open title="主机与 Shell">
+      <svg class="ico" aria-hidden="true"><use href="#i-server"/></svg>
+      <span class="sr-only">主机</span>
+    </button>
+    <div class="rail-sep"></div>
+    <div class="rail-spacer"></div>
+    <button class="rail-btn" title="设置">
+      <svg class="ico" aria-hidden="true"><use href="#i-settings"/></svg>
+      <span class="sr-only">设置</span>
+    </button>
+  </nav>
+
+  <div class="shell">
+
+    <!-- 标签栏：铺满整宽，抽屉打开也不再截断 -->
+    <div class="tabbar" role="tablist" aria-label="终端标签">
+      <button class="tab" role="tab" aria-selected="true">
+        <svg class="ico ico-14 tab-ico" aria-hidden="true"><use href="#i-terminal"/></svg>
+        <span class="tab-name">本机 · bash</span>
+        <span class="tab-meta">本地</span>
+        <span class="tab-x" title="关闭标签"><svg class="ico ico-12" aria-hidden="true"><use href="#i-x"/></svg></span>
+      </button>
+      <button class="tab" role="tab" aria-selected="false">
+        <svg class="ico ico-14 tab-ico" aria-hidden="true"><use href="#i-server"/></svg>
+        <span class="tab-name">prod-web-01</span>
+        <span class="tab-meta">ssh</span>
+        <span class="tab-x" title="关闭标签"><svg class="ico ico-12" aria-hidden="true"><use href="#i-x"/></svg></span>
+      </button>
+
+      <div class="tab-new-wrap">
+        <button class="tab-new" data-menu-toggle="menu-newtab" aria-expanded="false" title="新建标签">
+          <svg class="ico ico-14" aria-hidden="true"><use href="#i-plus"/></svg>
+        </button>
+
+        <div class="menu" id="menu-newtab" hidden>
+          <div class="menu-label">本机终端</div>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>
+            <span class="mi-main"><b>bash</b><small>Git Bash 5.2.37</small></span>
+            <span class="mi-right"><span class="tag">默认</span><svg class="ico ico-12" aria-hidden="true"><use href="#i-check"/></svg></span>
+          </button>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>
+            <span class="mi-main"><b>cmd</b><small>命令提示符 10.0.22631</small></span>
+          </button>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>
+            <span class="mi-main"><b>PowerShell 7</b><small>pwsh 7.4.6</small></span>
+          </button>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>
+            <span class="mi-main"><b>PowerShell 5.1</b><small>powershell.exe · 系统内置</small></span>
+          </button>
+
+          <div class="menu-sep"></div>
+          <div class="menu-label">已保存主机</div>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-server"/></svg>
+            <span class="mi-main"><b>prod-web-01</b><small>deploy@10.0.4.21</small></span>
+            <span class="mi-right"><span class="conn"></span><span class="tag">ssh</span></span>
+          </button>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-server"/></svg>
+            <span class="mi-main"><b>staging-db</b><small>ubuntu@10.0.4.32:2222</small></span>
+            <span class="mi-right"><span class="conn"></span><span class="tag">ssh</span></span>
+          </button>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-server"/></svg>
+            <span class="mi-main"><b>build-box</b><small>root@192.168.10.8</small></span>
+            <span class="mi-right"><span class="conn off"></span><span class="tag">离线</span></span>
+          </button>
+
+          <div class="menu-sep"></div>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>
+            <span class="mi-main"><b>新建 SSH 主机</b><small>地址、密钥与默认 Shell</small></span>
+            <span class="mi-right"><span class="kbd">Ctrl K</span></span>
+          </button>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-settings"/></svg>
+            <span class="mi-main"><b>管理主机</b><small>编辑分组与连接参数</small></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="tabbar-spacer"></div>
+
+      <div class="tb-actions">
+        <button class="icon-btn" title="重启会话">
+          <svg class="ico ico-14" aria-hidden="true"><use href="#i-refresh"/></svg>
+        </button>
+        <button class="icon-btn" title="向右分屏">
+          <svg class="ico ico-14" aria-hidden="true"><use href="#i-panel"/></svg>
+        </button>
+        <button class="icon-btn" title="更多">
+          <svg class="ico ico-14" aria-hidden="true"><use href="#i-more-h"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="workarea">
+
+      <!-- 终端：一行提示符，一条命令，没有重复 PS1 -->
+      <div class="terminal" role="log" aria-label="终端输出">
+        <div class="tl"><span class="p-user">41807@local</span><span class="p-dollar">:</span><span class="p-path">~/magpie-terminal</span><span class="p-dollar">$</span> <span class="t-cmd">git status -sb</span></div>
+        <div class="tl t-dim">## main...origin/main</div>
+        <div class="tl"><span class="t-warn"> M</span> app/ui/chat.js</div>
+        <div class="tl"><span class="t-warn"> M</span> app/styles/layout.css</div>
+        <div class="tl"><span class="t-dim">?? docs/mockups-v4/</span></div>
+        <div class="tl"><span class="p-user">41807@local</span><span class="p-dollar">:</span><span class="p-path">~/magpie-terminal</span><span class="p-dollar">$</span> <span class="t-cmd">npm run check</span></div>
+        <div class="tl t-dim">&gt; magpie-terminal@0.9.2 check</div>
+        <div class="tl t-dim">&gt; node scripts/check.mjs</div>
+        <div class="tl"></div>
+        <div class="tl"><span class="t-ok">✓</span> 42 files · 0 errors · 0 warnings <span class="t-dim">(1.24s)</span></div>
+        <div class="tl"><span class="p-user">41807@local</span><span class="p-dollar">:</span><span class="p-path">~/magpie-terminal</span><span class="p-dollar">$</span> <span class="t-cmd">npm test</span></div>
+        <div class="tl t-dim">&gt; vitest run</div>
+        <div class="tl"></div>
+        <div class="tl"> <span class="t-ok">✓</span> test/pty-session.test.js <span class="t-dim">(12 tests) 18ms</span></div>
+        <div class="tl"> <span class="t-ok">✓</span> test/approval-flow.test.js <span class="t-dim">(8 tests) 12ms</span></div>
+        <div class="tl"> <span class="t-ok">✓</span> test/file-index.test.js <span class="t-dim">(6 tests) 9ms</span></div>
+        <div class="tl"></div>
+        <div class="tl"> <span class="t-dim">Test Files</span>  <span class="t-ok">3 passed (3)</span></div>
+        <div class="tl">      <span class="t-dim">Tests</span>  <span class="t-ok">26 passed (26)</span></div>
+        <div class="tl">   <span class="t-dim">Duration</span>  1.84s</div>
+        <div class="tl"><span class="p-user">41807@local</span><span class="p-dollar">:</span><span class="p-path">~/magpie-terminal</span><span class="p-dollar">$</span> <span class="t-cmd">git log --oneline -4</span></div>
+        <div class="tl"><span class="t-warn">9f2c1ab</span> fix(pty): keep cols stable when drawer opens</div>
+        <div class="tl"><span class="t-warn">4a7d0e3</span> feat(files): live directory index</div>
+        <div class="tl"><span class="t-warn">b31c8f2</span> chore(tokens): audit contrast pairs</div>
+        <div class="tl"><span class="p-user">41807@local</span><span class="p-dollar">:</span><span class="p-path">~/magpie-terminal</span><span class="p-dollar">$</span> <span class="cursor"></span></div>
+      </div>
+
+      <!-- 文件面板：跟终端同宽，横向图标网格 -->
+      <section class="files" aria-label="当前目录文件">
+        <div class="files-grip" title="拖动调整高度"></div>
+        <div class="files-head">
+          <button class="files-collapse" data-files-collapse aria-expanded="true" title="折叠文件面板">
+            <svg class="ico ico-12" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+          </button>
+          <span class="files-title">文件</span>
+          <span class="live-dot" title="目录索引已同步"></span>
+
+          <nav class="crumbs" aria-label="路径">
+            <button class="crumb">C:</button>
+            <span class="crumb-sep"><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg></span>
+            <button class="crumb">Users</button>
+            <span class="crumb-sep"><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg></span>
+            <button class="crumb">41807</button>
+            <span class="crumb-sep"><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg></span>
+            <button class="crumb" data-current="true">magpie-terminal</button>
+          </nav>
+
+          <div class="files-tools">
+            <label class="fsearch">
+              <svg class="ico ico-12" aria-hidden="true"><use href="#i-search"/></svg>
+              <input type="text" placeholder="筛选当前目录" aria-label="筛选当前目录">
+            </label>
+            <button class="btn btn-sm btn-quiet" title="新建文件夹">
+              <svg class="ico ico-12" aria-hidden="true"><use href="#i-folder-plus"/></svg>
+              新建文件夹
+            </button>
+            <button class="icon-btn" title="刷新">
+              <svg class="ico ico-12" aria-hidden="true"><use href="#i-refresh"/></svg>
+            </button>
+            <button class="icon-btn" aria-pressed="true" title="图标视图">
+              <svg class="ico ico-12" aria-hidden="true"><use href="#i-grid"/></svg>
+            </button>
+            <button class="icon-btn" aria-pressed="false" title="列表视图">
+              <svg class="ico ico-12" aria-hidden="true"><use href="#i-list"/></svg>
+            </button>
+            <button class="btn btn-sm btn-accent" title="上传文件">
+              <svg class="ico ico-12" aria-hidden="true"><use href="#i-upload"/></svg>
+              上传
+            </button>
+          </div>
+        </div>
+
+        <div class="file-grid">
+          <button class="file" data-name="src">
+            <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+            <span class="fname">src</span><span class="fmeta">12 项 · 11-23 16:40</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="test">
+            <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+            <span class="fname">test</span><span class="fmeta">3 项 · 11-23 16:02</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-selected="true" data-name="docs">
+            <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+            <span class="fname">docs</span><span class="fmeta">6 项 · 11-23 17:04</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="app">
+            <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+            <span class="fname">app</span><span class="fmeta">18 项 · 11-23 16:58</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="node_modules">
+            <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+            <span class="fname">node_modules</span><span class="fmeta">已忽略 · 684 MB</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="assets">
+            <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+            <span class="fname">assets</span><span class="fmeta">9 项 · 11-22 19:31</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+
+          <button class="file" data-name="package.json">
+            <span class="ftype ftype-json"><svg class="ico" aria-hidden="true"><use href="#i-braces"/></svg></span>
+            <span class="fname">package.json</span><span class="fmeta">1.4 KB · 11-23 15:22</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="package-lock.json">
+            <span class="ftype ftype-json"><svg class="ico" aria-hidden="true"><use href="#i-braces"/></svg></span>
+            <span class="fname">package-lock.json</span><span class="fmeta">142 KB · 11-21 10:08</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="README.md">
+            <span class="ftype ftype-md"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+            <span class="fname">README.md</span><span class="fmeta">3.8 KB · 11-23 14:10</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="vite.config.js">
+            <span class="ftype ftype-js"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+            <span class="fname">vite.config.js</span><span class="fmeta">1.1 KB · 11-20 09:44</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="index.html">
+            <span class="ftype ftype-js"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+            <span class="fname">index.html</span><span class="fmeta">2.6 KB · 11-23 16:20</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="styles.css">
+            <span class="ftype ftype-md"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+            <span class="fname">styles.css</span><span class="fmeta">7.2 KB · 11-23 15:03</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="logo.svg">
+            <span class="ftype ftype-img"><svg class="ico" aria-hidden="true"><use href="#i-image"/></svg></span>
+            <span class="fname">logo.svg</span><span class="fmeta">4.1 KB · 11-18 11:26</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="screenshot.png">
+            <span class="ftype ftype-img"><svg class="ico" aria-hidden="true"><use href="#i-image"/></svg></span>
+            <span class="fname">screenshot.png</span><span class="fmeta">286 KB · 11-22 20:12</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="build.log">
+            <span class="ftype ftype-log"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+            <span class="fname">build.log</span><span class="fmeta">38 KB · 11-23 16:59</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="release.sh">
+            <span class="ftype ftype-sh"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+            <span class="fname">release.sh</span><span class="fmeta">2.2 KB · 11-19 17:05</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name="LICENSE">
+            <span class="ftype ftype-log"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg></span>
+            <span class="fname">LICENSE</span><span class="fmeta">1.1 KB · 10-02 08:00</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+          <button class="file" data-name=".gitignore">
+            <span class="ftype ftype-log"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg></span>
+            <span class="fname">.gitignore</span><span class="fmeta">214 B · 10-12 13:37</span>
+            <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+          </button>
+        </div>
+      </section>
+
+      <!-- AI 抽屉：覆盖在终端上，不改变终端宽度 -->
+      <aside class="drawer" aria-label="AI 会话">
+        <div class="ai-head">
+          <button class="sess" data-menu-toggle="menu-sessions" aria-expanded="false" title="切换 bash: 41807 的会话">
+            <span class="sess-mark"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+            <span class="sess-main">
+              <span class="sess-top">
+                <span class="sess-title trunc">bash: 41807</span>
+                <span class="sess-sep" aria-hidden="true">·</span>
+                <span class="sess-count">3 个会话</span>
+              </span>
+              <span class="sess-sub trunc">修复 PTY 尺寸同步 · 12 条</span>
+            </span>
+            <svg class="ico ico-12" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+          </button>
+          <button class="icon-btn" title="新建会话（bash: 41807）">
+            <svg class="ico ico-14" aria-hidden="true"><use href="#i-plus"/></svg>
+          </button>
+
+          <div class="menu sess-menu" id="menu-sessions" style="top:46px;left:8px;right:8px;min-width:0" hidden>
+            <div class="menu-label">
+              <svg class="ico" aria-hidden="true"><use href="#i-history"/></svg>
+              会话 · 按终端分组
+            </div>
+
+            <div class="sess-group" data-current="true">
+              <button class="sess-group-head" aria-expanded="true">
+                <svg class="ico ico-12 gr-chev" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                <span class="gr-ico"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                <span class="gr-main"><b>bash: 41807</b><small>本机 · bash · 41807@local</small></span>
+                <span class="gr-count">3</span>
+              </button>
+              <div class="sess-items">
+                <button class="menu-item sess-item" data-active="true">
+                  <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-check"/></svg></span>
+                  <span class="mi-main"><b>修复 PTY 尺寸同步</b><small>今天 17:08 · 12 条 · 当前</small></span>
+                  <span class="mi-right"><span class="src-badge k-local" title="本机 · bash"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">bash</span></span></span>
+                </button>
+                <button class="menu-item sess-item">
+                  <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                  <span class="mi-main"><b>文件面板实时索引</b><small>今天 15:42 · 8 条</small></span>
+                  <span class="mi-right"><span class="src-badge k-local" title="本机 · bash"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">bash</span></span></span>
+                </button>
+                <button class="menu-item sess-item">
+                  <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                  <span class="mi-main"><b>审批流超时处理</b><small>昨天 21:10 · 23 条</small></span>
+                  <span class="mi-right"><span class="src-badge k-local" title="本机 · bash"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">bash</span></span></span>
+                </button>
+              </div>
+            </div>
+
+            <div class="sess-group">
+              <button class="sess-group-head" aria-expanded="false">
+                <svg class="ico ico-12 gr-chev" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                <span class="gr-ico"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                <span class="gr-main"><b>pwsh 7: 25812</b><small>本机 · PowerShell 7</small></span>
+                <span class="gr-count">1</span>
+              </button>
+              <div class="sess-items" hidden>
+                <button class="menu-item sess-item">
+                  <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                  <span class="mi-main"><b>构建脚本迁移</b><small>昨天 10:22 · 5 条</small></span>
+                  <span class="mi-right"><span class="src-badge k-local" title="本机 · pwsh"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg><span class="sb-t">pwsh</span></span></span>
+                </button>
+              </div>
+            </div>
+
+            <div class="sess-group">
+              <button class="sess-group-head" aria-expanded="false">
+                <svg class="ico ico-12 gr-chev" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                <span class="gr-ico"><svg class="ico" aria-hidden="true"><use href="#i-server"/></svg></span>
+                <span class="gr-main"><b>局域网linux</b><small>192.168.10.24 · 密钥</small></span>
+                <span class="gr-count">2</span>
+              </button>
+              <div class="sess-items" hidden>
+                <button class="menu-item sess-item">
+                  <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                  <span class="mi-main"><b>nginx 日志轮转</b><small>昨天 18:04 · 9 条</small></span>
+                  <span class="mi-right"><span class="src-badge k-ssh" title="局域网linux · 192.168.10.24"><span class="sb-t">局域网linux</span><span class="addr">192.168.10.24</span></span></span>
+                </button>
+                <button class="menu-item sess-item">
+                  <span class="si-mark"><svg class="ico" aria-hidden="true"><use href="#i-history"/></svg></span>
+                  <span class="mi-main"><b>磁盘占用排查</b><small>11-21 09:30 · 14 条</small></span>
+                  <span class="mi-right"><span class="src-badge k-ssh" title="局域网linux · 192.168.10.24"><span class="sb-t">局域网linux</span><span class="addr">192.168.10.24</span></span></span>
+                </button>
+              </div>
+            </div>
+
+            <div class="menu-note">
+              只有当前终端那组默认展开，其余点开再看。切标签时抽屉回到那个终端最近的会话。
+            </div>
+          </div>
+        </div>
+
+        <div class="ai-ctx">
+          <svg class="ico ico-12" aria-hidden="true"><use href="#i-terminal"/></svg>
+          <b>本机</b>
+          <span>·</span>
+          <span>bash</span>
+          <span>·</span>
+          <span class="ctx-path">~/magpie-terminal</span>
+          <button style="margin-left:auto" title="选择上下文">
+            <svg class="ico ico-12" aria-hidden="true"><use href="#i-folder-open"/></svg>
+            2 个文件
+          </button>
+        </div>
+
+        <div class="ai-msgs">
+          <div class="msg-user">抽屉一开，终端就多一行空回车，提示符还重复了一次。</div>
+
+          <div class="msg-ai">
+            <div class="ai-name"><svg class="ico" aria-hidden="true"><use href="#i-sparkle"/></svg> Magpie · 17:08</div>
+            <div class="think">
+              <button class="think-btn" data-acc="think-1" aria-expanded="false">
+                <svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg>
+                思考了 4 秒
+              </button>
+              <div class="think-body" id="think-1" hidden>
+                <p>提示符重复与抽屉开合同时发生。先查 PTY 的 cols 是否被改变，再看 SIGWINCH 之后 bash 是否重画 PS1。</p>
+                <p>V3 用 grid 压缩终端，宽度从 1fr 变成 1fr 减 360px，必然触发 resize。</p>
+              </div>
+            </div>
+            <div class="ai-text">不是 bash 打印了两次，是抽屉挤压终端触发了 PTY resize，bash 收到 SIGWINCH 后重画提示符。改成覆盖式抽屉后，终端列数不再变化。</div>
+            <div class="tool">
+              <div class="tool-head">
+                <span class="tool-ico"><svg class="ico ico-14" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                <span class="tool-name">run_command</span>
+                <span class="tool-sep">·</span>
+                <span class="tool-sub">git diff --stat</span>
+                <span class="tool-right"><span class="dot dot-ok"></span><span class="tool-time">0.3s</span></span>
+              </div>
+              <div class="tool-foot" data-acc="out-1" aria-expanded="false">
+                <svg class="ico" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                展开输出
+              </div>
+              <div class="tool-out" id="out-1" hidden> app/styles/layout.css | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)</div>
+            </div>
+          </div>
+
+          <div class="msg-user">顺手把 test/fixtures 下的旧日志清掉。</div>
+
+          <div class="msg-ai">
+            <div class="ai-name"><svg class="ico" aria-hidden="true"><use href="#i-sparkle"/></svg> Magpie · 17:09</div>
+            <div class="ai-text">找到 3 个 30 天前的 <code>.log</code>，共 1.8 MB。删除后不可恢复，先等你确认。</div>
+
+            <div class="approval" data-review="caution">
+              <div class="approval-head">
+                <svg class="ico" aria-hidden="true"><use href="#i-alert-triangle"/></svg>
+                需要你批准：删除 3 个文件
+              </div>
+              <code class="approval-cmd">rm -f test/fixtures/*.log</code>
+              <p class="approval-why">只匹配 <code>.log</code>，不会动同目录的 <code>.json</code> 快照。可撤销方式：先移到 <code>.trash/</code>。</p>
+              <!-- 设置项「在确认卡上常显 AI 的效果评估」打开时才显示这一行 -->
+              <p class="approval-effect" hidden><b>执行后会发生什么：</b>test/fixtures 下 3 个 30 天前的 .log 被删除，释放 1.8 MB；同目录 4 个 .json 快照不受影响。</p>
+              <div class="approval-acts">
+                <button class="btn btn-sm btn-danger" data-approve="one">执行这一条</button>
+                <button class="btn btn-sm" data-approve="all" disabled title="只有 1 条待审批，批量执行不可用">全部执行</button>
+                <button class="btn btn-sm btn-quiet skip" data-approve="skip">跳过</button>
+              </div>
+              <!-- 右下角审核角标：绿=已审可放行 / 琥珀=需注意 / 红=危险 / 灰=未审 -->
+              <span class="review-mark" data-review="caution" tabindex="0" role="img" aria-label="审核 AI 判定：caution，需要注意">
+                <svg class="ico" aria-hidden="true"><use href="#i-shield-alert"/></svg>
+                <span class="review-tip" role="tooltip">
+                  <b>执行后会发生什么</b>
+                  <p>test/fixtures 下 3 个 30 天前的 .log 被删除，释放 1.8 MB。同目录的 4 个 .json 快照、以及 .gitignore 里的 fixture 规则都不受影响。</p>
+                  <div class="rt-sep"></div>
+                  <b>为什么需要你确认</b>
+                  <p>审核判定为 caution 且不可逆：rm 不进回收站，删完没法从终端恢复。平衡档只自动放行只读或幂等的命令，所以这一条留给你拍板。</p>
+                  <div class="rt-foot">审核 AI · Claude Sonnet 4.5 · risk=caution · reversible=false · 0.9s</div>
+                </span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="composer-box">
+            <div class="composer-grip" data-composer-grip title="拖动调整输入框高度（最高到抽屉高度的 40%）"></div>
+            <textarea rows="1" placeholder="描述任务，或粘贴报错…" aria-label="发送给 AI 的消息">改成移到 .trash/ 再删，另外把这条规则写进 AGENTS.md。</textarea>
+            <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
+          </div>
+          <div class="composer-bar">
+            <span class="safety"><svg class="ico" aria-hidden="true"><use href="#i-lock"/></svg> 写操作需审批</span>
+            <button class="model-text" data-menu-toggle="menu-model" aria-expanded="false" title="切换模型：DeepSeek V4.1">
+              DeepSeek V4.1
+              <svg class="ico" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+            </button>
+            <div class="menu" id="menu-model" style="bottom:40px;right:8px;left:auto;min-width:236px" hidden>
+              <div class="menu-label">模型</div>
+              <button class="menu-item"><span class="mi-main"><b>DeepSeek V4.1</b><small>128K 上下文 · 当前</small></span><span class="mi-right"><svg class="ico ico-12" aria-hidden="true"><use href="#i-check"/></svg></span></button>
+              <button class="menu-item"><span class="mi-main"><b>Claude Sonnet 4.5</b><small>200K 上下文</small></span></button>
+              <button class="menu-item"><span class="mi-main"><b>GPT-5.1</b><small>128K 上下文</small></span></button>
+            </div>
+
+            <button class="send" data-send title="发送 (Enter)">
+              <svg class="ico" aria-hidden="true"><use href="#i-arrow-up"/></svg>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 把手：收起和展开都只有它，展开时贴着抽屉左边缘 -->
+      <button class="ai-handle" data-drawer-toggle aria-expanded="false" title="展开 AI 会话">
+        <svg class="ico" aria-hidden="true"><use href="#i-chevron-left"/></svg>
+        <span class="handle-text">AI</span>
+        <span class="ai-badge">1</span>
+      </button>
+
+    </div>
+  </div>
+
+  <!-- 状态栏：不放 AI 开关 -->
+  <footer class="statusbar">
+    <span class="st-rail-pad"></span>
+    <span class="st-item"><span class="st-dot"></span>就绪</span>
+    <span class="st-sep"></span>
+    <span class="st-item"><svg class="ico" aria-hidden="true"><use href="#i-server"/></svg><b>本机</b></span>
+    <span class="st-sep"></span>
+    <span class="st-item"><span class="mono">bash 5.2.37</span></span>
+    <span class="st-sep"></span>
+    <span class="st-item"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg><span class="mono trunc">~/magpie-terminal</span></span>
+    <span class="st-grow"></span>
+    <span class="st-item"><span class="mono">UTF-8</span></span>
+    <span class="st-sep"></span>
+    <span class="st-item"><span class="mono">120×34</span></span>
+    <span class="st-sep"></span>
+    <span class="st-item">PTY 原生</span>
+    <span class="st-sep"></span>
+    <span class="st-item"><span class="mono">17:12</span></span>
+  </footer>
+
+  <!-- 主机面板：遮罩 + 左侧 300px，点外部关闭 -->
+  <div class="hosts-layer" hidden>
+    <div class="hosts-scrim"></div>
+    <aside class="hosts" aria-label="主机与 Shell">
+      <div class="hosts-head">
+        <h2>主机</h2>
+        <button class="hosts-new">
+          <svg class="ico ico-12" aria-hidden="true"><use href="#i-plus"/></svg>
+          新建主机
+        </button>
+        <button class="icon-btn" data-hosts-close title="关闭 (Esc)">
+          <svg class="ico ico-14" aria-hidden="true"><use href="#i-x"/></svg>
+        </button>
+      </div>
+
+      <label class="hosts-search">
+        <svg class="ico ico-12" aria-hidden="true"><use href="#i-search"/></svg>
+        <input type="text" placeholder="搜索主机或地址" aria-label="搜索主机或地址">
+      </label>
+
+      <div class="hosts-body">
+        <div class="host-section">本机 <span class="count">1</span></div>
+        <div class="host-card" data-current="true">
+          <div class="host-line">
+            <svg class="ico ico-14" aria-hidden="true"><use href="#i-terminal"/></svg>
+            <span class="host-name">本机</span>
+            <span class="host-tag">当前</span>
+            <span class="hstat on" style="margin-left:auto"></span>
+          </div>
+          <div class="host-sub">Windows 11 · 127.0.0.1</div>
+          <div class="shell-label"><svg class="ico ico-12" aria-hidden="true"><use href="#i-terminal"/></svg>默认 Shell</div>
+          <div class="shell-grid">
+            <button class="shell-opt" aria-checked="true">
+              <b>bash</b><small>Git Bash 5.2.37</small>
+            </button>
+            <button class="shell-opt" aria-checked="false">
+              <b>cmd</b><small>cmd.exe</small>
+            </button>
+            <button class="shell-opt" aria-checked="false">
+              <b>PowerShell</b><small>pwsh 7.4.6</small>
+            </button>
+            <button class="shell-opt" aria-checked="false">
+              <b>PowerShell 5.1</b><small>powershell.exe</small>
+            </button>
+          </div>
+          <p class="shell-hint">新标签页默认使用这个 Shell；已打开的标签不受影响。</p>
+        </div>
+
+        <div class="host-section">SSH 主机 <span class="count">3</span></div>
+        <button class="host-row" data-active="false">
+          <span class="hstat on"></span>
+          <span class="hmain"><span class="hname">prod-web-01</span><span class="hsub">deploy@10.0.4.21 · 22</span></span>
+          <span class="hmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-h"/></svg></span>
+        </button>
+        <button class="host-row" data-active="false">
+          <span class="hstat on"></span>
+          <span class="hmain"><span class="hname">staging-db</span><span class="hsub">ubuntu@10.0.4.32 · 2222</span></span>
+          <span class="hmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-h"/></svg></span>
+        </button>
+        <button class="host-row" data-active="false">
+          <span class="hstat"></span>
+          <span class="hmain"><span class="hname">build-box</span><span class="hsub">root@192.168.10.8 · 22</span></span>
+          <span class="hmore"><svg class="ico" aria-hidden="true"><use href="#i-more-h"/></svg></span>
+        </button>
+      </div>
+
+      <div class="hosts-foot">
+        3 台主机 · 2 台在线
+        <button>管理主机</button>
+      </div>
+    </aside>
+    <div class="scrim-note">
+      <svg class="ico ico-12" aria-hidden="true"><use href="#i-x"/></svg>
+      点击遮罩、按 Esc 或点右上角关闭
+    </div>
+  </div>
+
+  <!-- 审批提示：只在抽屉收起时出现 -->
+  <div class="toast">
+    <div class="toast-head">
+      <svg class="ico" aria-hidden="true"><use href="#i-alert-triangle"/></svg>
+      <b>AI 请求执行命令</b>
+      <span class="toast-time">17:12</span>
+      <button class="toast-x" title="关闭提示">
+        <svg class="ico ico-12" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <code class="toast-cmd">rm -f test/fixtures/*.log</code>
+    <p class="toast-why">删除 3 个 30 天前的日志，共 1.8 MB。展开会话看原因。</p>
+    <div class="toast-acts">
+      <button class="btn btn-sm btn-danger">执行</button>
+      <button class="btn btn-sm btn-accent">展开会话</button>
+      <button class="btn btn-sm btn-quiet">跳过</button>
+    </div>
+  </div>
+
+</div>
+<script src="assets/v4.js" defer></script>
+</body>
+</html>

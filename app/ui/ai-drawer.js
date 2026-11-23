@@ -1,18 +1,22 @@
-// 右侧 AI 抽屉（TASK-V3-C §6.2）：标题栏（标题 + 模型下拉 + 收起）/ 时间线 / 输入条。
+// 右侧 AI 抽屉（TASK-V4-E）：标题栏（只有标题）/ 时间线 / 输入区。
 //
 // 数据来源：core/agent-store.js 的订阅（agent.* 帧由 app.js 转进来）。
 // 这里只渲染 + 发帧，不改 store 字段。
 //
 // data-role 名单是验收探针，逐字不许改：
-//   ai-drawer-head / model-select / ai-close / agent-timeline / agent-question
+//   ai-drawer-head / model-select / agent-timeline / agent-question
 //   agent-step(+data-status,+data-index) / agent-step-cmd / agent-step-out
 //   agent-summary / agent-approval / approval-run / approval-rest / approval-skip
 //   agent-input / agent-send / agent-stop
+// V4-E 新增：model-menu / composer-box / composer-hint / agent-grow
 //
 // 降级路径：旧的 ai.reply / ai.error 仍然渲染成一条简化块（ai.reply 的 confirm
 // 确认卡也搬进抽屉里，但仍是本地直接 pty.input，不发 ai.confirm）。
 
-const RETRY_VALUE = "__retry__";
+// V4-E：输入框拖拽高度持久化 key（逐字固定）。
+const COMPOSER_HEIGHT_KEY = "magpie.term.composerHeight";
+const COMPOSER_LINE_HEIGHT = 19.375;
+const COMPOSER_MAX_AUTO = 116;
 
 const STEP_LABEL = {
   pending: "等待中",
@@ -48,7 +52,6 @@ export default function createAiDrawer(elements) {
   const onAsk = typeof elements.onAsk === "function" ? elements.onAsk : () => false;
   const onApprove = typeof elements.onApprove === "function" ? elements.onApprove : () => false;
   const onStop = typeof elements.onStop === "function" ? elements.onStop : () => {};
-  const onClose = typeof elements.onClose === "function" ? elements.onClose : () => {};
   const onNotice = typeof elements.onNotice === "function" ? elements.onNotice : () => {};
   const onExecuteLegacy = typeof elements.onExecuteLegacy === "function" ? elements.onExecuteLegacy : () => {};
 
@@ -75,19 +78,9 @@ export default function createAiDrawer(elements) {
   function buildShell() {
     host.textContent = "";
 
+    // 头部只留标题：没有「收起」按钮，模型选择在输入区底栏。
     const head = el("div", { "data-role": "ai-drawer-head", className: "drawer-head" });
     head.appendChild(el("span", { className: "drawer-title" }, "AI 助手"));
-
-    modelSelect = el("select", {
-      "data-role": "model-select",
-      "aria-label": "选择模型",
-      title: "选择模型",
-      className: "drawer-model",
-    });
-    head.appendChild(modelSelect);
-
-    closeButton = el("button", { type: "button", "data-role": "ai-close", title: "收起 AI 抽屉" }, "收起");
-    head.appendChild(closeButton);
     host.appendChild(head);
 
     timeline = el("div", {
@@ -97,74 +90,166 @@ export default function createAiDrawer(elements) {
     });
     host.appendChild(timeline);
 
-    const inputBar = el("div", { className: "agent-input-bar" });
-    input = el("input", {
-      type: "text",
+    composerEl = el("div", { className: "composer" });
+    const composerBox = el("div", {
+      "data-role": "composer-box",
+      className: "composer-box",
+    });
+    const grow = el("div", {
+      "data-role": "agent-grow",
+      className: "composer-grip",
+      title: "拖动调整输入框高度（最高到抽屉高度的 40%）",
+    });
+    input = el("textarea", {
       "data-role": "agent-input",
-      placeholder: "用中文说要干什么，AI 会自己动手…",
+      rows: "1",
+      placeholder: "描述任务，或粘贴报错…",
       autocomplete: "off",
       spellcheck: "false",
       "aria-label": "告诉 AI 要做什么",
     });
-    sendButton = el("button", { type: "button", "data-role": "agent-send", className: "agent-send" }, "发送");
+    const hint = el(
+      "span",
+      { "data-role": "composer-hint", className: "composer-hint" },
+      "Enter 发送 · Shift+Enter 换行",
+    );
+    composerBox.append(grow, input, hint);
+
+    const bar = el("div", { className: "composer-bar" });
+    modelSelect = el("button", {
+      type: "button",
+      "data-role": "model-select",
+      "aria-label": "选择模型",
+      "aria-expanded": "false",
+      title: "选择模型",
+      className: "model-text",
+    });
+    modelMenu = el("div", {
+      "data-role": "model-menu",
+      className: "model-menu",
+      hidden: "",
+    });
     stopButton = el(
       "button",
       { type: "button", "data-role": "agent-stop", className: "agent-stop", hidden: "" },
       "停止",
     );
-    inputBar.append(input, sendButton, stopButton);
-    host.appendChild(inputBar);
+    sendButton = el(
+      "button",
+      { type: "button", "data-role": "agent-send", className: "agent-send", "aria-label": "发送" },
+      "↑",
+    );
+    bar.append(modelSelect, stopButton, sendButton, modelMenu);
+    composerEl.append(composerBox, bar);
+    host.appendChild(composerEl);
   }
 
   let modelSelect = null;
-  let closeButton = null;
+  let modelMenu = null;
   let timeline = null;
   let input = null;
+  let composerEl = null;
   let sendButton = null;
   let stopButton = null;
+  let selectedModelId = null;
 
-  /* ---------------- 模型下拉（沿用 ai-bar.js 的失败记忆 + __retry__） ---------------- */
+  /* ---------------- 模型菜单（纯文本按钮 + 锚定菜单） ---------------- */
 
   function currentModel() {
-    return models.find((model) => model.id === modelSelect.value) || null;
+    return models.find((model) => model.id === selectedModelId) || null;
   }
 
-  function renderOptions(chosenId) {
+  function closeModelMenu() {
+    if (!modelMenu) return;
+    modelMenu.hidden = true;
+    if (modelSelect) modelSelect.setAttribute("aria-expanded", "false");
+  }
+
+  function updateModelLabel() {
+    if (!modelSelect) return;
     modelSelect.textContent = "";
     if (!reachable || models.length === 0) {
-      const option = el("option", { value: RETRY_VALUE }, "网关不可用，点重试");
-      modelSelect.appendChild(option);
-      modelSelect.value = RETRY_VALUE;
+      modelSelect.appendChild(document.createTextNode("网关不可用，点重试"));
       modelSelect.setAttribute("data-gateway", "down");
       return;
     }
+    const model = currentModel() || models[0] || null;
+    selectedModelId = model ? model.id : null;
+    modelSelect.appendChild(
+      document.createTextNode(model ? model.label || model.id : "选择模型"),
+    );
+    modelSelect.appendChild(el("span", { className: "model-caret", "aria-hidden": "true" }, "▾"));
+    modelSelect.removeAttribute("data-gateway");
+  }
+
+  function renderModelMenu() {
+    if (!modelMenu) return;
+    modelMenu.textContent = "";
+    modelMenu.appendChild(el("div", { className: "menu-label" }, "模型"));
     for (const model of models) {
-      const option = el(
-        "option",
-        {
-          value: model.id,
-          "data-available": model.available === false ? "false" : "true",
-        },
-        model.available === false ? `${model.label}（上次失败）` : model.label,
-      );
-      modelSelect.appendChild(option);
+      const item = el("button", {
+        type: "button",
+        className: "model-item",
+        "data-model-id": model.id,
+        "data-available": model.available === false ? "false" : "true",
+      });
+      const main = el("span", { className: "model-item-main" });
+      main.appendChild(el("b", {}, model.available === false ? `${model.label}（上次失败）` : model.label || model.id));
+      if (model.id === selectedModelId) main.appendChild(el("small", {}, "当前"));
+      item.appendChild(main);
+      if (model.id === selectedModelId) {
+        item.appendChild(el("span", { className: "model-check", "aria-hidden": "true" }, "✓"));
+      }
+      item.addEventListener("click", () => {
+        selectedModelId = model.id;
+        updateModelLabel();
+        closeModelMenu();
+        void persistModel(model.id);
+      });
+      modelMenu.appendChild(item);
+    }
+  }
+
+  function toggleModelMenu() {
+    if (!modelMenu) return;
+    if (!reachable || models.length === 0) {
+      void loadModels();
+      return;
+    }
+    const nextOpen = modelMenu.hidden;
+    if (nextOpen) {
+      renderModelMenu();
+      modelMenu.hidden = false;
+      modelSelect.setAttribute("aria-expanded", "true");
+    } else {
+      closeModelMenu();
+    }
+  }
+
+  function renderOptions(chosenId) {
+    if (!reachable || models.length === 0) {
+      selectedModelId = null;
+      updateModelLabel();
+      closeModelMenu();
+      return;
     }
     const target = models.some((model) => model.id === chosenId)
       ? chosenId
       : models[0]
         ? models[0].id
-        : "";
-    modelSelect.value = target;
-    modelSelect.removeAttribute("data-gateway");
+        : null;
+    selectedModelId = target;
+    updateModelLabel();
+    if (modelMenu && !modelMenu.hidden) renderModelMenu();
   }
 
   async function loadModels() {
     if (loading) return;
     loading = true;
-    modelSelect.setAttribute("aria-busy", "true");
+    if (modelSelect) modelSelect.setAttribute("aria-busy", "true");
     const [modelsResult, configResult] = await Promise.all([api.models(), api.config()]);
     loading = false;
-    modelSelect.removeAttribute("aria-busy");
+    if (modelSelect) modelSelect.removeAttribute("aria-busy");
     if (!modelsResult.ok) {
       reachable = false;
       models = [];
@@ -527,24 +612,123 @@ export default function createAiDrawer(elements) {
     render(agentStore.getSnapshot());
   }
 
+  /* ---------------- 输入框自动增高 / 拖拽把手 ---------------- */
+
+  function savedHeightCap() {
+    const hostHeight = host && host.clientHeight > 0 ? host.clientHeight : 0;
+    return Math.max(COMPOSER_MAX_AUTO, Math.round(hostHeight * 0.4));
+  }
+
+  function autoGrow() {
+    if (!input) return;
+    input.style.height = "auto";
+    const next = Math.max(
+      COMPOSER_LINE_HEIGHT,
+      Math.min(COMPOSER_MAX_AUTO, input.scrollHeight || COMPOSER_LINE_HEIGHT),
+    );
+    input.style.height = `${Math.round(next)}px`;
+    input.dataset.manual = "false";
+  }
+
+  function applyManualHeight(height) {
+    if (!input) return;
+    const cap = savedHeightCap();
+    const next = Math.max(COMPOSER_LINE_HEIGHT, Math.min(cap, Number(height) || COMPOSER_LINE_HEIGHT));
+    input.style.height = `${Math.round(next)}px`;
+    input.dataset.manual = "true";
+    return next;
+  }
+
+  function rememberHeight(height) {
+    try {
+      window.localStorage.setItem(COMPOSER_HEIGHT_KEY, String(Math.round(height)));
+    } catch {
+      // 隐私模式 / 禁用存储：不阻塞输入。
+    }
+  }
+
+  function restoreHeight() {
+    let saved = 0;
+    try {
+      saved = Number(window.localStorage.getItem(COMPOSER_HEIGHT_KEY)) || 0;
+    } catch {
+      saved = 0;
+    }
+    if (saved > 0) applyManualHeight(saved);
+    else autoGrow();
+  }
+
+  function clearManualHeight() {
+    try {
+      window.localStorage.removeItem(COMPOSER_HEIGHT_KEY);
+    } catch {
+      // 忽略。
+    }
+  }
+
+  function attachComposerBehavior() {
+    const grip = host.querySelector('[data-role="agent-grow"]');
+    if (!grip || !input) return;
+
+    input.addEventListener("input", () => {
+      // 用户重新输入即回到自动增高，并清掉上次拖拽记住的高度。
+      clearManualHeight();
+      autoGrow();
+    });
+
+    grip.addEventListener("pointerdown", (event) => {
+      if (event.button !== undefined && event.button !== 0) return;
+      event.preventDefault();
+      const startY = event.clientY;
+      const startHeight = input.getBoundingClientRect().height || COMPOSER_LINE_HEIGHT;
+      const cap = savedHeightCap();
+      if (typeof grip.setPointerCapture === "function") {
+        try {
+          grip.setPointerCapture(event.pointerId);
+        } catch {
+          // 合成事件没有可捕获的 pointerId；继续用 window 监听即可。
+        }
+      }
+      if (composerEl) composerEl.setAttribute("data-resizing", "true");
+
+      const onMove = (moveEvent) => {
+        applyManualHeight(startHeight + (moveEvent.clientY - startY));
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        if (composerEl) composerEl.removeAttribute("data-resizing");
+        try {
+          if (typeof grip.releasePointerCapture === "function") {
+            grip.releasePointerCapture(event.pointerId);
+          }
+        } catch {
+          // 忽略。
+        }
+        const finalHeight = Math.min(cap, input.getBoundingClientRect().height || COMPOSER_LINE_HEIGHT);
+        rememberHeight(finalHeight);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    });
+  }
+
   /* ---------------- 外部接口 ---------------- */
 
   return {
     init() {
       buildShell();
 
-      modelSelect.addEventListener("change", () => {
-        if (modelSelect.value === RETRY_VALUE) {
-          void loadModels();
-          return;
-        }
-        void persistModel(modelSelect.value);
-      });
-
-      closeButton.addEventListener("click", () => onClose());
+      modelSelect.addEventListener("click", () => toggleModelMenu());
 
       sendButton.addEventListener("click", () => send());
       input.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          closeModelMenu();
+          return;
+        }
         if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
         event.preventDefault();
         send();
@@ -552,6 +736,31 @@ export default function createAiDrawer(elements) {
       stopButton.addEventListener("click", () => {
         onStop();
       });
+
+      // 点菜单外 / Esc 关菜单。
+      document.addEventListener(
+        "mousedown",
+        (event) => {
+          if (!modelMenu || modelMenu.hidden) return;
+          const target = event.target;
+          if (!(target instanceof Element)) return;
+          if (modelMenu.contains(target) || modelSelect.contains(target)) return;
+          closeModelMenu();
+        },
+        true,
+      );
+      document.addEventListener(
+        "keydown",
+        (event) => {
+          if (event.key === "Escape" && modelMenu && !modelMenu.hidden) {
+            closeModelMenu();
+          }
+        },
+        true,
+      );
+
+      attachComposerBehavior();
+      restoreHeight();
 
       agentStore.subscribe(render);
       render(agentStore.getSnapshot());

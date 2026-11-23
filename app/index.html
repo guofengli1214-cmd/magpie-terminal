@@ -18,10 +18,9 @@
 <link rel="stylesheet" href="/styles/components.css">
 </head>
 <body>
-  <!-- V3 骨架（TASK-V3-C §6.1）：左侧 48px 图标栏 + 主区（标签条 / 终端）+ 右侧 AI 抽屉。
-       抽屉默认收起（data-ai-open="false"）：此时 --term-drawer-width 为 0px，终端拿满宽度。
-       收起态在终端右边缘垂直居中留一个「突起」把手（ai-handle），有待确认时显示红点角标。
-       toast 栈固定在右下角，设置模态宿主是空 div（内容由 settings-panel.js 填）。 -->
+  <!-- V4-E 骨架：左侧 48px 图标栏 + 主区（标签条 / 终端 / 覆盖式 AI 抽屉）。
+       AI 不再占左侧栏入口，也没有状态栏开关；右边缘把手是唯一开合入口，
+       收起与展开都可见。抽屉默认收起（data-ai-open="false"）。 -->
   <div id="root" data-role="app" data-ai-open="false">
     <nav class="rail" data-role="rail" aria-label="主导航">
       <button type="button" data-role="rail-term" data-active="true" aria-pressed="true" title="终端（本地）">
@@ -30,10 +29,6 @@
       <!-- 主机按钮由 app.js 在 init 时去掉 hidden（历史占位，保持原行为）。 -->
       <button type="button" data-role="rail-hosts" hidden title="主机（即将支持）">
         <span aria-hidden="true">🖧</span><span class="rail-label">主机</span>
-      </button>
-      <button type="button" data-role="rail-ai" data-unread="false" aria-pressed="false" title="AI 助手（开合右侧抽屉）">
-        <span aria-hidden="true">✦</span><span class="rail-label">AI</span>
-        <span class="rail-dot" data-role="rail-unread" hidden></span>
       </button>
       <div class="rail-spacer" aria-hidden="true"></div>
       <button type="button" data-role="rail-settings" title="设置">
@@ -44,14 +39,15 @@
     <section class="main" data-role="main">
       <div data-role="tabbar"></div>
       <div data-role="terminal-host"></div>
-      <!-- 收起态的把手：贴在 main 的右边缘、垂直居中（styling 见 layout.css）。 -->
-      <button type="button" data-role="ai-handle" data-badge="0" title="打开 AI 助手" aria-label="打开 AI 助手">
-        <span class="handle-icon" aria-hidden="true">✦</span>
+      <!-- 收起与展开都只有这一个把手：展开时跟着抽屉左缘走（styling 见 layout.css）。 -->
+      <button type="button" data-role="ai-handle" data-badge="0" title="打开 AI 助手" aria-label="打开 AI 助手" aria-expanded="false">
+        <span class="handle-icon" aria-hidden="true">‹</span>
+        <span class="handle-text" aria-hidden="true">AI</span>
         <span class="handle-badge" data-role="ai-handle-badge" hidden>0</span>
       </button>
+      <!-- 覆盖式抽屉：position:absolute，压在终端之上，不改终端宽度。 -->
+      <aside class="drawer" data-role="ai-drawer" aria-label="AI 助手"></aside>
     </section>
-
-    <aside class="drawer" data-role="ai-drawer" aria-label="AI 助手"></aside>
 
     <div data-role="statusbar"></div>
     <div data-role="toast-stack" aria-live="polite"></div>

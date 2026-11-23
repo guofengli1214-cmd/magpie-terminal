@@ -163,6 +163,63 @@ export default function createTerminalView(elements) {
   }
 
   return {
+    /**
+     * 新建标签时先拿终端的真实列/行（V4-E 第 6 步）：
+     * 优先用已存在的 xterm 实例的 fit 结果；首个标签还没实例时，
+     * 临时挂一个同尺寸、同字体的终端量一次，量完立刻 dispose。
+     * 这样 pty.create 一次就按正确尺寸建，不会先 80×24 再 resize 触发 bash 重画。
+     */
+    proposeDimensions() {
+      for (const view of views.values()) {
+        try {
+          const dims = view.fit.proposeDimensions();
+          if (dims && Number.isFinite(dims.cols) && dims.cols > 0) {
+            return { cols: dims.cols, rows: dims.rows };
+          }
+        } catch {
+          // 换下一个实例。
+        }
+      }
+      if (!host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
+        return { cols: 80, rows: 24 };
+      }
+      const pane = document.createElement("div");
+      pane.className = "terminal-pane";
+      pane.style.visibility = "hidden";
+      pane.style.pointerEvents = "none";
+      host.appendChild(pane);
+      const fontSize = Number.parseInt(readVar("--term-font-size"), 10) || 13;
+      const lineHeightRaw = Number.parseFloat(readVar("--term-line-height")) || 1.2;
+      const fontFamily = `${readVar("--term-mono") || "ui-monospace, Menlo, Consolas, monospace"}, ui-monospace, Menlo, Consolas, monospace`;
+      let terminal = null;
+      try {
+        terminal = new window.Terminal({
+          fontFamily,
+          fontSize,
+          lineHeight: lineHeightRaw,
+          scrollback: constants.SCROLLBACK_LINES,
+          theme: buildTheme(),
+          allowProposedApi: true,
+        });
+        const fit = new window.FitAddon.FitAddon();
+        terminal.loadAddon(fit);
+        terminal.open(pane);
+        const dims = fit.proposeDimensions();
+        if (dims && Number.isFinite(dims.cols) && dims.cols > 0) {
+          return { cols: dims.cols, rows: dims.rows };
+        }
+      } catch {
+        // 量不出来就退回保守值。
+      } finally {
+        try {
+          if (terminal) terminal.dispose();
+        } catch {
+          // 忽略。
+        }
+        pane.remove();
+      }
+      return { cols: 80, rows: 24 };
+    },
     ensure,
     attach(id) {
       const view = ensure(id);
@@ -243,6 +300,18 @@ export default function createTerminalView(elements) {
         text = text.slice(-constants.RECENT_OUTPUT_CHARS);
       }
       return text;
+    },
+    /** 验收探针用：返回 xterm 缓冲区所有行（含末尾空行之外的可见内容）。 */
+    bufferLines(id) {
+      const view = views.get(id);
+      if (!view) return { cols: 0, rows: 0, lines: [] };
+      const buffer = view.terminal.buffer.active;
+      const lines = [];
+      for (let i = 0; i < buffer.length; i += 1) {
+        const line = buffer.getLine(i);
+        if (line) lines.push(line.translateToString(true));
+      }
+      return { cols: view.terminal.cols, rows: view.terminal.rows, lines };
     },
     colsRows(id) {
       const view = views.get(id);

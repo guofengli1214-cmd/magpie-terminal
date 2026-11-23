@@ -52,6 +52,9 @@ let wsClient = null;
 let hostsPanel = null;
 // 远程会话建连中的 hostId → 等 session.created 时补上的元数据（用于建标签后同步面板）。
 let pendingRemoteHost = null;
+// 刚发出、还没收到 session.created 的 pty.create 数。命中这些帧时只建标签并 attach，
+// 绝不走恢复路径（不做 recentOutput replay）。
+let pendingCreateCount = 0;
 
 function showBanner(text) {
   banner.textContent = text;
@@ -89,13 +92,17 @@ function createTab() {
     setTimeout(hideBanner, 5000);
     return;
   }
-  const sent = wsClient.send({ type: "pty.create" });
+  // 一次就以终端真实尺寸建 PTY：服务端不会按 80×24 建完再被 resize 触发 SIGWINCH，
+  // bash 少一次重画提示符（V4-E 第 6 步）。
+  const size = terminalView ? terminalView.proposeDimensions() : { cols: 80, rows: 24 };
+  const sent = wsClient.send({ type: "pty.create", cols: size.cols, rows: size.rows });
   if (!sent) {
     statusBar.setHealth(health);
     showBanner("新建标签没发出去：连接还没就绪。点状态栏「重连」后重试。");
     setTimeout(hideBanner, 5000);
     return;
   }
+  pendingCreateCount += 1;
 }
 
 /**
@@ -115,6 +122,7 @@ function createRemoteTab(host) {
     setTimeout(hideBanner, 5000);
     return;
   }
+  pendingCreateCount += 1;
   pendingRemoteHost = host;
   if (statusBar) statusBar.setNotice(`正在连接 ${host.name}…`, "info");
 }
@@ -140,6 +148,9 @@ function handleFrame(frame) {
     case "session.created": {
       const id = frame.id;
       const isRemote = frame.kind === "remote";
+      // 这一帧是不是刚发出去的 pty.create 的回执？命中就绝不做恢复式 replay。
+      const isFreshCreate = pendingCreateCount > 0;
+      if (isFreshCreate) pendingCreateCount -= 1;
       store.addSession({
         id,
         shell: shellSummary(frame),
@@ -169,7 +180,13 @@ function handleFrame(frame) {
         pendingRemoteHost = null;
         if (hostsPanel) hostsPanel.sync();
       }
-      attachActive();
+      if (isFreshCreate) {
+        // 新会话：服务端已经在 pty.create 时按正确尺寸建好，不需要 attach 去换尺寸，
+        // 更没有 recentOutput 需要 replay。
+        if (store.getSnapshot().activeId === id) terminalView.attach(id);
+      } else {
+        attachActive();
+      }
       return;
     }
     case "session.resumed": {
@@ -355,12 +372,9 @@ function attachActive() {
   const snapshot = store.getSnapshot();
   if (!snapshot.activeId) return;
   lastAttachedId = snapshot.activeId;
+  // 只做 attach：fit 由 terminal-view 在下一帧按容器真实尺寸算，
+  // 这里绝不能在 fit 之前用终端初始 80×24 去 sendResize（那会多一次 SIGWINCH 重画提示符）。
   terminalView.attach(snapshot.activeId);
-  const session = snapshot.sessions.find((s) => s.id === snapshot.activeId);
-  if (session) {
-    const { cols, rows } = terminalView.colsRows(session.id);
-    sendResize(session.id, cols, rows);
-  }
 }
 
 function handleWsStatus(status) {
@@ -436,8 +450,8 @@ function setupKeyboard() {
 }
 
 /* ------------------------------------------------------------------ *
- * AI 抽屉（TASK-V3-C §6.1 / §6.2）：默认收起，点把手机开，点收起/rail-ai 收回去。
- * 抽屉开合只动 #root[data-ai-open]，终端由 ResizeObserver 自动 refit。
+ * AI 抽屉（TASK-V4-E）：默认收起，主区右缘把手点一次开、再点收起。
+ * 抽屉是覆盖层，开合只动 #root[data-ai-open]；绝不触发终端 fit / pty.resize。
  * ------------------------------------------------------------------ */
 
 let pendingAgentRequestId = null;
@@ -462,13 +476,11 @@ function openDrawer({ focus = false } = {}) {
   store.setAiUnread(false);
   applyAiOpen(true);
   if (focus && aiDrawer) aiDrawer.focusInput();
-  requestAnimationFrame(() => terminalView && terminalView.resizeAll());
 }
 
 function closeDrawer() {
   store.setAiOpen(false);
   applyAiOpen(false);
-  requestAnimationFrame(() => terminalView && terminalView.resizeAll());
 }
 
 function toggleAi() {
@@ -476,18 +488,22 @@ function toggleAi() {
   else openDrawer({ focus: true });
 }
 
-/** #root[data-ai-open] / 把手可见性 / 终端 fit 的唯一同步点。 */
+/** #root[data-ai-open] / 把手 aria-expanded 的唯一同步点。
+ *  覆盖式抽屉不改终端宽度，所以这里绝不调用 terminalView.resizeAll()/fit：
+ *  那会触发 pty.resize → SIGWINCH → bash 多画一行提示符。 */
 function applyAiOpen(open) {
   root.setAttribute("data-ai-open", open ? "true" : "false");
-  // 抽屉展开时把手必须消失（§6.1：展开时不显示突起）。
-  if (aiHandle) aiHandle.hidden = Boolean(open);
+  if (aiHandle) {
+    aiHandle.setAttribute("aria-expanded", open ? "true" : "false");
+    aiHandle.setAttribute("title", open ? "收起 AI 助手" : "打开 AI 助手");
+  }
 }
 
 /**
  * AI 结果到达时该做什么：
  * - 抽屉已经展开 → 用户看得到，清掉未读；
- * - 抽屉收起 → 不抢终端焦点，只在 rail-ai 点一个未读圆点，等用户自己展开。
- * 待确认（agent.approval）另有把手角标 + toast，见 syncAgentBadge()。
+ * - 抽屉收起 → 不抢终端焦点，只记下未读（V4-E 已无 rail 小圆点，
+ *   待确认另有把手角标 + toast，见 syncAgentBadge()）。
  */
 function arriveAiResult() {
   if (store.getSnapshot().aiOpen === true) {
@@ -539,7 +555,6 @@ function init() {
   rail = createRail({
     host: railHost,
     store,
-    onToggleAi: toggleAi,
     onOpenSettings: () => {
       if (settingsPanel) settingsPanel.open();
     },
@@ -589,7 +604,6 @@ function init() {
     host: aiDrawerHost,
     agentStore,
     api,
-    onClose: () => closeDrawer(),
     onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
     // 发 agent.run（字段逐字按 PROTOCOL-AGENT.md §3.1）。
     // 返回值："sent" | "blocked-pending" | "no-active" | "send-failed"（ai-drawer 按它决定是否清输入框）。
@@ -672,6 +686,7 @@ function init() {
   toastStack = createToastStack({
     host: toastHost,
     agentStore,
+    sessionStore: store,
     onGoConfirm: (approvalId) => {
       openDrawer();
       requestAnimationFrame(() => {
@@ -694,16 +709,15 @@ function init() {
     store.setAgentStatus(snapshot.status);
   });
 
-  // 把手：点它开抽屉。
+  // 把手：点它开、再点收起（抽屉顶上不再有「收起」按钮）。
   if (aiHandle) {
-    aiHandle.addEventListener("click", () => openDrawer({ focus: true }));
+    aiHandle.addEventListener("click", () => toggleAi());
   }
 
   statusBar = createStatusBar({
     host: statusHost,
     store,
     onRetry: () => wsClient.retryNow(),
-    onToggleAi: toggleAi,
   });
   statusBar.init();
 
@@ -769,6 +783,17 @@ function init() {
       enumerable: false,
       writable: false,
       value: () => structuredClone(agentStore.getSnapshot()),
+    });
+    // 验收探针用：读某个标签的 xterm 缓冲区（提示符重复 / 总行数）。
+    Object.defineProperty(window, "__termDebugBuffer", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: (id) => {
+        const snapshot = store.getSnapshot();
+        const target = id || snapshot.activeId;
+        return terminalView ? terminalView.bufferLines(target) : { cols: 0, rows: 0, lines: [] };
+      },
     });
     // 慢网关模拟用：调整「内核未就绪」看门狗时长（毫秒）。
     Object.defineProperty(window, "__termDebugWatchdog", {

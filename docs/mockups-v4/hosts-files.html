@@ -1,0 +1,724 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>magpie V4 · 主机与文件</title>
+<link rel="stylesheet" href="assets/v4.css">
+<script src="assets/v4.js" defer></script>
+<style>
+  /* 本页专用：只用于规格页摆位，不进入产品样式 */
+  .hf-left { width: min(720px, calc(100vw - 470px)); flex: 0 0 auto; }
+  .hf-board { width: 100%; height: 100%; }
+  .hf-stage { height: 100%; }
+  .hf-files-col { height: 100%; display: flex; flex-direction: column; gap: 14px; }
+  .hf-files-board { height: 470px; flex: 0 0 auto; display: flex; flex-direction: column; }
+  /* 上沿给一小截终端，让「这条缝可以拖」看得出来（D6） */
+  .hf-term-strip {
+    flex: 0 0 auto; height: 34px;
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 12px;
+    background: var(--v4-term-bg);
+    font: 11px / 1.6 var(--v4-mono);
+    color: var(--v4-muted);
+    border-bottom: 0;
+  }
+  .hf-term-strip .hf-prompt { color: var(--v4-ok); }
+  .hf-term-strip .hf-term-dim { margin-left: auto; color: var(--v4-dim); }
+  .hf-files-board .files-zoom {
+    flex: 1 1 auto; min-height: 0; height: auto; position: relative; border-radius: 0;
+    /* 与产品样式一致：分界处一条亮线 + 内投影，让人一眼看出"这条缝能拖"（D6） */
+    border-top: 1px solid var(--v4-line-3);
+    box-shadow: inset 0 7px 14px rgba(0, 0, 0, 0.34);
+  }
+  .selbar {
+    flex: 0 0 auto; height: 34px; margin-top: 6px;
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 8px 0 12px;
+    border-top: 1px solid var(--v4-line);
+    background: var(--v4-panel-2);
+    font-size: var(--fs-meta); color: var(--v4-muted);
+  }
+  .selbar b { color: var(--v4-fg-2); font-weight: 600; }
+  .selbar .selbar-acts { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+  .files-count { font-size: 9.5px; color: var(--v4-dim); white-space: nowrap; }
+  .hf-subgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; flex: 1 1 auto; min-height: 0; }
+  .hf-subgrid .state-card { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .hf-subgrid .state-card .sc-title { flex: 0 0 auto; }
+  .hf-hint { margin: 9px 0 0; font-size: 9.5px; line-height: 1.6; color: var(--v4-dim); }
+  .hf-op { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; min-height: 30px; padding: 0 10px; border-bottom: 1px solid var(--v4-line); font-size: var(--fs-meta); color: var(--v4-muted); }
+  .hf-op:last-child { border-bottom: 0; }
+  .hf-op .kbd { font-family: var(--v4-mono); font-size: 9.5px; color: var(--v4-dim); border: 1px solid var(--v4-line); border-radius: 3px; padding: 0 4px; line-height: 15px; background: var(--v4-term-bg); }
+  .hf-op b { color: var(--v4-fg); font-weight: 500; }
+  .hf-menu { position: static !important; width: 100%; min-width: 0; box-shadow: none; }
+  .hf-menu .menu-item { height: 30px; }
+  .hf-mini-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 7px 9px; }
+  .hf-mini-chip { display: flex; align-items: center; gap: 5px; width: 74px; padding: 3px 4px; border-radius: 4px; color: var(--v4-muted); font-size: 8.5px; background: var(--v4-panel-2); border: 1px solid var(--v4-line); }
+  .hf-mini-chip .ftype { width: 18px; height: 18px; border-radius: 3px; }
+  .hf-mini-chip .ftype .ico { width: 11px; height: 11px; }
+  .hf-mini-chip span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hf-danger-line { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--v4-line); font-size: var(--fs-meta); color: var(--v4-muted); }
+  .hf-danger-line:last-child { border-bottom: 0; }
+  .hf-danger-line .ico { color: var(--v4-danger); flex: 0 0 auto; }
+  .hf-danger-line b { color: var(--v4-fg); font-weight: 500; }
+  .hf-danger-line .tag { margin-left: auto; font-size: 9px; color: var(--v4-dim); border: 1px solid var(--v4-line); border-radius: 3px; padding: 0 4px; }
+  @media (max-width: 1200px) {
+    .hf-left { width: 100%; height: 640px; flex: 0 0 auto; }
+  }
+</style>
+</head>
+<body>
+<div class="spec">
+
+  <header class="spec-head">
+    <div class="spec-title">
+      <h1>主机与文件 · 边界与操作</h1>
+      <p>主机是覆盖层 / 文件是终端下方的常驻面板 / 两者不共用容器</p>
+    </div>
+    <div class="spec-spacer"></div>
+    <div class="seg" role="tablist" aria-label="细节视图">
+      <button data-view="hosts" aria-selected="true" role="tab">主机面板</button>
+      <button data-view="files" aria-selected="false" role="tab">文件面板</button>
+    </div>
+    <span class="spec-stamp">V4 · 2026-11-23</span>
+  </header>
+
+  <div class="spec-body">
+
+    <div class="spec-left hf-left">
+
+      <!-- ============================================================ -->
+      <!-- 主机面板                                                     -->
+      <!-- ============================================================ -->
+      <div data-spec-panel="hosts" style="width:100%;height:100%">
+        <div class="board hf-board">
+          <div class="board-head">
+            <span class="b-dots"><i></i><i></i><i></i></span>
+            <span class="b-title">主机面板 · 300px 覆盖层 · 点击遮罩关闭</span>
+          </div>
+
+          <div class="stage hf-stage">
+            <!-- 背景：真实终端页缩小版，让覆盖关系可读 -->
+            <div class="mini-rail">
+              <i style="display:grid;place-items:center"><svg class="ico ico-14" aria-hidden="true" style="color:var(--v4-dim)"><use href="#i-terminal"/></svg></i>
+              <i class="on" style="display:grid;place-items:center"><svg class="ico ico-14" aria-hidden="true" style="color:var(--v4-accent)"><use href="#i-server"/></svg></i>
+              <i style="display:grid;place-items:center;margin-top:auto;margin-bottom:8px"><svg class="ico ico-14" aria-hidden="true" style="color:var(--v4-dim)"><use href="#i-settings"/></svg></i>
+            </div>
+
+            <div class="mini-tabbar">
+              <span class="mini-tab on" style="display:flex;align-items:center;gap:5px;padding:0 8px;font-size:9.5px;color:var(--v4-fg)">
+                <svg class="ico ico-12" aria-hidden="true" style="color:var(--v4-accent)"><use href="#i-terminal"/></svg> 本机 · bash
+              </span>
+              <span class="mini-tab" style="display:flex;align-items:center;gap:5px;padding:0 8px;font-size:9.5px;color:var(--v4-dim)">
+                <svg class="ico ico-12" aria-hidden="true"><use href="#i-server"/></svg> prod-web-01
+              </span>
+              <span style="width:20px;height:20px;display:grid;place-items:center;color:var(--v4-dim)"><svg class="ico ico-12" aria-hidden="true"><use href="#i-plus"/></svg></span>
+              <span style="margin-left:auto;font-size:9px;color:var(--v4-dim)">132 × 41</span>
+            </div>
+
+            <div class="mini-term" style="left:360px">
+              <div><span class="g">41807@local</span> <span class="b">MINGW64</span> <span style="color:var(--v4-dim)">~/magpie-terminal</span></div>
+              <div><span class="g">$</span> git status --short</div>
+              <div>&nbsp;M app/styles/layout.css</div>
+              <div>&nbsp;M app/ui/chat.js</div>
+              <div><span class="g">$</span> npm run check</div>
+              <div>&nbsp;&gt; vite build &amp;&amp; node scripts/check.mjs</div>
+              <div>&nbsp;<span class="b">✓</span> 42 modules transformed</div>
+              <div>&nbsp;<span class="b">✓</span> built in 1.82s</div>
+              <div><span class="g">$</span> <span style="display:inline-block;width:6px;height:11px;background:var(--v4-fg);vertical-align:-1px"></span></div>
+            </div>
+
+            <div class="mini-files">
+              <div style="height:22px;display:flex;align-items:center;gap:6px;padding:0 8px;border-bottom:1px solid var(--v4-line);font-size:8.5px;color:var(--v4-dim)">
+                <svg class="ico" aria-hidden="true" style="width:10px;height:10px"><use href="#i-folder"/></svg>
+                <span style="color:var(--v4-muted)">文件</span>
+                <span>~/magpie-terminal</span>
+                <span style="margin-left:auto;display:flex;gap:5px">
+                  <svg class="ico" aria-hidden="true" style="width:10px;height:10px"><use href="#i-search"/></svg>
+                  <svg class="ico" aria-hidden="true" style="width:10px;height:10px"><use href="#i-refresh"/></svg>
+                  <svg class="ico" aria-hidden="true" style="width:10px;height:10px"><use href="#i-upload"/></svg>
+                </span>
+              </div>
+              <div class="hf-mini-chips">
+                <span class="hf-mini-chip"><span class="ftype ftype-dir"><svg class="ico"><use href="#i-folder"/></svg></span><span>src</span></span>
+                <span class="hf-mini-chip"><span class="ftype ftype-dir"><svg class="ico"><use href="#i-folder"/></svg></span><span>test</span></span>
+                <span class="hf-mini-chip"><span class="ftype ftype-dir"><svg class="ico"><use href="#i-folder"/></svg></span><span>docs</span></span>
+                <span class="hf-mini-chip"><span class="ftype ftype-js"><svg class="ico"><use href="#i-file-text"/></svg></span><span>package.json</span></span>
+                <span class="hf-mini-chip"><span class="ftype ftype-md"><svg class="ico"><use href="#i-file-text"/></svg></span><span>README.md</span></span>
+                <span class="hf-mini-chip"><span class="ftype ftype-img"><svg class="ico"><use href="#i-image"/></svg></span><span>logo.svg</span></span>
+                <span class="hf-mini-chip"><span class="ftype ftype-log"><svg class="ico"><use href="#i-file-text"/></svg></span><span>build.log</span></span>
+                <span class="hf-mini-chip"><span class="ftype ftype-js"><svg class="ico"><use href="#i-braces"/></svg></span><span>vite.config.js</span></span>
+              </div>
+            </div>
+
+            <div class="mini-status">
+              <span style="width:5px;height:5px;border-radius:50%;background:var(--v4-ok)"></span>
+              <span>就绪</span><span>·</span><span>bash 5.2.37</span><span>·</span><span>132 × 41</span>
+              <span style="margin-left:auto">UTF-8</span><span>6 台主机</span>
+            </div>
+
+            <!-- 覆盖层本体 -->
+            <div class="hosts-layer" style="inset:0 0 26px 44px" role="dialog" aria-label="主机">
+              <div class="hosts-scrim" title="点击关闭主机面板"></div>
+              <div class="hosts">
+                <div class="hosts-head">
+                  <h2>主机</h2>
+                  <button class="hosts-new">
+                    <svg class="ico ico-12" aria-hidden="true"><use href="#i-plus"/></svg>
+                    新建主机
+                  </button>
+                  <button class="icon-btn" data-hosts-close title="关闭（Esc）">
+                    <svg class="ico ico-14" aria-hidden="true"><use href="#i-x"/></svg>
+                  </button>
+                </div>
+
+                <label class="hosts-search">
+                  <svg class="ico ico-12" aria-hidden="true"><use href="#i-search"/></svg>
+                  <input type="text" placeholder="搜索主机、用户名或地址" aria-label="搜索主机">
+                  <span class="kbd" style="font-family:var(--v4-mono);font-size:9px;color:var(--v4-dim);border:1px solid var(--v4-line);border-radius:3px;padding:0 3px">Ctrl K</span>
+                </label>
+
+                <div class="hosts-body">
+                  <div class="host-section">
+                    本机
+                    <span class="count">1</span>
+                  </div>
+                  <div class="host-card" data-current="true">
+                    <div class="host-line">
+                      <svg class="ico ico-14" aria-hidden="true"><use href="#i-terminal"/></svg>
+                      <span class="host-name">本机</span>
+                      <span class="host-tag">当前</span>
+                      <span class="hstat on" style="margin-left:auto"></span>
+                    </div>
+                    <div class="host-sub">41807 · Windows 11 · x64</div>
+                    <div class="shell-label">
+                      <svg class="ico" aria-hidden="true" style="width:10px;height:10px"><use href="#i-zap"/></svg>
+                      新标签使用
+                    </div>
+                    <div class="shell-grid" role="radiogroup" aria-label="本机 shell">
+                      <button class="shell-opt" role="radio" aria-checked="true">
+                        <b>bash</b><small>Git Bash 5.2</small>
+                      </button>
+                      <button class="shell-opt" role="radio" aria-checked="false">
+                        <b>cmd</b><small>cmd.exe</small>
+                      </button>
+                      <button class="shell-opt" role="radio" aria-checked="false">
+                        <b>PowerShell 7</b><small>pwsh.exe</small>
+                      </button>
+                      <button class="shell-opt" role="radio" aria-checked="false">
+                        <b>PowerShell 5.1</b><small>powershell.exe</small>
+                      </button>
+                    </div>
+                    <p class="shell-hint">只影响新标签。已开的终端保持原 shell，不重启进程。</p>
+                  </div>
+
+                  <div class="host-section">
+                    SSH 主机
+                    <span class="count">5</span>
+                  </div>
+                  <div class="host-row">
+                    <span class="hstat"></span>
+                    <span class="hmain"><span class="hname">prod-web-01</span><span class="hsub">deploy@10.0.4.21:22</span></span>
+                    <span class="host-tag" style="font-size:9px">生产</span>
+                    <button class="hmore" title="更多"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-h"/></svg></button>
+                  </div>
+                  <div class="host-row">
+                    <span class="hstat on"></span>
+                    <span class="hmain"><span class="hname">staging-02</span><span class="hsub">deploy@10.0.4.18:22</span></span>
+                    <button class="hmore" title="更多"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-h"/></svg></button>
+                  </div>
+                  <div class="host-row">
+                    <span class="hstat"></span>
+                    <span class="hmain"><span class="hname">db-primary</span><span class="hsub">root@10.0.4.30:22 · 密钥</span></span>
+                    <button class="hmore" title="更多"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-h"/></svg></button>
+                  </div>
+                  <div class="host-row">
+                    <span class="hstat on"></span>
+                    <span class="hmain"><span class="hname">build-runner</span><span class="hsub">ci@10.0.4.44:22</span></span>
+                    <span class="host-tag" style="font-size:9px">CI</span>
+                    <button class="hmore" title="更多"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-h"/></svg></button>
+                  </div>
+                  <div class="host-row">
+                    <span class="hstat"></span>
+                    <span class="hmain"><span class="hname">legacy-01</span><span class="hsub">ops@10.0.4.9:22</span></span>
+                    <button class="hmore" title="更多"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-h"/></svg></button>
+                  </div>
+                </div>
+
+                <div class="hosts-foot">
+                  <span>本机 + 5 台 SSH · 2 台在线</span>
+                  <button>管理主机 <svg class="ico" aria-hidden="true" style="width:10px;height:10px;vertical-align:-1px"><use href="#i-chevron-right"/></svg></button>
+                </div>
+              </div>
+              <div class="scrim-note">
+                <svg class="ico ico-12" aria-hidden="true"><use href="#i-x"/></svg>
+                点遮罩、按 Esc 或右上角关闭，焦点回到终端
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- 文件面板                                                     -->
+      <!-- ============================================================ -->
+      <div data-spec-panel="files" hidden style="width:100%;height:100%">
+        <div class="hf-files-col">
+          <div class="board hf-files-board">
+            <div class="board-head">
+              <span class="b-dots"><i></i><i></i><i></i></span>
+              <span class="b-title">文件面板细节（纵向放大）· 实际高度 224px</span>
+              <span class="zoom-tag" style="margin-left:auto">宽度随窗口，列数自适应</span>
+            </div>
+
+            <div class="hf-term-strip" aria-hidden="true">
+              <span class="hf-prompt">~/magpie-terminal $</span> npm run build
+              <span class="hf-term-dim">· · ·</span>
+            </div>
+
+            <div class="files-zoom" style="position:relative">
+              <div class="files-grip" title="拖动调整文件面板高度（150–420px），双击折叠"></div>
+              <div class="files-head">
+                <button class="files-collapse" title="折叠文件面板">
+                  <svg class="ico ico-12" aria-hidden="true"><use href="#i-chevron-down"/></svg>
+                </button>
+                <span class="files-title">
+                  <svg class="ico ico-14" aria-hidden="true"><use href="#i-folder-open"/></svg>
+                  文件
+                </span>
+                <span class="live-dot" title="实时跟随当前目录"></span>
+                <span class="files-count">24 项</span>
+                <nav class="crumbs" aria-label="当前路径">
+                  <button class="crumb" title="主目录">~</button>
+                  <span class="crumb-sep"><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg></span>
+                  <button class="crumb" data-current="true">magpie-terminal</button>
+                </nav>
+
+                <div class="files-tools">
+                  <label class="fsearch">
+                    <svg class="ico ico-12" aria-hidden="true"><use href="#i-search"/></svg>
+                    <input type="text" placeholder="筛选当前目录" aria-label="筛选文件">
+                  </label>
+                  <button class="btn btn-sm btn-quiet" title="新建文件夹（Ctrl Shift N）">
+                    <svg class="ico ico-12" aria-hidden="true"><use href="#i-folder-plus"/></svg>
+                    新建文件夹
+                  </button>
+                  <button class="btn btn-sm btn-quiet" title="刷新（F5）">
+                    <svg class="ico ico-12" aria-hidden="true"><use href="#i-refresh"/></svg>
+                  </button>
+                  <span style="width:1px;height:16px;background:var(--v4-line);margin:0 2px"></span>
+                  <button class="btn btn-sm btn-quiet" data-view-btn="grid" title="网格视图" aria-pressed="true" style="color:var(--v4-fg);background:var(--v4-panel-2)">
+                    <svg class="ico ico-12" aria-hidden="true"><use href="#i-grid"/></svg>
+                  </button>
+                  <button class="btn btn-sm btn-quiet" data-view-btn="list" title="列表视图" aria-pressed="false">
+                    <svg class="ico ico-12" aria-hidden="true"><use href="#i-list"/></svg>
+                  </button>
+                  <button class="btn btn-sm btn-accent" title="上传文件（Ctrl U）">
+                    <svg class="ico ico-12" aria-hidden="true"><use href="#i-upload"/></svg>
+                    上传
+                  </button>
+                </div>
+              </div>
+
+              <div class="file-grid">
+                <button class="file" data-name="src">
+                  <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+                  <span class="fname">src</span><span class="fmeta">12 项 · 11-23 16:40</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="test">
+                  <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+                  <span class="fname">test</span><span class="fmeta">8 项 · 11-23 15:02</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="docs">
+                  <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+                  <span class="fname">docs</span><span class="fmeta">31 项 · 11-23 17:18</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="app" data-selected="true">
+                  <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+                  <span class="fname">app</span><span class="fmeta">24 项 · 11-23 17:12</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file is-ignored" data-name="node_modules">
+                  <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+                  <span class="fname">node_modules</span><span class="fmeta">已忽略 · 11-22 09:31</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="assets">
+                  <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+                  <span class="fname">assets</span><span class="fmeta">7 项 · 11-23 14:20</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="package.json" data-selected="true">
+                  <span class="ftype ftype-json"><svg class="ico" aria-hidden="true"><use href="#i-braces"/></svg></span>
+                  <span class="fname">package.json</span><span class="fmeta">1.8 KB · 11-23 11:04</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="package-lock.json">
+                  <span class="ftype ftype-json"><svg class="ico" aria-hidden="true"><use href="#i-braces"/></svg></span>
+                  <span class="fname">package-lock.json</span><span class="fmeta">312 KB · 11-22 09:31</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="README.md">
+                  <span class="ftype ftype-md"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+                  <span class="fname">README.md</span><span class="fmeta">9.4 KB · 11-21 18:22</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="vite.config.js">
+                  <span class="ftype ftype-js"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+                  <span class="fname">vite.config.js</span><span class="fmeta">1.1 KB · 11-20 10:18</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="index.html">
+                  <span class="ftype ftype-js"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+                  <span class="fname">index.html</span><span class="fmeta">4.2 KB · 11-21 09:12</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="styles.css">
+                  <span class="ftype ftype-js"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+                  <span class="fname">styles.css</span><span class="fmeta">22 KB · 11-23 16:58</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="logo.svg">
+                  <span class="ftype ftype-img"><svg class="ico" aria-hidden="true"><use href="#i-image"/></svg></span>
+                  <span class="fname">logo.svg</span><span class="fmeta">3.8 KB · 11-19 14:02</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="screenshot.png">
+                  <span class="ftype ftype-img"><svg class="ico" aria-hidden="true"><use href="#i-image"/></svg></span>
+                  <span class="fname">screenshot.png</span><span class="fmeta">842 KB · 11-23 17:02</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="build.log">
+                  <span class="ftype ftype-log"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+                  <span class="fname">build.log</span><span class="fmeta">41 KB · 11-23 17:10</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="release.sh">
+                  <span class="ftype ftype-sh"><svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                  <span class="fname">release.sh</span><span class="fmeta">2.1 KB · 11-18 18:40</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="LICENSE">
+                  <span class="ftype ftype-md"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+                  <span class="fname">LICENSE</span><span class="fmeta">1.1 KB · 10-02 08:00</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name=".gitignore">
+                  <span class="ftype ftype-log"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+                  <span class="fname">.gitignore</span><span class="fmeta">284 B · 10-02 08:00</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name=".env.example">
+                  <span class="ftype ftype-sh"><svg class="ico" aria-hidden="true"><use href="#i-lock"/></svg></span>
+                  <span class="fname">.env.example</span><span class="fmeta">612 B · 11-14 13:20</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="tsconfig.json">
+                  <span class="ftype ftype-json"><svg class="ico" aria-hidden="true"><use href="#i-braces"/></svg></span>
+                  <span class="fname">tsconfig.json</span><span class="fmeta">780 B · 11-20 10:18</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="CHANGELOG.md">
+                  <span class="ftype ftype-md"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+                  <span class="fname">CHANGELOG.md</span><span class="fmeta">6.2 KB · 11-22 19:40</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="scripts">
+                  <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+                  <span class="fname">scripts</span><span class="fmeta">5 项 · 11-18 18:40</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name=".github">
+                  <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+                  <span class="fname">.github</span><span class="fmeta">3 项 · 11-10 12:00</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+                <button class="file" data-name="fixtures">
+                  <span class="ftype ftype-dir"><svg class="ico" aria-hidden="true"><use href="#i-folder"/></svg></span>
+                  <span class="fname">fixtures</span><span class="fmeta">6 项 · 11-23 17:04</span>
+                  <span class="fmore"><svg class="ico ico-12" aria-hidden="true"><use href="#i-more-v"/></svg></span>
+                </button>
+              </div>
+
+              <div class="selbar">
+                <span><b>已选 2 项</b> · 1.2 MB</span>
+                <span style="color:var(--v4-dim)">·</span>
+                <span>app, package.json</span>
+                <div class="selbar-acts">
+                  <button class="btn btn-sm btn-quiet"><svg class="ico ico-12" aria-hidden="true"><use href="#i-eye"/></svg> 查看</button>
+                  <button class="btn btn-sm btn-quiet"><svg class="ico ico-12" aria-hidden="true"><use href="#i-edit"/></svg> 编辑</button>
+                  <button class="btn btn-sm btn-quiet"><svg class="ico ico-12" aria-hidden="true"><use href="#i-download"/></svg> 下载</button>
+                  <button class="btn btn-sm btn-quiet" style="color:var(--v4-danger)"><svg class="ico ico-12" aria-hidden="true"><use href="#i-trash"/></svg> 删除</button>
+                </div>
+              </div>
+
+              <!-- 右键菜单：静态展开，供评审看层级 -->
+              <div class="menu ctx-menu" id="file-ctx" data-static="true" style="right:176px;bottom:58px;left:auto;top:auto;min-width:214px">
+                <div class="menu-label">app <span style="color:var(--v4-dim)">· 文件夹</span></div>
+                <button class="menu-item">
+                  <svg class="ico" aria-hidden="true"><use href="#i-folder-open"/></svg>
+                  打开
+                  <span class="mi-right">Enter</span>
+                </button>
+                <button class="menu-item">
+                  <svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>
+                  在终端中打开
+                  <span class="mi-right">Ctrl + `</span>
+                </button>
+                <button class="menu-item">
+                  <svg class="ico" aria-hidden="true"><use href="#i-edit"/></svg>
+                  重命名
+                  <span class="mi-right">F2</span>
+                </button>
+                <button class="menu-item">
+                  <svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>
+                  下载
+                  <span class="mi-right">Ctrl S</span>
+                </button>
+                <button class="menu-item">
+                  <svg class="ico" aria-hidden="true"><use href="#i-link"/></svg>
+                  复制路径
+                  <span class="mi-right">Ctrl C</span>
+                </button>
+                <div class="menu-sep"></div>
+                <button class="menu-item" data-danger="true">
+                  <svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>
+                  删除
+                  <span class="mi-right">Del</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="hf-subgrid">
+            <div class="state-card">
+              <div class="sc-title"><span class="dot dot-run"></span>上传中 · 2 / 3</div>
+              <div class="upload-row">
+                <span class="ftype ftype-md"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+                <div class="upload-main">
+                  <div class="upload-name">app.css <span>38%</span></div>
+                  <div class="bar"><i style="width:38%"></i></div>
+                  <div class="upload-sub"><span>612 KB / 1.6 MB</span><span>~/magpie-terminal/assets</span></div>
+                </div>
+              </div>
+              <div class="upload-row">
+                <span class="ftype ftype-img"><svg class="ico" aria-hidden="true"><use href="#i-image"/></svg></span>
+                <div class="upload-main">
+                  <div class="upload-name">logo.svg <span>100%</span></div>
+                  <div class="bar"><i style="width:100%;background:var(--v4-ok)"></i></div>
+                  <div class="upload-sub"><span>3.8 KB</span><span style="color:var(--v4-ok)">已写入</span></div>
+                </div>
+              </div>
+              <div class="upload-row">
+                <span class="ftype ftype-log"><svg class="ico" aria-hidden="true"><use href="#i-file-text"/></svg></span>
+                <div class="upload-main">
+                  <div class="upload-name">bundle.js.map <span style="color:var(--v4-dim)">排队</span></div>
+                  <div class="bar"><i style="width:0"></i></div>
+                  <div class="upload-sub"><span>2.4 MB</span><span style="color:var(--v4-dim)">等待写入</span></div>
+                </div>
+              </div>
+              <p class="hf-hint">上传直接落到当前目录。失败只在条目内重试，不弹全局通知。</p>
+            </div>
+
+            <div class="state-card">
+              <div class="sc-title"><span class="dot dot-err"></span>删除需要确认</div>
+              <div class="hf-danger-line">
+                <svg class="ico" aria-hidden="true"><use href="#i-alert-triangle"/></svg>
+                <span><b>删除 app 与 package.json</b><br>app 内 24 个文件会一起移除</span>
+                <span class="tag">可恢复</span>
+              </div>
+              <div class="hf-danger-line">
+                <svg class="ico" aria-hidden="true"><use href="#i-folder-open"/></svg>
+                <span style="font-family:var(--v4-mono);font-size:10px">~/magpie-terminal</span>
+              </div>
+              <div class="hf-danger-line">
+                <svg class="ico" aria-hidden="true"><use href="#i-lock"/></svg>
+                <span>写操作走审批，AI 不能直接删</span>
+              </div>
+              <div class="hf-danger-line">
+                <svg class="ico" aria-hidden="true"><use href="#i-clock"/></svg>
+                <span>回收站保留 30 天，可随时还原</span>
+              </div>
+              <div style="display:flex;gap:6px;margin-top:auto;padding-top:9px">
+                <button class="btn btn-sm btn-danger">移到回收站</button>
+                <button class="btn btn-sm btn-quiet">取消</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- 右侧说明                                                       -->
+    <!-- ============================================================== -->
+    <div class="spec-right">
+
+      <div data-spec-panel="hosts">
+        <div class="notes">
+          <div class="note">
+            <span class="note-n">1</span>
+            <div>
+              <h3>本机固定第一，不参与 SSH 排序</h3>
+              <p><code>本机</code> 永远是第一张卡，带当前标记和 4 个 shell。SSH 列表按最近连接排，搜索不会把本机过滤掉。</p>
+            </div>
+          </div>
+          <div class="note">
+            <span class="note-n">2</span>
+            <div>
+              <h3>shell 选择只影响新标签</h3>
+              <p>bash / cmd / PowerShell 7 / PowerShell 5.1 四选一。已经开着的终端不重启，避免丢历史；选完直接反映到顶部 <code>+</code> 菜单。</p>
+            </div>
+          </div>
+          <div class="note">
+            <span class="note-n">3</span>
+            <div>
+              <h3>点外部一定关得掉</h3>
+              <p>遮罩覆盖终端和文件面板，点遮罩、按 Esc、点右上角都可以关闭。关闭后焦点回到终端，不留下半开的浮层。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="spec-h" style="margin-top:16px">加号菜单与主机面板同源</div>
+        <div class="menu hf-menu">
+          <div class="menu-label">本机终端</div>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>
+            <span class="mi-main"><b>bash</b><small>Git Bash 5.2 · 41807</small></span>
+            <span class="mi-right"><svg class="ico ico-12" aria-hidden="true"><use href="#i-check"/></svg></span>
+          </button>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>
+            <span class="mi-main"><b>cmd</b><small>命令提示符</small></span>
+          </button>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>
+            <span class="mi-main"><b>PowerShell 7</b><small>pwsh.exe</small></span>
+          </button>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-terminal"/></svg>
+            <span class="mi-main"><b>PowerShell 5.1</b><small>Windows PowerShell</small></span>
+          </button>
+          <div class="menu-sep"></div>
+          <div class="menu-label">已保存主机</div>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-server"/></svg>
+            <span class="mi-main"><b>prod-web-01</b><small>deploy@10.0.4.21</small></span>
+            <span class="mi-right"><span class="conn"></span><span class="tag">生产</span></span>
+          </button>
+          <button class="menu-item">
+            <svg class="ico" aria-hidden="true"><use href="#i-server"/></svg>
+            <span class="mi-main"><b>staging-02</b><small>deploy@10.0.4.18</small></span>
+            <span class="mi-right"><span class="conn"></span></span>
+          </button>
+          <div class="menu-note">同一份主机数据。面板里改 shell，菜单下一次打开就更新。</div>
+        </div>
+
+        <div class="spec-h" style="margin-top:16px">连接状态</div>
+        <div class="state-cards">
+          <div class="state-card">
+            <div class="sc-title"><span class="dot dot-run"></span>连接中</div>
+            <div class="mini-empty" style="height:auto;padding:4px 0 0">
+              <b>正在连接 db-primary</b>
+              <p>上次断开，正在重试</p>
+            </div>
+          </div>
+          <div class="state-card">
+            <div class="sc-title"><span class="dot dot-err"></span>已断开</div>
+            <div class="host-row" style="padding-left:0">
+              <span class="hstat"></span>
+              <span class="hmain"><span class="hname">prod-web-01</span><span class="hsub">连接超时 · 10.0.4.21</span></span>
+            </div>
+            <button class="btn btn-sm" style="margin-top:4px">重连</button>
+          </div>
+          <div class="state-card">
+            <div class="sc-title"><span class="dot"></span>无匹配</div>
+            <div class="mini-empty" style="height:auto;padding:4px 0 0">
+              <b>没有找到主机</b>
+              <p>换个关键词，或新建 SSH 主机</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div data-spec-panel="files" hidden>
+        <div class="notes">
+          <div class="note">
+            <span class="note-n">1</span>
+            <div>
+              <h3>文件跟着终端目录，不跟着主机面板</h3>
+              <p>主机是覆盖层，文件是终端下方的固定面板。终端 <code>cd</code> 到哪，文件面板就跟到哪；分界条可拖 150–420px，拖到最下只剩 38px 标题条。</p>
+            </div>
+          </div>
+          <div class="note">
+            <span class="note-n">2</span>
+            <div>
+              <h3>图标网格优先于树</h3>
+              <p>列数跟着宽度走：1280 宽约 11 列，窗口变窄自动减少；面板高 224px，正好两行图标。文件名一行截断，元信息第二行。目录蓝、代码黄、JSON 绿、图片紫。</p>
+            </div>
+          </div>
+          <div class="note">
+            <span class="note-n">3</span>
+            <div>
+              <h3>右键按类型给操作</h3>
+              <p>右键按选中类型给操作：文件夹可打开、重命名、删除，文件多一个编辑；多选后底部出现批量条。删除是红色，且进入审批，AI 不能绕过。</p>
+            </div>
+          </div>
+          <div class="note">
+            <span class="note-n">4</span>
+            <div>
+              <h3>上传不抢终端焦点</h3>
+              <p>上传按钮打开文件选择器，进度在面板内的条目里走。终端保持输入焦点，不弹全屏对话框。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="spec-h" style="margin-top:16px">操作与快捷键</div>
+        <div class="scope-board" style="border-radius:8px">
+          <div class="hf-op"><span><b>查看</b> · 文本 / 图片预览</span><span class="kbd">Enter</span></div>
+          <div class="hf-op"><span><b>重命名</b> · 就地改名</span><span class="kbd">F2</span></div>
+          <div class="hf-op"><span><b>下载</b> · 保存到本地</span><span class="kbd">Ctrl S</span></div>
+          <div class="hf-op"><span><b>删除</b> · 移入回收站并审批</span><span class="kbd">Del</span></div>
+          <div class="hf-op"><span><b>新建文件夹</b> · 就地命名</span><span class="kbd">Ctrl ⇧ N</span></div>
+          <div class="hf-op"><span><b>上传</b> · 多选，落到当前目录</span><span class="kbd">Ctrl U</span></div>
+          <div class="hf-op"><span><b>多选</b> · 追加选择</span><span class="kbd">Ctrl 点击</span></div>
+        </div>
+
+        <div class="spec-h" style="margin-top:16px">空状态与禁用</div>
+        <div class="state-cards">
+          <div class="state-card">
+            <div class="sc-title"><span class="dot"></span>空文件夹</div>
+            <div class="mini-empty" style="height:auto;padding:2px 0 0">
+              <div class="me-ico"><svg class="ico ico-14" aria-hidden="true"><use href="#i-folder"/></svg></div>
+              <b>这个文件夹是空的</b>
+              <p>拖文件到这里，或点上传</p>
+            </div>
+          </div>
+          <div class="state-card">
+            <div class="sc-title"><span class="dot dot-warn"></span>只读目录</div>
+            <div class="mini-empty" style="height:auto;padding:2px 0 0">
+              <div class="me-ico"><svg class="ico ico-14" aria-hidden="true"><use href="#i-lock"/></svg></div>
+              <b>没有写入权限</b>
+              <p>上传与删除已禁用</p>
+            </div>
+          </div>
+          <div class="state-card">
+            <div class="sc-title"><span class="dot"></span>无匹配</div>
+            <div class="mini-empty" style="height:auto;padding:2px 0 0">
+              <div class="me-ico"><svg class="ico ico-14" aria-hidden="true"><use href="#i-search"/></svg></div>
+              <b>没有匹配的文件</b>
+              <p>清空筛选，或切换目录</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</body>
+</html>

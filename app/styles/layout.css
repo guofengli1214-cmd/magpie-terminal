@@ -1,9 +1,8 @@
-/* 骨架（TASK-V3-C §6.1）：
-     #root  两行网格：主行（rail / main / ai-drawer 三列） / 状态栏
-     .rail  48px 固定左，纵跨主行（不参与终端 flex 计算）
-     .main  1fr，纵向 flex：标签条 / 终端 1fr
-     drawer 右侧 AI 抽屉，宽 360px；收起时列宽 0px 且 display:none
-     handle 收起态贴在 main 右边缘、垂直居中的「突起」
+/* V4-E 骨架（TASK-V4-E）：
+     #root   两列网格：rail(48px) + main(1fr)；下面一条状态栏
+     .main   纵向 flex：提示条 / 标签条 / 终端 1fr；把手与抽屉相对它定位
+     drawer  position:absolute 的覆盖层，宽 384px；收起时 translateX(100%)
+     handle  永远可见，展开时贴到抽屉左缘；z-index 高于抽屉
    toast 栈与设置宿主是 position: fixed 的覆盖层，不占网格格子。
    颜色一律来自 tokens.css 的变量。 */
 
@@ -13,27 +12,20 @@ html, body {
   background: var(--term-bg);
   color: var(--term-fg);
   font: 13px/1.5 var(--magpie-font);
-  /* 任何视口都不许出现横向滚动条（§6.1 硬指标）。 */
+  /* 任何视口都不许出现横向滚动条。 */
   overflow-x: hidden;
 }
 
 [data-role="app"] {
   display: grid;
-  /* 三列：图标栏 / 终端主区 / AI 抽屉。抽屉宽度由 data-ai-open 决定（见下）。 */
-  grid-template-columns: var(--term-rail-width) minmax(0, 1fr) var(--term-drawer-width);
-  grid-template-rows: minmax(0, 1fr) auto;
+  /* 抽屉不再占列：它改为 main 内的绝对定位覆盖层。 */
+  grid-template-columns: var(--term-rail-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--term-statusbar-height);
   height: 100%;
   min-height: 0;
   overflow: hidden;
-}
-
-/* 抽屉宽度的唯一开关。收起态必须真的是 0（不是隐藏但占位），否则终端拿不满。 */
-[data-role="app"][data-ai-open="false"] {
-  --term-drawer-width: 0px;
-}
-
-[data-role="app"][data-ai-open="true"] {
-  --term-drawer-width: var(--term-drawer-open-width);
+  position: relative;
+  background: var(--term-bg);
 }
 
 [data-role="rail"] {
@@ -44,8 +36,13 @@ html, body {
 [data-role="main"] {
   grid-column: 2;
   grid-row: 1;
-  /* 把手相对 main 定位（贴右边缘）。 */
+  /* 把手与抽屉相对 main 定位。 */
   position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 [data-role="statusbar"] {
@@ -53,49 +50,64 @@ html, body {
   grid-row: 2;
 }
 
+/* 覆盖式抽屉：宽度变化只影响自己，终端列数不变。
+   pointer-events 关闭态要关掉，否则透明区域会挡住终端点击。 */
 [data-role="ai-drawer"] {
-  grid-column: 3;
-  grid-row: 1;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(var(--term-drawer-open-width), calc(100% - var(--term-handle-width)));
+  z-index: 30;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  border-left: 1px solid var(--term-border);
+  /* 边只由这一条 border-left 画；禁止再用 inset / ::before 描边。 */
+  border-left: 1px solid var(--term-line-2);
   background: var(--term-panel-bg);
+  box-shadow: -20px 0 48px var(--term-shadow);
+  transform: translateX(100%);
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform;
+  pointer-events: none;
 }
 
-[data-role="app"][data-ai-open="false"] [data-role="ai-drawer"] {
-  display: none;
-}
-
-[data-role="main"] {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
+[data-role="app"][data-ai-open="true"] [data-role="ai-drawer"] {
+  transform: translateX(0);
+  pointer-events: auto;
 }
 
 [data-role="tabbar"] {
   flex: 0 0 auto;
+  height: var(--term-tabbar-height);
+  box-sizing: border-box;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--term-line);
+  background: var(--term-bg);
+  position: relative;
+  z-index: 5;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
-[data-role="tabbar"],
 [data-role="statusbar"] {
+  box-sizing: border-box;
+  height: var(--term-statusbar-height);
   display: flex;
   align-items: center;
   gap: var(--term-gap);
-  padding: 4px var(--term-gap);
-  border-bottom: 1px solid var(--term-border);
+  padding: 0 var(--term-gap);
+  border-top: 1px solid var(--term-line);
+  background: var(--term-bg);
   min-width: 0;
   overflow: hidden;
-}
-
-[data-role="statusbar"] {
-  border-bottom: none;
-  border-top: 1px solid var(--term-border);
-  font-size: 12px;
+  font-size: 11.5px;
 }
 
 [data-role="terminal-host"] {
@@ -103,14 +115,14 @@ html, body {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  padding: 4px 2px;
+  padding: 0;
   overflow: hidden;
   background: var(--term-bg);
 }
 
 [data-role="terminal-host"] .terminal-pane {
   position: absolute;
-  inset: 4px 2px;
+  inset: 0;
   min-width: 0;
   min-height: 0;
 }
@@ -120,9 +132,8 @@ html, body {
 }
 
 /* ------------------------------------------------------------------ *
- * 收起态的把手：贴在终端右边缘、垂直居中的竖条突起。
- * 视觉宽 20px（--term-handle-width），点击热区靠 ::after 往左扩到 48px：
- * 不能往右扩 —— main 是 overflow:hidden，往右会被裁掉。
+ * 把手：收起 / 展开都在，贴 main 右缘垂直居中；抽屉展开时跟到抽屉左缘。
+ * 尺寸按设计稿 22×78，圆角只在左侧。
  * ------------------------------------------------------------------ */
 
 [data-role="ai-handle"] {
@@ -130,52 +141,62 @@ html, body {
   right: 0;
   top: 50%;
   transform: translateY(-50%);
-  z-index: 8;
+  z-index: 32;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 5px;
   width: var(--term-handle-width);
   height: var(--term-handle-height);
   box-sizing: border-box;
   padding: 0;
-  color: var(--term-fg);
-  background: var(--term-panel-bg);
-  border: 1px solid var(--term-border);
+  color: var(--term-dim);
+  background: var(--term-panel-2);
+  border: 1px solid var(--term-line-2);
   border-right: none;
-  border-radius: var(--term-panel-radius) 0 0 var(--term-panel-radius);
-  box-shadow: -2px 0 8px var(--term-shadow);
+  border-radius: var(--term-radius-lg) 0 0 var(--term-radius-lg);
+  box-shadow: -3px 0 12px var(--term-shadow);
   cursor: pointer;
   font-size: 12px;
   line-height: 1;
-}
-
-/* 扩出来的点击热区（仍然是这个按钮本身，只是透明）。 */
-[data-role="ai-handle"]::after {
-  content: "";
-  position: absolute;
-  top: calc(var(--term-handle-hit) / -4);
-  bottom: calc(var(--term-handle-hit) / -4);
-  left: calc((var(--term-handle-hit) - var(--term-handle-width)) * -1);
-  width: var(--term-handle-hit);
-  background: transparent;
-}
-
-[data-role="ai-handle"]:hover {
-  background: var(--term-selection);
+  transition:
+    right 0.18s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.12s ease,
+    color 0.12s ease;
 }
 
 [data-role="app"][data-ai-open="true"] [data-role="ai-handle"] {
-  display: none;
+  right: min(var(--term-drawer-open-width), calc(100% - var(--term-handle-width)));
+}
+
+[data-role="ai-handle"]:hover {
+  background: var(--term-raise);
+  color: var(--term-fg-2);
 }
 
 [data-role="ai-handle"] .handle-icon {
   pointer-events: none;
+  font-size: 12px;
+}
+
+[data-role="ai-handle"] .handle-text {
+  pointer-events: none;
+  font: 600 9px / 1 var(--magpie-font);
+  letter-spacing: 0.14em;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  color: inherit;
+  opacity: 0.9;
 }
 
 [data-role="ai-handle"] .handle-badge {
   pointer-events: none;
+  /* 角标完全落在把手内部，与把手同一条轴线（D1）。 */
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  left: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -188,6 +209,7 @@ html, body {
   color: var(--term-danger-fg);
   font-size: 10px;
   font-weight: 700;
+  box-shadow: 0 0 0 2px var(--term-panel-2);
 }
 
 [data-role="ai-handle"] .handle-badge[hidden] {
@@ -227,9 +249,9 @@ html, body {
   pointer-events: auto;
 }
 
-/* 窄窗：抽屉窄一点，但仍然是三列，不出现横向滚动。 */
+/* 窄窗：抽屉窄一点，但仍不参与主网格，不出现横向滚动。 */
 @media (max-width: 720px) {
-  [data-role="app"][data-ai-open="true"] {
+  :root {
     --term-drawer-open-width: 280px;
   }
 }

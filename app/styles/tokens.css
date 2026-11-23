@@ -73,12 +73,24 @@
   --term-panel-radius: 8px;
 
   /* TASK-V3-C：右侧 AI 抽屉 / 把手 / toast / 设置模态 */
-  /* --term-drawer-width 由 [data-ai-open] 覆盖（收起 0px / 展开 360px）。 */
+  /* V4-E：抽屉改成覆盖式，宽度只影响抽屉自身，不再参与主网格。 */
   --term-drawer-width: 0px;
-  --term-drawer-open-width: 360px;
-  --term-handle-width: 20px;
-  --term-handle-height: 96px;
-  /* 把手的点击热区：48px（视觉仍是 20px 竖条，用 padding 补宽）。 */
+  --term-drawer-open-width: 384px;
+  --term-handle-width: 22px;
+  --term-handle-height: 78px;
+  /* V4-E：标签条 / 状态栏 / 抽屉边线 / 悬浮层用色。 */
+  --term-tabbar-height: 34px;
+  --term-statusbar-height: 33px;
+  --term-panel-2: rgba(120, 120, 120, 0.12);
+  --term-raise: rgba(120, 120, 120, 0.2);
+  --term-line: var(--term-border);
+  --term-line-2: var(--term-border);
+  --term-line-3: var(--term-border);
+  --term-fg-2: var(--term-fg);
+  --term-dim: var(--term-muted);
+  --term-accent-line: rgba(90, 120, 180, 0.46);
+  --term-radius-lg: 8px;
+  /* 把手的点击热区：48px（视觉仍是 22px 竖条，用 padding 补宽）。 */
   --term-handle-hit: 48px;
   --term-toast-width: 340px;
   --term-backdrop: rgba(0, 0, 0, 0.42);
@@ -96,6 +108,14 @@
     --term-ok: #a5d6a7;
     --term-border: #3a3f46;
     --term-panel-bg: #14171c;
+    --term-panel-2: #181d24;
+    --term-raise: #1c222b;
+    --term-line: #232a33;
+    --term-line-2: #3a3f46;
+    --term-line-3: #4a515b;
+    --term-fg-2: #f0f6fc;
+    --term-dim: #8f99a4;
+    --term-accent-line: rgba(120, 160, 220, 0.46);
     --term-selection: rgba(120, 160, 220, 0.35);
     --term-scrollbar: rgba(160, 160, 160, 0.5);
     --term-shadow: rgba(0, 0, 0, 0.6);

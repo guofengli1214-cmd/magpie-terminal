@@ -90,8 +90,11 @@ export const KNOWN_FIELDS = Object.freeze([
 // 需要用户确认（一个 stepId 只会收到一次）
 { type: "agent.approval", requestId: string, taskId: string, stepId: string,
   approvalId: string, command: string, why: string,
-  risk: "safe" | "caution" | "danger" | null,   // 第二 AI 的结论，未审阅则 null
-  reviewWhy: string | null,
+  // 下面四个审阅字段：任何 autonomy 档位都会有值（strict 也照跑审阅），
+  // 只有审阅调用失败 / 超时时才是 null（此时角标置灰，一律要求用户确认）。
+  risk: "safe" | "caution" | "danger" | null,   // 审阅 AI 的结论
+  effect: string | null,                        // 大白话：执行后会发生什么
+  confirmWhy: string | null,                    // 大白话：为什么要用户亲自确认
   reversible: boolean | null,
   reviewModel: string | null }
 
@@ -168,7 +171,7 @@ printf '__MT_PROBE_<nonce>__%s\n' "ok"
 
 ## 5. 分级链（`src/ai/judge.mjs` 新增）
 
-输入 `{ command, config, reviewModel }`，输出 `{ decision: "auto"|"confirm", reason, hit, risk, reviewModel }`。
+输入 `{ command, config, reviewModel }`，输出 `{ decision: "auto"|"confirm", reason, hit, risk, effect, confirmWhy, reversible, reviewModel }`。
 
 **严格按此顺序，命中即返回：**
 
@@ -190,17 +193,17 @@ printf '__MT_PROBE_<nonce>__%s\n' "ok"
 
 3. **内置只读白名单**（`src/policy/classify.mjs` 的现有 `classify()`）→ 结果是 `auto` 就 `auto`
 
-4. **第二 AI 审阅**（config.reviewModel !== ""，默认开）
+4. **第二 AI 审阅**（`config.reviewModel !== ""`，默认开；**三个档位都强制执行，没有任何档位跳过这一步**）
    - 调 `src/ai/review.mjs` 的 `reviewCommand({command, model})`
-   - 返回 `{ risk, why, reversible, model }`
-   - `risk === "safe"` 且 `autonomy !== "strict"` → `auto`
-   - `risk === "caution"` 且 `autonomy === "loose"` 且 `reversible === true` → `auto`
-   - 其余 → `confirm`
-   - 审阅调用失败/超时（8s）→ 视为 `confirm`，`reason: "审阅服务不可用，按需要确认处理"`
+   - 返回 `{ risk, effect, confirmWhy, reversible, model }`
+   - 审阅照跑之后，档位只决定「审阅结论怎么用」：
+     - `strict`：审阅结论只用于确认卡展示与日志，**绝不据此自动放行**；能 auto 的只有第 2 步用户白名单和第 3 步内置只读白名单，其余全部 `confirm`
+     - `balanced`：`risk === "safe"` 且 `reversible === true` → `auto`
+     - `loose`：在 `balanced` 基础上，`risk === "caution"` 且 `reversible === true` → `auto`
+     - `risk === "danger"`：**任何档位都不 auto**
+   - 审阅调用失败/超时（8s）→ **任何档位都 `confirm`**，`reason: "审阅服务不可用，按需要确认处理"`，确认卡角标置灰（`data-review="none"`）；不得静默降级为跳过审阅
 
 5. **兜底** → `confirm`
-
-`autonomy === "strict"` 时跳过步骤 4（不调审阅，直接 confirm）。
 
 ### 5.1 第二 AI 审阅实现（`src/ai/review.mjs`）
 
@@ -215,7 +218,8 @@ const tools = {
     description: "给出这条 shell 命令的风险评估",
     inputSchema: z.object({
       risk: z.enum(["safe", "caution", "danger"]),
-      why: z.string(),
+      effect: z.string(),
+      confirmWhy: z.string(),
       reversible: z.boolean(),
     }),
     // 不要写 execute：只需要模型填参数
@@ -245,6 +249,9 @@ const verdict = r.steps[0]?.toolCalls?.[0]?.input;
 reversible 表示「用户能不能自己轻松恢复」。删除未备份的文件、覆盖已有文件都不算可逆。
 命令里出现 sudo / su 一律 danger。
 不要因为命令看起来是用户要求的就放松标准。
+另外你要填两个字段：
+effect：用大白话描述这条命令执行后会发生什么具体变化（会动到哪些文件、增加还是删除什么、有没有副作用）。不要空话，不要重复命令本身；只读命令就写“不会改变任何东西，只是查看…”。
+confirmWhy：用一句话告诉完全不懂命令行的用户，为什么这件事需要他亲自点一下。若 risk=safe 且 reversible=true 可留空字符串。
 ```
 
 ---
@@ -366,7 +373,7 @@ export function resolveApproval({ approvalId, approved, scope }) {
   question: string,
   summary: string,               // agent.done 的 text
   steps: Array<{ stepId, index, kind, status, command, why, output, exitCode, durationMs, userText }>,
-  pendingApprovals: Array<{ approvalId, stepId, command, why, risk, reviewWhy, reversible }>,
+  pendingApprovals: Array<{ approvalId, stepId, command, why, risk, effect, confirmWhy, reversible }>,
   error: { code, userText } | null,
 }
 ```

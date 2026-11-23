@@ -29,17 +29,55 @@ button[disabled] {
 }
 
 [data-role="tab"] {
-  display: inline-flex;
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  max-width: 260px;
-  border-color: transparent;
+  gap: 7px;
+  max-width: 210px;
+  min-width: 0;
+  margin-top: 4px;
+  padding: 0 8px 0 10px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  color: var(--term-muted);
+  font-size: 12.5px;
+  background: transparent;
 }
 
+[data-role="tab"]:hover {
+  background: var(--term-panel-bg);
+  color: var(--term-fg);
+}
+
+/* 选中态只用底色 + 文字色 + 图标色；border 是 tab 与终端的接缝轮廓，不是标记线。 */
 [data-role="tab"][aria-selected="true"] {
-  border-color: var(--term-border);
-  background: var(--term-selection);
+  background: var(--term-bg);
+  border-color: var(--term-line);
+  color: var(--term-fg-2);
   font-weight: 600;
+}
+
+[data-role="tab"][aria-selected="true"] [data-role="tab-kind"] {
+  color: var(--term-accent);
+}
+
+[data-role="tab-new"] {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  margin: 0 0 0 2px;
+  padding: 0;
+  border: none;
+  border-radius: var(--term-radius);
+  color: var(--term-muted);
+  background: transparent;
+}
+
+[data-role="tab-new"]:hover {
+  background: var(--term-panel-2);
+  color: var(--term-fg-2);
 }
 
 [data-role="tab-title"] {
@@ -56,7 +94,7 @@ button[disabled] {
 }
 
 [data-role="tabbar"] {
-  flex-wrap: wrap;
+  overflow-x: auto;
 }
 
 [data-role="status-item"] {
@@ -94,25 +132,25 @@ button[disabled] {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 8px 0;
+  gap: 2px;
+  padding: 8px 0 6px;
   width: var(--term-rail-width);
   box-sizing: border-box;
-  border-right: 1px solid var(--term-border);
-  background: var(--term-panel-bg);
+  border-right: 1px solid var(--term-line);
+  background: var(--term-bg);
   overflow: hidden;
 }
 
 [data-role="rail"] button {
   position: relative;
-  width: var(--term-rail-icon-size);
-  height: var(--term-rail-icon-size);
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: none;
-  border-radius: 7px;
+  border-radius: var(--term-radius);
   background: transparent;
   color: var(--term-muted);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1;
   display: grid;
   place-items: center;
@@ -129,6 +167,7 @@ button[disabled] {
 
 [data-role="rail"] button[data-active="true"],
 [data-role="rail"] button[aria-pressed="true"] {
+  /* 选中态只用底色 + 文字色 + 图标色，不画竖条 / 顶条 / 边框发光。 */
   background: var(--term-rail-active-bg);
   color: var(--term-accent);
 }
@@ -151,21 +190,6 @@ button[disabled] {
   min-height: 0;
 }
 
-/* 未读 AI 回复的小圆点。 */
-[data-role="rail"] .rail-dot {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--term-danger);
-}
-
-[data-role="rail"] .rail-dot[hidden] {
-  display: none;
-}
-
 /* ------------------------------------------------------------------ *
  * AI 抽屉（TASK-V3-C §6.2）：标题栏 / 时间线 / 步骤 / 审批卡 / 输入条
  * 旧的底部 AI 条（aibar）与浮层（ai-layer）在 V3 已整体删除，规则一并删掉，
@@ -174,49 +198,24 @@ button[disabled] {
 
 [data-role="ai-drawer"] .drawer-head {
   flex: 0 0 auto;
+  height: 48px;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px var(--term-gap);
-  border-bottom: 1px solid var(--term-border);
+  gap: 4px;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--term-line);
   background: var(--term-panel-bg);
 }
 
 [data-role="ai-drawer"] .drawer-title {
-  flex: 0 0 auto;
-  font-weight: 600;
-  font-size: 12.5px;
-}
-
-[data-role="ai-drawer"] [data-role="model-select"] {
   flex: 1 1 auto;
   min-width: 0;
-  height: 26px;
-  box-sizing: border-box;
-  font: inherit;
-  font-size: 12px;
-  padding: 1px 4px;
-  color: var(--term-fg);
-  background: var(--term-bg);
-  border: 1px solid var(--term-border);
-  border-radius: var(--term-radius);
-  text-overflow: ellipsis;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--term-fg-2);
 }
 
-[data-role="ai-drawer"] [data-role="model-select"][data-gateway="down"] {
-  border-color: var(--term-warn);
-  color: var(--term-warn);
-}
-
-[data-role="ai-drawer"] [data-role="model-select"] option[data-available="false"] {
-  color: var(--term-muted);
-}
-
-[data-role="ai-drawer"] [data-role="ai-close"] {
-  flex: 0 0 auto;
-  padding: 1px 8px;
-  font-size: 12px;
-}
+/* 模型菜单的触发器在输入区底栏；抽屉头部不再放下拉，也没有「收起」按钮。 */
 
 /* 时间线：唯一的滚动区域。 */
 [data-role="agent-timeline"] {
@@ -226,8 +225,8 @@ button[disabled] {
   overflow-x: hidden;
   display: flex;
   flex-direction: column;
-  gap: var(--term-gap);
-  padding: var(--term-gap);
+  gap: 10px;
+  padding: 10px;
   font-size: 12.5px;
 }
 
@@ -525,45 +524,252 @@ button[disabled] {
   font-family: var(--term-mono);
 }
 
-/* 输入条：输入 + 发送 + 停止。 */
-[data-role="ai-drawer"] .agent-input-bar {
+/* ------------------------------------------------------------------ *
+ * 输入区（V4-E）：composer-box 边框 + 内部提示 + 自动增高 + 拖拽把手。
+ * 模型名是纯文本按钮；发送是向上箭头；停止按钮保留。
+ * ------------------------------------------------------------------ */
+
+[data-role="ai-drawer"] .composer {
+  position: relative;
   flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px var(--term-gap);
-  border-top: 1px solid var(--term-border);
+  border-top: 1px solid var(--term-line);
+  padding: 9px 10px 8px;
   background: var(--term-panel-bg);
 }
 
-[data-role="ai-drawer"] [data-role="agent-input"] {
-  flex: 1 1 auto;
+[data-role="ai-drawer"] .composer-box {
+  position: relative;
   min-width: 0;
-  height: 28px;
+  min-height: 0;
   box-sizing: border-box;
-  font: inherit;
-  font-size: 12.5px;
-  padding: 2px 9px;
-  color: var(--term-fg);
+  display: flex;
+  align-items: flex-start;
+  /* 底部 19px 留给框内右下角的 Enter 提示，它不另占行高。 */
+  padding: 0 10px 19px;
+  border: 1px solid var(--term-line-2);
+  border-radius: var(--term-radius-lg);
   background: var(--term-bg);
-  border: 1px solid var(--term-border);
-  border-radius: var(--term-radius);
+  transition: border-color 0.12s ease;
 }
 
+[data-role="ai-drawer"] .composer-box:focus-within {
+  border-color: var(--term-accent-line);
+}
+
+[data-role="ai-drawer"] [data-role="agent-input"] {
+  width: 100%;
+  min-height: 19.375px;
+  box-sizing: content-box;
+  max-height: none;
+  border: 0;
+  outline: none;
+  background: none;
+  resize: none;
+  font: 12.5px / 1.55 var(--magpie-font);
+  color: var(--term-fg-2);
+  padding: 0;
+  overflow-y: auto;
+}
+
+[data-role="ai-drawer"] [data-role="agent-input"]::placeholder {
+  color: var(--term-dim);
+}
+
+[data-role="ai-drawer"] .composer-hint {
+  position: absolute;
+  right: 9px;
+  bottom: 4px;
+  font: 9.5px / 14px var(--term-mono);
+  color: var(--term-dim);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* 顶部拖拽把手：与设计稿的 composer-grip 同一套语言。 */
+[data-role="ai-drawer"] .composer-grip {
+  position: absolute;
+  left: 50%;
+  top: -5px;
+  transform: translateX(-50%);
+  width: 52px;
+  height: 10px;
+  display: grid;
+  place-items: center;
+  cursor: ns-resize;
+  z-index: 2;
+  touch-action: none;
+}
+
+[data-role="ai-drawer"] .composer-grip::before {
+  content: "";
+  width: 36px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--term-dim);
+  transition: width 0.12s ease, background 0.12s ease;
+}
+
+[data-role="ai-drawer"] .composer-grip:hover::before,
+[data-role="ai-drawer"] .composer[data-resizing="true"] .composer-grip::before {
+  width: 42px;
+  background: var(--term-accent);
+}
+
+[data-role="ai-drawer"] .composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 1px 0 2px;
+  min-width: 0;
+}
+
+/* 模型名：纯文本按钮，无边框、无常态底色，只有一枚 9px 下箭头。 */
+[data-role="ai-drawer"] [data-role="model-select"] {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--term-muted);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-role="ai-drawer"] [data-role="model-select"]:hover,
+[data-role="ai-drawer"] [data-role="model-select"][aria-expanded="true"] {
+  background: var(--term-panel-2);
+  color: var(--term-fg-2);
+}
+
+[data-role="ai-drawer"] [data-role="model-select"][data-gateway="down"] {
+  color: var(--term-warn);
+}
+
+[data-role="ai-drawer"] .model-caret {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--term-dim);
+}
+
+/* 模型菜单：锚定输入区右下（bottom:40px; right:8px）。 */
+[data-role="ai-drawer"] [data-role="model-menu"] {
+  position: absolute;
+  bottom: 40px;
+  right: 8px;
+  left: auto;
+  min-width: 236px;
+  max-width: calc(100% - 16px);
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 5;
+  padding: 4px;
+  box-sizing: border-box;
+  border: 1px solid var(--term-line-2);
+  border-radius: var(--term-radius-lg);
+  background: var(--term-panel-2);
+  box-shadow: 0 18px 44px var(--term-shadow);
+}
+
+[data-role="ai-drawer"] [data-role="model-menu"][hidden] {
+  display: none;
+}
+
+[data-role="ai-drawer"] [data-role="model-menu"] .menu-label {
+  padding: 6px 8px 4px;
+  font-size: 10.5px;
+  color: var(--term-dim);
+}
+
+[data-role="ai-drawer"] [data-role="model-menu"] .model-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--term-radius);
+  background: transparent;
+  color: var(--term-fg);
+  text-align: left;
+  font-size: 12px;
+}
+
+[data-role="ai-drawer"] [data-role="model-menu"] .model-item:hover {
+  background: var(--term-raise);
+}
+
+[data-role="ai-drawer"] [data-role="model-menu"] .model-item-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+[data-role="ai-drawer"] [data-role="model-menu"] .model-item b {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-role="ai-drawer"] [data-role="model-menu"] .model-item small {
+  color: var(--term-dim);
+  font-size: 10.5px;
+}
+
+[data-role="ai-drawer"] [data-role="model-menu"] .model-item .model-check {
+  flex: 0 0 auto;
+  color: var(--term-accent);
+}
+
+/* 发送按钮：圆形，向上箭头。 */
 [data-role="ai-drawer"] [data-role="agent-send"] {
   flex: 0 0 auto;
-  height: 28px;
-  padding: 0 14px;
-  font-weight: 600;
-  background: var(--term-selection);
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--term-accent);
+  color: var(--term-bg);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+[data-role="ai-drawer"] [data-role="agent-send"]:hover {
+  background: var(--term-fg-2);
+}
+
+[data-role="ai-drawer"] [data-role="agent-send"]:disabled {
+  background: var(--term-panel-2);
+  color: var(--term-dim);
+  border: 1px solid var(--term-line);
+  cursor: not-allowed;
 }
 
 [data-role="ai-drawer"] [data-role="agent-stop"] {
   flex: 0 0 auto;
-  height: 28px;
-  padding: 0 12px;
-  border-color: var(--term-danger);
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--term-danger);
+  border-radius: var(--term-radius);
+  background: transparent;
   color: var(--term-danger);
+  font-size: 11.5px;
 }
 
 [data-role="ai-drawer"] [data-role="agent-stop"][hidden] {

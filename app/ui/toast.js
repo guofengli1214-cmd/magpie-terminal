@@ -22,12 +22,14 @@ function el(tag, attrs = {}, text) {
 export default function createToastStack(elements) {
   const host = elements.host;
   const agentStore = elements.agentStore;
+  const sessionStore = elements.sessionStore || null;
   const onGoConfirm =
     typeof elements.onGoConfirm === "function" ? elements.onGoConfirm : () => {};
 
   // approvalId -> 节点。按 id 复用，不重复插。
   const nodes = new Map();
   let unsubscribe = null;
+  let unsubscribeSession = null;
 
   function removeToast(approvalId) {
     const node = nodes.get(approvalId);
@@ -82,7 +84,20 @@ export default function createToastStack(elements) {
     return node;
   }
 
+  function clearAll() {
+    for (const id of [...nodes.keys()]) removeToast(id);
+  }
+
   function render(snapshot) {
+    // 抽屉展开时用户就在会话区里看得到审批卡，不再弹右下角通知。
+    // 只清空渲染出来的节点，agentStore 里的待确认数据原封不动；
+    // 抽屉一关（sessionStore 订阅触发重渲染）就重新出现。
+    if (snapshot.aiOpen === true) {
+      clearAll();
+      host.setAttribute("data-empty", "true");
+      return;
+    }
+
     const pending = snapshot.pendingApprovals || [];
     const alive = new Set(pending.map((item) => item.approvalId));
 
@@ -99,15 +114,24 @@ export default function createToastStack(elements) {
       host.appendChild(node);
     }
 
-    // 抽屉已经展开且只剩这一条时也不必自动关：用户可能还没看到。
     if (pending.length === 0) host.setAttribute("data-empty", "true");
     else host.removeAttribute("data-empty");
   }
 
+  /** agentStore 的快照不含 aiOpen：合并会话 store 的当前值后再渲染。 */
+  function renderNow() {
+    const snapshot = agentStore.getSnapshot();
+    const aiOpen = sessionStore ? sessionStore.getSnapshot().aiOpen === true : false;
+    render({ ...snapshot, aiOpen });
+  }
+
   return {
     init() {
-      unsubscribe = agentStore.subscribe(render);
-      render(agentStore.getSnapshot());
+      unsubscribe = agentStore.subscribe(renderNow);
+      if (sessionStore && typeof sessionStore.subscribe === "function") {
+        unsubscribeSession = sessionStore.subscribe(renderNow);
+      }
+      renderNow();
     },
     /** 供「去确认」之外的入口用（比如抽屉里批准后手动清）。 */
     clear(approvalId) {
@@ -116,7 +140,9 @@ export default function createToastStack(elements) {
     dispose() {
       if (unsubscribe) unsubscribe();
       unsubscribe = null;
-      for (const id of [...nodes.keys()]) removeToast(id);
+      if (unsubscribeSession) unsubscribeSession();
+      unsubscribeSession = null;
+      clearAll();
     },
   };
 }
