@@ -25,6 +25,8 @@
   --term-focus: var(--magpie-fg);
   --term-selection: rgba(90, 120, 180, 0.35);
   --term-scrollbar: rgba(120, 120, 120, 0.5);
+  --term-shadow: rgba(0, 0, 0, 0.28);
+  --term-rail-active-bg: rgba(90, 120, 180, 0.18);
 
   /* 终端 ANSI 16 色（暗色主题友好，亮色下也被验证过对比度） */
   --term-ansi-black: #1c1c1c;
@@ -45,9 +47,19 @@
   --term-ansi-bright-white: #ffffff;
 
   /* 尺寸 / 排版 */
+  /* --term-min-main / --term-ai-width / --term-ai-min 是旧右栏布局的变量：
+     V2-A 已不再使用（保留声明只为不让外部引用一次性断掉，取值不再影响布局）。 */
   --term-min-main: 480px;
   --term-ai-width: 320px;
   --term-ai-min: 240px;
+
+  /* 方案 A 骨架（TASK-V2-A §2.1）：图标栏 / AI 输入条 / 模型下拉 / AI 浮层 */
+  --term-rail-width: 48px;
+  --term-aibar-height: 44px;
+  --term-model-width: 190px;
+  /* 浮层底部让出的距离 = AI 条 + 间隙；浮层最大高 = calc(100% - 88px) */
+  --term-ai-layer-inset: 88px;
+  --term-rail-icon-size: 34px;
   --term-radius: 6px;
   --term-gap: 8px;
   --term-mono: ui-monospace, Menlo, Consolas, "Cascadia Mono", monospace;
@@ -65,6 +77,8 @@
     --term-panel-bg: #14171c;
     --term-selection: rgba(120, 160, 220, 0.35);
     --term-scrollbar: rgba(160, 160, 160, 0.5);
+    --term-shadow: rgba(0, 0, 0, 0.6);
+    --term-rail-active-bg: rgba(120, 160, 220, 0.22);
     --term-ansi-black: #2b2b2b;
     --term-ansi-red: #ff7b72;
     --term-ansi-green: #7ee787;

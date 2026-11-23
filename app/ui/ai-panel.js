@@ -1,18 +1,26 @@
-// AI 栏与确认卡。
-// 规则：ai.reply 的 decision==="auto" 直接写入当前 PTY；否则弹确认卡，不点不动。
-// 确认卡可 Esc 关闭、焦点被困在内部、关闭后焦点回到触发点。
+// AI 结果浮层 + 确认卡。
+//
+// V2-A 起这里不再是常驻右栏：提问输入归 app/ui/ai-bar.js（底部 44px 输入条），
+// 本模块只负责「把回答渲染在 #ai-layer 里」以及确认卡的完整逻辑。
+//
+// 规则（不许退化）：
+// - ai.reply 的 decision==="auto" 直接写入当前 PTY；否则弹确认卡，不点不动。
+// - 确认卡可 Esc 关闭、焦点困在内部、关闭后焦点回到触发点。
+// - 展示的命令字符串与实际写入 PTY 的字符串是同一个变量。
 
 export default function createAiPanel(elements) {
   const host = elements.host;
   const store = elements.store;
-  const onAsk = typeof elements.onAsk === "function" ? elements.onAsk : () => false;
   const onExecute = typeof elements.onExecute === "function" ? elements.onExecute : () => {};
+  const onClose = typeof elements.onClose === "function" ? elements.onClose : () => {};
 
-  let requestSeq = 0;
-  let pending = new Map();
   let lastFocus = null;
   let backdrop = null;
   let unsub = null;
+
+  function layer() {
+    return host;
+  }
 
   function message(text, tone) {
     const el = document.createElement("div");
@@ -34,42 +42,17 @@ export default function createAiPanel(elements) {
     close.type = "button";
     close.setAttribute("data-role", "ai-close");
     close.textContent = "收起";
-    close.addEventListener("click", () => elements.onToggle && elements.onToggle());
+    close.addEventListener("click", () => onClose());
     header.appendChild(close);
     host.appendChild(header);
 
     const body = document.createElement("div");
     body.className = "ai-body";
 
-    const label = document.createElement("label");
+    const label = document.createElement("div");
     label.className = "ai-label";
-    label.setAttribute("for", "ai-question");
-    label.textContent = "用中文说要干什么，AI 给一条命令。只读命令自动执行，其余需要你确认。";
+    label.textContent = "只读命令自动执行，其余需要你确认。问题在下方输入条里打，Enter 发送。";
     body.appendChild(label);
-
-    const input = document.createElement("textarea");
-    input.id = "ai-question";
-    input.className = "ai-input";
-    input.setAttribute("data-role", "ai-question");
-    input.setAttribute("rows", "3");
-    input.setAttribute("placeholder", "例如：看看当前目录有哪些文件");
-    body.appendChild(input);
-
-    const actions = document.createElement("div");
-    actions.className = "ai-actions";
-    const ask = document.createElement("button");
-    ask.type = "button";
-    ask.setAttribute("data-role", "ai-submit");
-    ask.textContent = "问 AI";
-    ask.addEventListener("click", submit);
-    actions.appendChild(ask);
-
-    const hint = document.createElement("span");
-    hint.className = "ai-meta";
-    hint.setAttribute("data-role", "ai-hint");
-    hint.textContent = "Ctrl+Enter 发送";
-    actions.appendChild(hint);
-    body.appendChild(actions);
 
     const log = document.createElement("div");
     log.className = "ai-log";
@@ -77,52 +60,21 @@ export default function createAiPanel(elements) {
     log.setAttribute("aria-live", "polite");
     body.appendChild(log);
 
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        submit();
-      }
-    });
-
     host.appendChild(body);
-
-    function submit() {
-      const question = input.value.trim();
-      if (!question) {
-        appendMessage("请先输入要做什么。", "warn");
-        return;
-      }
-      const active = store.getActive();
-      if (!active) {
-        appendMessage("还没有可用的终端标签：先点左上角「+」新建一个。", "warn");
-        return;
-      }
-      requestSeq += 1;
-      const requestId = `req-${Date.now()}-${requestSeq}`;
-      const request = { requestId, question };
-      pending.set(requestId, request);
-
-      const context = {
-        cwd: active.cwd,
-        shell: active.shell,
-        recentOutput: elements.getRecentOutput ? elements.getRecentOutput(active.id) : "",
-      };
-      const sent = onAsk({ requestId, question, context });
-      if (!sent) {
-        pending.delete(requestId);
-        appendMessage("AI 请求没发出去：连接还没就绪。点状态栏「重连」后重试。", "error");
-        return;
-      }
-      appendMessage(`已发送：${question}`, null);
-      input.value = "";
-    }
   }
 
   function appendMessage(text, tone) {
     const log = host.querySelector('[data-role="ai-log"]');
-    if (!log) return;
-    log.appendChild(message(text, tone));
+    if (!log) return null;
+    const el = message(text, tone);
+    log.appendChild(el);
     log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  function appendQuestion(question) {
+    const el = appendMessage(`已发送：${question}`, null);
+    if (el) el.setAttribute("data-role-question", question);
   }
 
   function appendReply(reply) {
@@ -154,6 +106,15 @@ export default function createAiPanel(elements) {
       hit.className = "ai-meta";
       hit.textContent = `分级命中：${reply.policyHit}`;
       box.appendChild(hit);
+    }
+
+    // 回答头显示实际用了哪个模型（frame.model 存在才有）。
+    if (reply.model) {
+      const model = document.createElement("div");
+      model.className = "ai-message-model";
+      model.setAttribute("data-role", "ai-message-model");
+      model.textContent = `模型：${reply.model}`;
+      box.appendChild(model);
     }
 
     const actions = document.createElement("div");
@@ -255,6 +216,14 @@ export default function createAiPanel(elements) {
       card.appendChild(reason);
     }
 
+    if (reply.model) {
+      const model = document.createElement("p");
+      model.className = "ai-meta";
+      model.setAttribute("data-role", "confirm-model");
+      model.textContent = `模型：${reply.model}`;
+      card.appendChild(model);
+    }
+
     const actions = document.createElement("div");
     actions.className = "ai-actions";
 
@@ -323,11 +292,11 @@ export default function createAiPanel(elements) {
     init() {
       buildShell();
       unsub = store.subscribe(() => {
-        // 活动标签变化不影响 AI 栏本身，这里只保证自身仍挂在 DOM 上。
+        // 活动标签变化不影响浮层本身，这里只保证自身仍挂在 DOM 上。
       });
     },
+    appendQuestion,
     onReply(frame) {
-      pending.delete(frame.requestId);
       if (!frame.command) {
         appendMessage("AI 没有给出命令，只回了说明。", "warn");
         return;
@@ -337,6 +306,7 @@ export default function createAiPanel(elements) {
         reason: frame.reason || "",
         decision: frame.decision === "auto" ? "auto" : "confirm",
         policyHit: frame.policyHit || "",
+        model: typeof frame.model === "string" ? frame.model : "",
       };
       appendReply(reply);
       if (reply.decision === "auto") {
@@ -346,7 +316,6 @@ export default function createAiPanel(elements) {
       }
     },
     onError(frame) {
-      pending.delete(frame.requestId);
       appendMessage(
         `${frame.userText || "AI 暂时不可用，命令仍可手动输入。"}（${frame.code || "AI_ERROR"}）`,
         "error",

@@ -10,10 +10,27 @@ export default function createStatusBar(elements) {
   let waitingSince = 0;
   let timer = null;
   let unsubscribe = null;
+  // 一次性提示（「模型偏好没存住」之类）：显示到下次 render 后自动过期。
+  let notice = null;
+  let noticeTimer = null;
 
   function setHealth(info) {
     healthInfo = info;
     waitingSince = 0;
+    render(store.getSnapshot());
+  }
+
+  function setNotice(text, tone) {
+    notice = text ? { text, tone: tone || "warn" } : null;
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = null;
+    if (notice) {
+      noticeTimer = setTimeout(() => {
+        noticeTimer = null;
+        notice = null;
+        render(store.getSnapshot());
+      }, 4000);
+    }
     render(store.getSnapshot());
   }
 
@@ -61,6 +78,30 @@ export default function createStatusBar(elements) {
       host.appendChild(shell);
     }
 
+    // 模型一栏：显示当前下拉选中的 id 尾段（完整 id 太长，状态栏放不下）。
+    const model = document.createElement("span");
+    model.setAttribute("data-role", "status-item");
+    model.setAttribute("data-status", "model");
+    if (typeof snapshot.model === "string" && snapshot.model.length > 0) {
+      const parts = String(snapshot.model).split("/").filter(Boolean);
+      const tail = parts.length > 0 ? parts[parts.length - 1] : snapshot.model;
+      model.textContent = `模型：${tail}`;
+      model.setAttribute("title", snapshot.model);
+    } else {
+      model.textContent = "模型：未选";
+      model.setAttribute("data-tone", "warn");
+    }
+    host.appendChild(model);
+
+    if (notice) {
+      const flash = document.createElement("span");
+      flash.setAttribute("data-role", "status-item");
+      flash.setAttribute("data-status", "notice");
+      flash.setAttribute("data-tone", notice.tone);
+      flash.textContent = notice.text;
+      host.appendChild(flash);
+    }
+
     const active = snapshot.sessions.find((s) => s.id === snapshot.activeId);
     if (active) {
       const cwd = document.createElement("span");
@@ -92,11 +133,15 @@ export default function createStatusBar(elements) {
       render(store.getSnapshot());
     },
     setHealth,
+    setNotice,
     dispose() {
       if (unsubscribe) unsubscribe();
       unsubscribe = null;
       if (timer) clearInterval(timer);
       timer = null;
+      if (noticeTimer) clearTimeout(noticeTimer);
+      noticeTimer = null;
+      notice = null;
       host.textContent = "";
     },
   };

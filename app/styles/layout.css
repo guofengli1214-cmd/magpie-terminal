@@ -1,5 +1,10 @@
-/* 三栏骨架：标签栏 / 主区（终端 + AI 栏）/ 状态栏。
-   窄窗时 AI 栏折叠为抽屉，终端永不缩到 0。 */
+/* 方案 A 骨架（TASK-V2-A §2.1）：
+     #root  三行网格：主行（rail + main + ai-layer 同格） / 状态栏
+     .rail  48px 固定左，纵跨主行（不参与终端 flex 计算）
+     .main  1fr，纵向 flex：标签条 / 终端 1fr / AI 输入条 44px
+     #ai-layer  与终端同格，绝对覆盖在终端之上（默认 hidden）
+   视觉与尺寸基准：docs/mockups/layout-v2.html 的 `.a .rail` / `.aibar` / `.card`。
+   颜色一律来自 tokens.css 的变量。 */
 
 html, body {
   margin: 0;
@@ -7,32 +12,74 @@ html, body {
   background: var(--term-bg);
   color: var(--term-fg);
   font: 13px/1.5 var(--magpie-font);
+  /* 任何视口都不许出现横向滚动条（§2.1 硬指标）。 */
+  overflow-x: hidden;
 }
 
 [data-role="app"] {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  /* 主行 + 状态栏。主行里 rail 与 main 并排，ai-layer 叠在 main 上。 */
+  grid-template-columns: var(--term-rail-width) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
   height: 100%;
-  min-width: var(--term-min-main);
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 标签条 / 状态栏跨越 rail 之外的两列？——不：rail 纵跨整个主行，
+   标签条与状态栏只在 main 这一列。见下方显式定位。 */
+
+[data-role="rail"] {
+  grid-column: 1;
+  grid-row: 1;
 }
 
 [data-role="main"] {
-  display: grid;
-  grid-template-columns: minmax(var(--term-min-main), 1fr) var(--term-ai-width);
-  gap: var(--term-gap);
-  padding: var(--term-gap);
+  grid-column: 2;
+  grid-row: 1;
+}
+
+[data-role="statusbar"] {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+[data-role="main"] {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
+}
+
+[data-role="tabbar"] {
+  flex: 0 0 auto;
+}
+
+[data-role="tabbar"],
+[data-role="statusbar"] {
+  display: flex;
+  align-items: center;
+  gap: var(--term-gap);
+  padding: 4px var(--term-gap);
+  border-bottom: 1px solid var(--term-border);
+  min-width: 0;
+  overflow: hidden;
+}
+
+[data-role="statusbar"] {
+  border-bottom: none;
+  border-top: 1px solid var(--term-border);
+  font-size: 12px;
 }
 
 [data-role="terminal-host"] {
   position: relative;
-  min-width: var(--term-min-main);
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   padding: 4px 2px;
   overflow: hidden;
-  border: 1px solid var(--term-border);
-  border-radius: var(--term-radius);
   background: var(--term-bg);
 }
 
@@ -47,44 +94,66 @@ html, body {
   display: none;
 }
 
-[data-role="ai-panel"] {
+/* AI 输入条：模型下拉 → 输入 → 「问」按钮。高 44px，不参与终端 flex。 */
+[data-role="aibar"] {
+  flex: 0 0 auto;
+  height: var(--term-aibar-height);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  min-width: 0;
+  border-top: 1px solid var(--term-border);
+  background: var(--term-panel-bg);
+}
+
+/* AI 结果浮层：与终端同格，从 AI 条上方开始，不碰 rail。 */
+[data-role="ai-layer"] {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  z-index: 5;
   display: flex;
   flex-direction: column;
-  min-width: var(--term-ai-min);
+  min-width: 0;
   min-height: 0;
+  margin: 8px 8px calc(var(--term-aibar-height) + 8px) 8px;
+  max-height: calc(100% - var(--term-ai-layer-inset));
   overflow: auto;
   border: 1px solid var(--term-border);
   border-radius: var(--term-radius);
   background: var(--term-panel-bg);
+  box-shadow: 0 8px 24px var(--term-shadow);
 }
 
-[data-role="tabbar"],
-[data-role="statusbar"] {
-  display: flex;
-  align-items: center;
-  gap: var(--term-gap);
-  padding: 4px var(--term-gap);
-  border-bottom: 1px solid var(--term-border);
+[data-role="ai-layer"][hidden] {
+  display: none;
 }
 
-[data-role="statusbar"] {
-  border-bottom: none;
-  border-top: 1px solid var(--term-border);
-  font-size: 12px;
+/* AI 关闭时：输入条、浮层、模型提示都不占位（终端自己拿满）。 */
+[data-role="app"][data-ai-open="false"] [data-role="aibar"],
+[data-role="app"][data-ai-open="false"] [data-role="model-note"] {
+  display: none;
 }
 
-/* AI 栏折叠：终端优先占满，AI 栏变成可展开的抽屉。 */
-@media (max-width: 900px) {
-  [data-role="main"] {
-    grid-template-columns: minmax(var(--term-min-main), 1fr);
+[data-role="app"][data-ai-open="false"] [data-role="ai-layer"] {
+  display: none;
+}
+
+/* 窄窗：rail 不变；AI 条允许折成两行（选择器 + 输入一行，按钮一行）。 */
+@media (max-width: 720px) {
+  [data-role="aibar"] {
+    height: auto;
+    min-height: var(--term-aibar-height);
+    flex-wrap: wrap;
+    align-content: center;
+    padding: 4px 8px;
+    row-gap: 4px;
   }
 
-  [data-role="main"][data-ai-open="false"] [data-role="ai-panel"] {
-    display: none;
-  }
-
-  [data-role="main"][data-ai-open="true"] [data-role="ai-panel"] {
-    max-height: 45vh;
+  [data-role="aibar"] [data-role="ai-question"] {
+    flex: 1 1 140px;
   }
 }
 

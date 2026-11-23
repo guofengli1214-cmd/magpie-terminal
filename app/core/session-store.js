@@ -7,6 +7,13 @@ export default function createSessionStore() {
     sessions: [],
     activeId: null,
     connection: "connecting",
+    // V2-A 新增（不改现有字段语义）：
+    // model      —— 模型下拉当前选中的 id（null 表示还没拉到清单）
+    // aiOpen     —— AI 输入条 / 浮层是否展开，对应 #root[data-ai-open]
+    // aiUnread   —— 有没有「用户没看过的 AI 回复」，驱动图标栏小圆点
+    model: null,
+    aiOpen: true,
+    aiUnread: false,
   };
   const subscribers = new Set();
   let scheduled = false;
@@ -34,6 +41,9 @@ export default function createSessionStore() {
       sessions: state.sessions.map((s) => ({ ...s })),
       activeId: state.activeId,
       connection: state.connection,
+      model: state.model,
+      aiOpen: state.aiOpen,
+      aiUnread: state.aiUnread,
     };
   }
 
@@ -98,6 +108,25 @@ export default function createSessionStore() {
       if (!connectionValues.has(value)) return;
       if (state.connection === value) return;
       state.connection = value;
+      notify();
+    },
+    /** 模型下拉选中的 id；空串/null 一律归一为 null。 */
+    setModel(id) {
+      const next = typeof id === "string" && id.length > 0 ? id : null;
+      if (state.model === next) return;
+      state.model = next;
+      notify();
+    },
+    setAiOpen(open) {
+      const next = Boolean(open);
+      if (state.aiOpen === next) return;
+      state.aiOpen = next;
+      notify();
+    },
+    setAiUnread(value) {
+      const next = Boolean(value);
+      if (state.aiUnread === next) return;
+      state.aiUnread = next;
       notify();
     },
   };

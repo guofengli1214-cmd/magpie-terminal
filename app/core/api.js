@@ -33,11 +33,56 @@ async function getJson(path) {
   }
 }
 
+async function sendJson(path, method, payload) {
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      credentials: "omit",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "x-magpie-term-token": readToken(),
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    return apiError("NETWORK", `连不上本地服务：${err && err.message ? err.message : "网络错误"}`);
+  }
+  let body = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  if (!response.ok) {
+    const code = body && typeof body.code === "string" ? body.code : `HTTP_${response.status}`;
+    const userText =
+      body && typeof body.userText === "string"
+        ? body.userText
+        : `本地服务返回 HTTP ${response.status}，请重试。`;
+    return { ok: false, code, userText };
+  }
+  return { ok: true, data: body };
+}
+
 export default {
   health() {
     return getJson("/api/health");
   },
   policy() {
     return getJson("/api/policy");
+  },
+  /** GET /api/models：网关可达性 + 模型清单 + 默认模型。 */
+  models() {
+    return getJson("/api/models");
+  },
+  /** GET /api/config：当前偏好（本卡只有 model）。 */
+  config() {
+    return getJson("/api/config");
+  },
+  /** PUT /api/config：只提交已知字段；失败返回可展示错误。 */
+  saveConfig(patch) {
+    return sendJson("/api/config", "PUT", patch);
   },
 };

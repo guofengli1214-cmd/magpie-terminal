@@ -8,12 +8,19 @@ import createTabBar from "./ui/tab-bar.js";
 import createTerminalView from "./ui/terminal-view.js";
 import createStatusBar from "./ui/status-bar.js";
 import createAiPanel from "./ui/ai-panel.js";
+import createAiBar from "./ui/ai-bar.js";
+import createRail from "./ui/rail.js";
 
 const root = document.querySelector('[data-role="app"]');
+const railHost = document.querySelector('[data-role="rail"]');
 const tabbarHost = document.querySelector('[data-role="tabbar"]');
 const mainHost = document.querySelector('[data-role="main"]');
 const terminalHost = document.querySelector('[data-role="terminal-host"]');
-const aiHost = document.querySelector('[data-role="ai-panel"]');
+const aiLayer = document.querySelector('[data-role="ai-layer"]');
+const modelSelect = document.querySelector('[data-role="model-select"]');
+const aiQuestion = document.querySelector('[data-role="ai-question"]');
+const aiSubmit = document.querySelector('[data-role="ai-submit"]');
+const modelNote = document.querySelector('[data-role="model-note"]');
 const statusHost = document.querySelector('[data-role="statusbar"]');
 
 const store = createSessionStore();
@@ -22,13 +29,16 @@ const banner = document.createElement("div");
 banner.setAttribute("data-role", "banner");
 banner.setAttribute("role", "status");
 banner.hidden = true;
-root.insertBefore(banner, mainHost);
+// 提示条放进主区顶部（骨架里 root 是网格容器，往里塞第五个格子会破布局）。
+mainHost.insertBefore(banner, mainHost.firstChild);
 
 let health = null;
 let lastAttachedId = null;
 // 重连时已发过 pty.attach、还在等 session.resumed / SESSION_GONE 的 id。
 const resumePendingIds = new Set();
 let aiPanel = null;
+let aiBar = null;
+let rail = null;
 let tabBar = null;
 let statusBar = null;
 let terminalView = null;
@@ -81,6 +91,8 @@ function createTab() {
 
 function sendResize(id, cols, rows) {
   wsClient.send({ type: "pty.resize", id, cols, rows });
+  // PTY 尺寸是服务端权威，把它同步进 store，状态栏 / 调试出口才看得到真值。
+  store.patchSession(id, { cols, rows });
 }
 
 function healthPty() {
@@ -209,10 +221,12 @@ function handleFrame(frame) {
     }
     case "ai.reply": {
       aiPanel.onReply(frame);
+      arriveAiResult();
       return;
     }
     case "ai.error": {
       aiPanel.onError(frame);
+      arriveAiResult();
       return;
     }
     default:
@@ -304,15 +318,66 @@ function setupKeyboard() {
   });
 }
 
+// 浮层默认 hidden（§2.1）：只有真正出现了结果 / 用户问了问题才显示，
+// 否则一屏半透明面板会盖住终端。
+let aiLayerHasContent = false;
+
+function openAiLayer() {
+  aiLayerHasContent = true;
+  store.setAiOpen(true);
+  store.setAiUnread(false);
+  // setAiOpen(true) 在已经是 true 时不会通知，所以这里显式同步一次可见性。
+  applyAiOpen(true);
+}
+
+/** 「收起」：只藏浮层，输入条仍留着（继续提问不用先展开）。 */
+function hideAiLayer() {
+  aiLayerHasContent = false;
+  applyAiOpen(store.getSnapshot().aiOpen !== false);
+  if (aiPanel) aiPanel.closeConfirm({ restoreFocus: false });
+  requestAnimationFrame(() => terminalView && terminalView.resizeAll());
+}
+
+/**
+ * AI 结果到达时该做什么：
+ * - 浮层此刻可见（AI 条展开且已有内容）→ 什么都不用做，用户已经看得到；
+ * - 浮层被收起（点了「收起」）或 AI 条整体关掉 → 不抢用户的终端焦点，
+ *   只在 rail-ai 上点一个未读圆点，等用户自己展开。
+ */
+function arriveAiResult() {
+  const visible = !aiLayer.hidden && aiLayer.getAttribute("data-open") === "true";
+  if (visible) {
+    store.setAiUnread(false);
+    return;
+  }
+  store.setAiUnread(true);
+}
+
 function toggleAi() {
-  const open = mainHost.getAttribute("data-ai-open") !== "true";
-  mainHost.setAttribute("data-ai-open", open ? "true" : "false");
-  aiHost.hidden = !open;
-  terminalView.resizeAll();
+  const open = store.getSnapshot().aiOpen !== true;
+  if (open) aiLayerHasContent = true;
+  store.setAiOpen(open);
+  applyAiOpen(open);
+  store.setAiUnread(false);
+  if (open) {
+    // 浮层刚展开：把焦点交给输入条（用户按下 AI 按钮就是要问问题）。
+    if (aiBar) aiBar.focusInput();
+  } else if (aiPanel) {
+    aiPanel.closeConfirm({ restoreFocus: false });
+  }
+  // 终端宽度可能变化（浮层不挤宽度，但收起时可能触发 fit），保险再量一次。
+  requestAnimationFrame(() => terminalView && terminalView.resizeAll());
+}
+
+/** #root[data-ai-open] / 浮层可见性 / 终端 fit 唯一同步点。 */
+function applyAiOpen(open) {
+  root.setAttribute("data-ai-open", open ? "true" : "false");
+  aiLayer.hidden = !open || !aiLayerHasContent;
+  aiLayer.setAttribute("data-open", open ? "true" : "false");
 }
 
 function init() {
-  mainHost.setAttribute("data-ai-open", "true");
+  applyAiOpen(store.getSnapshot().aiOpen);
 
   tabBar = createTabBar({
     host: tabbarHost,
@@ -332,17 +397,57 @@ function init() {
     onResize: (id, cols, rows) => sendResize(id, cols, rows),
   });
 
-  aiPanel = createAiPanel({
-    host: aiHost,
+  rail = createRail({
+    host: railHost,
     store,
-    onAsk: (payload) => wsClient.send({ type: "ai.ask", ...payload }),
+    onToggleAi: toggleAi,
+  });
+  rail.init();
+
+  aiPanel = createAiPanel({
+    host: aiLayer,
+    store,
     onExecute: (id, command) => {
       wsClient.send({ type: "pty.input", id, data: `${command}\r` });
     },
-    getRecentOutput: (id) => terminalView.recentOutput(id, constants.RECENT_OUTPUT_LINES),
-    onToggle: toggleAi,
+    onClose: () => hideAiLayer(),
   });
   aiPanel.init();
+
+  aiBar = createAiBar({
+    store,
+    select: modelSelect,
+    input: aiQuestion,
+    submit: aiSubmit,
+    note: modelNote,
+    api,
+    onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
+    onAsk: ({ question, model }) => {
+      const active = store.getActive();
+      if (!active) return false;
+      const context = {
+        cwd: active.cwd,
+        shell: active.shell,
+        recentOutput: terminalView.recentOutput(active.id, constants.RECENT_OUTPUT_LINES),
+      };
+      // 请求帧必须带 model（服务端透传给网关）。
+      const frame = { type: "ai.ask", requestId: `req-${Date.now()}`, question, context };
+      if (model) frame.model = model;
+      const sent = wsClient.send(frame);
+      if (sent) {
+        aiPanel.appendQuestion(question);
+        openAiLayer();
+      }
+      return sent;
+    },
+    onPersistFailed: (result) => {
+      // PUT 失败：保留本地选择，只提示。状态栏由 ai-bar 的 onNotice 闪。
+      if (result && result.code === "GATEWAY_UNAVAILABLE") {
+        // 网关这会儿不可达：顺手重拉清单，让下拉切到「网关不可用」。
+        void aiBar.reload();
+      }
+    },
+  });
 
   statusBar = createStatusBar({
     host: statusHost,
@@ -351,6 +456,8 @@ function init() {
     onToggleAi: toggleAi,
   });
   statusBar.init();
+
+  aiBar.init();
 
   wsClient = createWsClient({
     port: options.port,
@@ -366,6 +473,8 @@ function init() {
     if (snapshot.activeId !== lastAttachedId && snapshot.activeId && terminalView) {
       attachActive();
     }
+    const open = snapshot.aiOpen !== false;
+    if (root.getAttribute("data-ai-open") !== (open ? "true" : "false")) applyAiOpen(open);
   });
 
   // 健康行：只读，失败不阻塞终端。

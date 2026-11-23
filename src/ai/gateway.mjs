@@ -125,18 +125,22 @@ export async function askGateway({ question, context, model } = {}) {
   );
 
   if (result.status !== 200) {
-    throw new GatewayError(
+    const err = new GatewayError(
       `GATEWAY_HTTP_${result.status}`,
       `gateway returned ${result.status}`,
       `AI 网关返回错误（HTTP ${result.status}），命令仍可手动输入。`,
     );
+    rememberModelFailure(chosenModel, err);
+    throw err;
   }
 
   let parsed;
   try {
     parsed = JSON.parse(result.text);
   } catch {
-    throw new GatewayError("AI_BAD_JSON", "gateway body is not json", "AI 网关返回了无法解析的内容。");
+    const err = new GatewayError("GATEWAY_BAD_JSON", "gateway body is not json", "AI 网关返回了无法解析的内容。");
+    rememberModelFailure(chosenModel, err);
+    throw err;
   }
 
   const content =
@@ -150,9 +154,12 @@ export async function askGateway({ question, context, model } = {}) {
 
   const extracted = extractCommand(content);
   if (!extracted.ok) {
+    // 不是三种「模型不可用」错误码之一：模型回话了，只是没给出可解析的命令。
+    // 这种失败不记进失败记忆（否则用户问错一句就把模型标灰 10 分钟）。
     throw new GatewayError("AI_BAD_JSON", "no command in model reply", "AI 没能给出可解析的命令，请换个说法。");
   }
 
+  clearModelFailure(chosenModel);
   return {
     command: extracted.command,
     reason: extracted.reason,
@@ -161,7 +168,82 @@ export async function askGateway({ question, context, model } = {}) {
   };
 }
 
-/** 探活：GET /v1/models。 */
+// ---------------------------------------------------------------------------
+// 模型清单 + 「失败后记忆」
+//
+// 为什么不做启动探测：6 个模型逐个打一遍最坏要 34 秒（每个都可能等到超时），
+// 页面会一直空白。改为「真正调用失败之后才记一笔」，TTL 10 分钟，成功一次即清除。
+// 记忆只在进程内存里：重启丢失是可接受的（重启后本来就要重新验证）。
+// ---------------------------------------------------------------------------
+
+/** 失败记忆的 TTL（TASK-V2-A §2.3）。 */
+export const MODEL_FAILURE_TTL_MS = 10 * 60 * 1000;
+
+/** 哪些错误码代表「这个模型本身不可用」，值得记一笔。 */
+export const REMEMBERED_FAILURE_CODES = Object.freeze([
+  "GATEWAY_HTTP_404",
+  "GATEWAY_HTTP_502",
+  "GATEWAY_BAD_JSON",
+]);
+
+/** modelId -> { note, at } */
+const modelFailures = new Map();
+
+function pruneFailures(now = Date.now()) {
+  for (const [id, entry] of modelFailures) {
+    if (now - entry.at >= MODEL_FAILURE_TTL_MS) modelFailures.delete(id);
+  }
+}
+
+/**
+ * 记录一次模型失败。只在 REMEMBERED_FAILURE_CODES 之内记。
+ * @param {string} modelId
+ * @param {{code:string, userText:string}} err
+ */
+export function rememberModelFailure(modelId, err) {
+  if (typeof modelId !== "string" || modelId.length === 0) return;
+  if (!err || !REMEMBERED_FAILURE_CODES.includes(err.code)) return;
+  pruneFailures();
+  const note = `${err.userText || err.code}（${err.code}）`;
+  modelFailures.set(modelId, { note, at: Date.now() });
+}
+
+/** 成功一次即清除记忆。 */
+export function clearModelFailure(modelId) {
+  if (typeof modelId !== "string") return;
+  modelFailures.delete(modelId);
+}
+
+/** 当前失败记忆的只读快照（测试与 /api/models 用）。 */
+export function modelFailuresSnapshot() {
+  pruneFailures();
+  return new Map([...modelFailures].map(([id, entry]) => [id, { ...entry }]));
+}
+
+/** 仅供测试：清空全部记忆。 */
+export function resetModelFailures() {
+  modelFailures.clear();
+}
+
+function toModelEntry(raw) {
+  const id = raw && typeof raw.id === "string" ? raw.id : "";
+  if (!id) return null;
+  const label =
+    typeof raw.magpie_label === "string" && raw.magpie_label.trim().length > 0
+      ? raw.magpie_label
+      : id;
+  const contextLength = Number.isFinite(raw.context_length) ? raw.context_length : null;
+  return { id, label, contextLength };
+}
+
+/**
+ * 探活 + 拉模型清单：GET /v1/models。
+ *
+ * 保留 `count` / `durationMs` 给现有调用方（test/pty/session.test.mjs）。
+ * 新增 `models: [{id,label,contextLength,available,note}]` 与 `baseUrl`。
+ *
+ * 网关可达但清单为空 → 抛 GATEWAY_UNREACHABLE（与旧行为一致，现有测试依赖）。
+ */
 export async function probeGateway() {
   const timeoutMs = Math.min(gatewayTimeoutMs(), 5000);
   const result = await requestJson("/v1/models", { method: "GET" }, timeoutMs);
@@ -172,9 +254,31 @@ export async function probeGateway() {
       `AI 网关不可用（HTTP ${result.status}）。`,
     );
   }
-  const parsed = JSON.parse(result.text);
+  let parsed;
+  try {
+    parsed = JSON.parse(result.text);
+  } catch {
+    throw new GatewayError("GATEWAY_BAD_JSON", "models body is not json", "AI 网关返回了无法解析的模型清单。");
+  }
   if (!parsed || !Array.isArray(parsed.data) || parsed.data.length === 0) {
     throw new GatewayError("GATEWAY_UNREACHABLE", "models list empty", "AI 网关没有返回任何模型。");
   }
-  return { count: parsed.data.length, durationMs: result.durationMs };
+  const failures = modelFailuresSnapshot();
+  const models = parsed.data
+    .map(toModelEntry)
+    .filter(Boolean)
+    .map((model) => {
+      const failure = failures.get(model.id);
+      return {
+        ...model,
+        available: !failure,
+        note: failure ? failure.note : null,
+      };
+    });
+  return {
+    count: models.length,
+    durationMs: result.durationMs,
+    baseUrl: gatewayBaseUrl(),
+    models,
+  };
 }

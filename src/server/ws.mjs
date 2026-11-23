@@ -45,6 +45,8 @@ const InputFrame = z.union([
     type: z.literal("ai.ask"),
     requestId: z.string(),
     question: z.string(),
+    // 可选：前端模型下拉选中的 id。不校验是否在清单里（网关会自己报错）。
+    model: z.string().max(200).optional(),
     context: z
       .object({
         cwd: z.string().optional(),
@@ -298,7 +300,12 @@ export function attachWebSocket(opts) {
   async function handleAsk(socket, frame) {
     const startedAt = Date.now();
     try {
-      const result = await askGateway({ question: frame.question, context: frame.context || {} });
+      // model 必须透传：以前这里丢掉了，前端选了模型也不生效（本卡要修的 bug）。
+      const result = await askGateway({
+        question: frame.question,
+        context: frame.context || {},
+        model: frame.model,
+      });
       const decision = classify(result.command);
       send(socket, {
         type: "ai.reply",
@@ -307,6 +314,8 @@ export function attachWebSocket(opts) {
         reason: result.reason,
         decision: decision.decision,
         policyHit: decision.hit,
+        // 回答头要显示「用了哪个模型」，所以回显（不是回显请求值，而是网关实际用的）。
+        model: result.model,
       });
       log({
         level: "info",

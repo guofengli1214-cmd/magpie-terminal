@@ -52,6 +52,20 @@ export default function createTabBar(elements) {
       tab.appendChild(close);
 
       tab.addEventListener("click", () => store.setActive(session.id));
+      // 中键关闭：TASK-V2-A §2.1 把它列为回归锁，但基线里从未实现过。
+      // 用 auxclick（button===1）而不是 mousedown：前者只在完整的「按下+抬起」后触发，
+      // 中键拖动滚屏不会误关标签。
+      tab.addEventListener("auxclick", (event) => {
+        if (event.button !== 1) return;
+        event.preventDefault();
+        event.stopPropagation();
+        store.removeSession(session.id);
+        if (elements.onClose) elements.onClose(session.id);
+      });
+      // 中键在部分环境里会先触发 mousedown 的默认「自动滚动」，preventDefault 掉。
+      tab.addEventListener("mousedown", (event) => {
+        if (event.button === 1) event.preventDefault();
+      });
       tab.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();

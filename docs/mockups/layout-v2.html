@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>布局对比</title>
+<style>
+  :root{
+    --bg:#1e1e2e; --panel:#181825; --panel2:#11111b; --line:#313244;
+    --fg:#cdd6f4; --muted:#7f849c; --accent:#89b4fa; --ok:#a6e3a1; --warn:#f9e2af; --danger:#f38ba8;
+    --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:14px;background:#0b0b12;color:var(--fg);
+       font:13px/1.5 -apple-system,"Segoe UI",system-ui,sans-serif}
+  .toolbar{display:flex;align-items:center;gap:14px;margin-bottom:10px}
+  .lbl{font-size:12px;color:var(--muted)}
+  .seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .seg button{background:transparent;border:0;color:var(--muted);padding:5px 12px;font-size:12px;cursor:pointer;font-family:inherit}
+  .seg button.on{background:var(--accent);color:#11111b;font-weight:600}
+  .frame{width:100%;max-width:829px;height:600px;border:1px solid #2a2a3a;border-radius:8px;overflow:hidden;
+         display:grid;grid-template-rows:34px minmax(0,1fr) 26px;background:var(--bg);position:relative}
+  @media (min-width:900px){.frame{height:660px}}
+  .tabs{display:flex;align-items:center;gap:4px;padding:0 6px;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .tab{display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:5px 5px 0 0;font-size:12px;color:var(--muted);background:transparent}
+  .tab.on{background:var(--bg);color:var(--fg);box-shadow:inset 0 -2px 0 var(--accent)}
+  .tab .x{opacity:.5;font-size:11px}
+  .grow{flex:1}
+  .kbd{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 6px}
+  .body{position:relative;display:grid;min-height:0;overflow:hidden}
+  .term{background:var(--bg);padding:8px 10px;font:12.5px/1.45 var(--mono);overflow:hidden;min-width:0}
+  .term .p{color:var(--ok)}
+  .term .c{color:var(--fg)}
+  .term .d{color:var(--muted)}
+  .status{display:flex;align-items:center;gap:12px;padding:0 10px;background:var(--panel2);border-top:1px solid var(--line);font-size:11px;color:var(--muted)}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);display:inline-block;margin-right:5px}
+  /* ---------- 现状：右栏固定 320 ---------- */
+  .now .body{grid-template-columns:minmax(0,1fr) 320px;padding:6px;gap:6px}
+  .now .term{border:1px solid var(--line);border-radius:6px}
+  .now .ai{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px;display:flex;flex-direction:column;gap:8px;overflow:hidden}
+  .ai h4{margin:0;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  .ai .hint{font-size:11px;color:var(--muted);line-height:1.6;margin:0}
+  .ai textarea{width:100%;height:56px;resize:none;background:var(--panel2);border:1px solid var(--line);
+               border-radius:5px;color:var(--fg);padding:6px;font:12px/1.5 inherit}
+  .ai .row{display:flex;gap:6px;align-items:center}
+  .btn{border:1px solid var(--line);background:var(--panel2);color:var(--fg);border-radius:5px;padding:4px 10px;font-size:12px;font-family:inherit;cursor:pointer}
+  .btn.pri{background:var(--accent);color:#11111b;border-color:transparent;font-weight:600}
+  .squeeze{position:absolute;left:8px;bottom:8px;font-size:10px;color:var(--danger);background:#2a1416;border:1px solid #4a2026;border-radius:4px;padding:2px 6px}
+  /* ---------- 方案 A：图标栏 + 全宽终端 + 底部 AI 条 ---------- */
+  .a .body{grid-template-columns:48px minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}
+  .a .rail{grid-row:1/3;background:var(--panel2);border-right:1px solid var(--line);
+           display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0}
+  .rail button{width:34px;height:34px;border:0;border-radius:7px;background:transparent;color:var(--muted);
+               font-size:15px;cursor:pointer;display:grid;place-items:center;position:relative}
+  .rail button.on{background:#2a2a3c;color:var(--accent)}
+  .rail .sep{width:20px;height:1px;background:var(--line);margin:4px 0}
+  .a .main{display:flex;flex-direction:column;min-width:0;min-height:0}
+  .a .term{border:0;flex:1}
+  .a .aibar{border-top:1px solid var(--line);background:var(--panel);padding:6px 8px;display:flex;gap:6px;align-items:center}
+  .aibar input{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+               color:var(--fg);padding:6px 9px;font:12.5px/1.4 inherit}
+  .model{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--fg);background:var(--panel2);
+         border:1px solid var(--line);border-radius:6px;padding:5px 8px;white-space:nowrap}
+  .model b{font-weight:500}
+  .model .car{color:var(--muted);font-size:9px}
+  .card{position:absolute;left:calc(48px + 8px);right:8px;bottom:calc(44px + 8px);background:var(--panel);
+        border:1px solid #3d4a63;border-left:3px solid var(--warn);border-radius:7px;padding:8px 10px;
+        box-shadow:0 8px 24px #0009;font-size:12px}
+  .card .ttl{font-size:11px;color:var(--muted);margin-bottom:4px}
+  .card code{display:block;font:12.5px/1.5 var(--mono);color:var(--warn);background:var(--panel2);
+             border-radius:5px;padding:5px 7px;margin:4px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .card .row{display:flex;gap:6px}
+  .hosts{position:absolute;left:48px;top:0;bottom:0;width:212px;background:var(--panel);border-right:1px solid var(--line);
+         padding:8px;font-size:12px;z-index:3;box-shadow:6px 0 18px #0008}
+  .hosts .h{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:11px;margin-bottom:8px}
+  .hosts .it{padding:6px 8px;border-radius:5px;color:var(--fg);display:flex;align-items:center;gap:7px}
+  .hosts .it.on{background:#2a2a3c}
+  .hosts .it small{color:var(--muted);font-size:10.5px;display:block}
+  /* ---------- 方案 B：AI 收成竖条 ---------- */
+  .b .body{grid-template-columns:minmax(0,1fr) 30px}
+  .b .term{padding:8px 10px}
+  .b .strip{background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;
+            align-items:center;padding:10px 0;gap:10px;cursor:pointer;writing-mode:vertical-rl;font-size:11px;color:var(--muted)}
+  .note{margin-top:10px;font-size:12px;color:var(--muted);max-width:829px;line-height:1.65}
+  .note b{color:var(--fg);font-weight:600}
+  .num{color:var(--ok);font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <span class="lbl">magpie 插槽实际尺寸 829×721 · 点按钮对比</span>
+  <div class="seg">
+    <button data-v="now" class="on">现状</button>
+    <button data-v="a">方案 A</button>
+    <button data-v="b">方案 B</button>
+  </div>
+</div>
+
+<div class="frame now" id="frame">
+  <div class="tabs">
+    <div class="tab on"><span class="tname">bash: 41807</span><span class="x">×</span></div>
+    <div class="tab"><span class="tname">bash: 41807</span><span class="x">×</span></div>
+    <div class="tab"><span>+</span></div>
+    <div class="grow"></div>
+    <span class="kbd">Ctrl+Shift+T</span>
+  </div>
+
+  <div class="body">
+    <!-- 终端 -->
+    <div class="term">
+      <div><span class="p">41807@desk</span> <span class="d">MINGW64</span> <span class="c">~/magpie-terminal</span></div>
+      <div><span class="c">$</span> ls -la</div>
+      <div class="d">total 42</div>
+      <div class="d">drwxr-xr-x  1 41807 197609    0 Nov 22 23:41 .</div>
+      <div class="d">drwxr-xr-x  1 41807 197609    0 Nov 22 23:12 ..</div>
+      <div class="d">-rw-r--r--  1 41807 197609 1859 Nov 22 22:03 index.html</div>
+      <div class="d">drwxr-xr-x  1 41807 197609    0 Nov 22 22:03 styles</div>
+      <div><span class="c">$</span> <span style="background:var(--fg);color:var(--bg)">&nbsp;</span></div>
+    </div>
+
+    <!-- 现状右栏 -->
+    <div class="ai">
+      <h4>AI 助手</h4>
+      <p class="hint">用中文说要干什么，AI 给一条命令。只读命令自动执行，其余需要你确认。</p>
+      <textarea placeholder="例如：看看当前目录有哪些文件"></textarea>
+      <div class="row"><button class="btn pri">问 AI</button><span style="font-size:11px;color:var(--muted)">Ctrl+Enter</span></div>
+      <div style="border-top:1px solid var(--line);padding-top:8px;margin-top:2px;font-size:11.5px;color:var(--muted)">
+        已发送：看看当前目录有哪些文件
+      </div>
+      <div style="font-size:11.5px;color:var(--ok)">只读命令，已自动执行：</div>
+      <code style="font:12px var(--mono);color:var(--fg);background:var(--panel2);padding:4px 6px;border-radius:4px">ls -1A | wc -l</code>
+    </div>
+    <div class="squeeze">终端只剩 ~490px ≈ 60 列</div>
+  </div>
+
+  <div class="status">
+    <span><span class="dot"></span>已连接本地服务</span>
+    <span>PTY：原生</span>
+    <span>shell：bash 5.2.37</span>
+    <span>cwd：C:\Users\41807</span>
+    <div class="grow"></div>
+    <span class="kbd">立即重连</span><span class="kbd">AI 栏</span>
+  </div>
+</div>
+
+<div class="note" id="note">
+  <b>现状的问题：</b>AI 栏固定吃掉 320px（39% 宽度），终端只剩约 60 列，跑 <span class="num">git log --graph</span> 或 <span class="num">vim</span> 都在挤；主机列表无处安放，远程服务器没有入口。
+</div>
+
+<script>
+const frame = document.getElementById('frame');
+const note = document.getElementById('note');
+const N = {
+  now: '<b>现状的问题：</b>AI 栏固定吃掉 320px（39% 宽度），终端只剩约 60 列，跑 <span class="num">git log --graph</span> 或 <span class="num">vim</span> 都在挤；主机列表无处安放，远程服务器没有入口。',
+  a: '<b>方案 A（推荐）：</b>左侧 48px 图标栏（终端 / 主机 / 设置），终端吃满 ~765px ≈ 95 列；AI 变成底部 44px 输入条，<b>结果卡片浮在输入条上方</b>，不占常驻宽度；点「主机」从左侧滑出 212px 覆盖层，不挤压终端。<span class="num">刚画的：主机面板 + 命令卡片同屏</span>',
+  b: '<b>方案 B（最保守）：</b>保留左右分栏，AI 栏默认收成 30px 竖条，点开才展开到 320px 并可拖拽调宽。终端平时 ~785px，改动小但 AI 用起来要多点一次。'
+};
+const BODY = {
+  now: frame.innerHTML,
+  a: `
+  <div class="tabs">
+    <div class="tab on"><span class="tname">本地 bash</span><span class="x">×</span></div>
+    <div class="tab"><span class="tname">prod-web</span><span class="x">×</span></div>
+    <div class="tab"><span>+</span></div>
+    <div class="grow"></div>
+    <span class="kbd">⌘K AI</span>
+  </div>
+  <div class="body">
+    <div class="rail">
+      <button class="on" title="终端">▣</button>
+      <button title="主机">🖧</button>
+      <button title="设置">⚙</button>
+      <div class="grow"></div>
+      <button title="AI">✦</button>
+    </div>
+    <div class="main">
+      <div class="term">
+        <div><span class="p">41807@desk</span> <span class="d">MINGW64</span> <span class="c">~/magpie-terminal</span></div>
+        <div><span class="c">$</span> git log --oneline --graph -3</div>
+        <div class="d">* 8324d74 fix: 让插件页在 magpie 沙箱 iframe 里真正能跑</div>
+        <div class="d">* 62ab6e0 feat: 实现 T1+T2</div>
+        <div><span class="c">$</span> <span style="background:var(--fg);color:var(--bg)">&nbsp;</span></div>
+      </div>
+      <div class="aibar">
+        <input placeholder="用中文说要做什么…（⌘/Ctrl+K 聚焦）">
+        <div class="model"><b>DeepSeek V4.1 Flash</b><span class="car">▼</span></div>
+        <button class="btn pri">发送</button>
+      </div>
+    </div>
+    <div class="hosts">
+      <div class="h"><span>主机</span><span style="cursor:pointer">＋</span></div>
+      <div class="it on"><span>🖥</span><div>prod-web<small>root@10.0.1.21</small></div></div>
+      <div class="it"><span>🖥</span><div>box-2<small>deploy@192.168.10.24</small></div></div>
+      <div class="it"><span>☁</span><div>aliyun-hk<small>来自 ~/.ssh/config</small></div></div>
+    </div>
+    <div class="card">
+      <div class="ttl">需要确认后才会执行</div>
+      <code>rm -f -- *.log</code>
+      <div class="row"><button class="btn pri">执行</button><button class="btn">复制</button><button class="btn">取消 Esc</button></div>
+    </div>
+  </div>
+  <div class="status">
+    <span><span class="dot"></span>已连接</span><span>本地 bash 5.2.37</span><span>模型 DeepSeek V4.1 Flash</span>
+    <div class="grow"></div><span class="kbd">Ctrl+K</span>
+  </div>`,
+  b: `
+  <div class="tabs">
+    <div class="tab on"><span class="tname">本地 bash</span><span class="x">×</span></div>
+    <div class="tab"><span class="tname">prod-web</span><span class="x">×</span></div>
+    <div class="tab"><span>+</span></div>
+    <div class="grow"></div>
+    <span class="kbd">Ctrl+Shift+T</span>
+  </div>
+  <div class="body">
+    <div class="term">
+      <div><span class="p">41807@desk</span> <span class="d">MINGW64</span> <span class="c">~/magpie-terminal</span></div>
+      <div><span class="c">$</span> ls -la</div>
+      <div class="d">total 42</div>
+      <div class="d">drwxr-xr-x  1 41807 197609    0 Nov 22 23:41 .</div>
+      <div class="d">drwxr-xr-x  1 41807 197609    0 Nov 22 23:12 ..</div>
+      <div><span class="c">$</span> <span style="background:var(--fg);color:var(--bg)">&nbsp;</span></div>
+    </div>
+    <div class="strip">AI 助手 ›</div>
+  </div>
+  <div class="status">
+    <span><span class="dot"></span>已连接本地服务</span><span>PTY：原生</span><span>shell：bash 5.2.37</span>
+    <div class="grow"></div><span class="kbd">立即重连</span>
+  </div>`
+};
+document.querySelectorAll('.seg button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.seg button').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    const v = btn.dataset.v;
+    frame.className = 'frame ' + v;
+    frame.innerHTML = BODY[v];
+    note.innerHTML = N[v];
+  });
+});
+</script>
+</body>
+</html>

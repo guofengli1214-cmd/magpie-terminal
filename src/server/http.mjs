@@ -14,6 +14,8 @@ import {
   tokenMetaTag,
 } from "./auth.mjs";
 import { buildHealth } from "./routes/health.mjs";
+import { DEFAULT_MODEL, gatewayBaseUrl, probeGateway } from "../ai/gateway.mjs";
+import { KNOWN_FIELDS, readConfig, updateConfig } from "../config/store.mjs";
 import { buildPolicy } from "./routes/policy.mjs";
 import { handleAiPost } from "./routes/ai.mjs";
 import { isStaticPath, readAppFile, sendStatic } from "./static.mjs";
@@ -99,7 +101,7 @@ export function corsHeaders(req, port) {
   const selfOrigins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
   const headers = {
     "access-control-allow-headers": "content-type, x-magpie-term-token",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
     vary: "Origin",
   };
   if (origin === "null") {
@@ -218,6 +220,19 @@ function readBody(req, res) {
       resolve(null);
     });
   });
+}
+
+/** 从已读好的 body 里解析 JSON 对象；失败返回 null。 */
+function parseJsonBody(buffer) {
+  if (!buffer || buffer.length === 0) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(buffer.toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  return parsed;
 }
 
 function sleep(ms) {
@@ -365,6 +380,126 @@ export async function startServer(options = {}) {
           {},
           cors,
         );
+        return;
+      }
+
+      // GET /api/models：网关可达时给真实清单，不可达时仍 200（前端据此显示重试）。
+      // 与 /api/health 走同一道 token 门（上面的 isApi 分支），不做例外。
+      if (req.method === "GET" && pathname === "/api/models") {
+        const { config } = await readConfig();
+        const configured = typeof config.model === "string" ? config.model : null;
+        let payload;
+        try {
+          const probe = await probeGateway();
+          const ids = probe.models.map((model) => model.id);
+          const fallback = ids.length > 0 ? ids[0] : DEFAULT_MODEL;
+          const preferred =
+            configured && ids.includes(configured)
+              ? configured
+              : ids.includes(DEFAULT_MODEL)
+                ? DEFAULT_MODEL
+                : fallback;
+          payload = {
+            gateway: { reachable: true, durationMs: probe.durationMs, baseUrl: probe.baseUrl },
+            default: preferred,
+            models: probe.models,
+          };
+        } catch (err) {
+          log({
+            level: "warn",
+            code: err && err.code ? err.code : "GATEWAY_UNREACHABLE",
+            msg: "models probe failed",
+            route: "GET /api/models",
+            durationMs: Date.now() - startedAt,
+          });
+          payload = {
+            gateway: { reachable: false, durationMs: Date.now() - startedAt, baseUrl: gatewayBaseUrl() },
+            // 网关不可达时 default 仍要给出：前端下拉不能是空的。
+            default: configured || DEFAULT_MODEL,
+            models: [],
+          };
+        }
+        writeJson(res, 200, payload, {}, cors);
+        return;
+      }
+
+      // GET /api/config：只暴露已知字段；文件缺失/损坏时返回默认值。
+      if (req.method === "GET" && pathname === "/api/config") {
+        const { config } = await readConfig();
+        const model = typeof config.model === "string" && config.model.length > 0 ? config.model : DEFAULT_MODEL;
+        writeJson(res, 200, { model }, {}, cors);
+        return;
+      }
+
+      // PUT /api/config：只接受已知字段（本卡只有 model）。
+      if (req.method === "PUT" && pathname === "/api/config") {
+        const body = await readBody(req, res);
+        if (res.writableEnded) return;
+        const parsed = parseJsonBody(body);
+        if (!parsed) {
+          writeJson(res, 400, { code: "BAD_BODY", userText: "请求体必须是 JSON 对象。" }, {}, cors);
+          return;
+        }
+        const unknown = Object.keys(parsed).filter((key) => !KNOWN_FIELDS.includes(key));
+        // 只接受已知字段：出现未知字段直接拒绝，避免前端把拼错的名字当成「存住了」。
+        if (unknown.length > 0) {
+          writeJson(
+            res,
+            400,
+            { code: "UNKNOWN_FIELD", userText: `不认识的配置字段：${unknown.join(", ")}。` },
+            {},
+            cors,
+          );
+          return;
+        }
+        if (typeof parsed.model !== "string" || parsed.model.trim().length === 0) {
+          writeJson(res, 400, { code: "INVALID_MODEL", userText: "model 必须是非空字符串。" }, {}, cors);
+          return;
+        }
+        const wanted = parsed.model.trim();
+        let known;
+        try {
+          const probe = await probeGateway();
+          known = probe.models.map((model) => model.id);
+        } catch (err) {
+          writeJson(
+            res,
+            502,
+            {
+              code: "GATEWAY_UNAVAILABLE",
+              userText: "网关不可用，无法确认这个模型是否存在于清单里。",
+            },
+            {},
+            cors,
+          );
+          log({
+            level: "warn",
+            code: "CONFIG_MODEL_UNVERIFIED",
+            msg: "put config while gateway unreachable",
+            reason: err && err.code ? err.code : "GATEWAY_UNREACHABLE",
+          });
+          return;
+        }
+        // model 必须是 /api/models 里出现过的 id；否则 400。
+        if (!known.includes(wanted)) {
+          writeJson(res, 400, { code: "INVALID_MODEL", userText: "这个模型不在网关模型清单里。" }, {}, cors);
+          return;
+        }
+        let saved;
+        try {
+          saved = await updateConfig({ model: wanted });
+        } catch (err) {
+          writeJson(
+            res,
+            500,
+            { code: "CONFIG_WRITE_FAILED", userText: "模型偏好没存住（写入配置文件失败）。" },
+            {},
+            cors,
+          );
+          log({ level: "error", code: "CONFIG_WRITE_FAILED", msg: "config write failed", err });
+          return;
+        }
+        writeJson(res, 200, { model: saved.model }, {}, cors);
         return;
       }
 
