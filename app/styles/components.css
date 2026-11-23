@@ -1725,3 +1725,524 @@ button[disabled] {
   font-size: 11.5px;
   color: var(--term-muted);
 }
+
+/* ------------------------------------------------------------------ *
+ * TASK-V4-G：文件面板（终端下方的常驻区域）
+ *
+ * 分界必须同时有三样（CHANGES-V4 §4 第 15 条）：
+ *   ① 1px 亮线 `--term-line-3`
+ *   ② `inset 0 7px 14px` 内投影
+ *   ③ 常显的 46×4 把手
+ * 少一样就退回「看不出能拖」。
+ *
+ * 选中态只用底色 + 文字色 + 图标色（不带竖条 / 边框发光）。
+ * ------------------------------------------------------------------ */
+
+[data-role="file-panel-host"] {
+  flex: 0 0 auto;
+  min-width: 0;
+  position: relative;
+}
+
+[data-role="file-panel"] {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 224px;
+  min-height: 150px;
+  max-height: 520px;
+  background: var(--term-panel-bg);
+  border-top: 1px solid var(--term-line-3);
+  box-shadow: inset 0 7px 14px var(--term-shadow);
+  min-width: 0;
+  overflow: hidden;
+}
+
+[data-role="file-panel"][hidden] {
+  display: none;
+}
+
+[data-role="file-panel"][data-drop="true"] {
+  outline: 1px dashed var(--term-accent-line);
+  outline-offset: -5px;
+}
+
+/* 拖拽把手：常显，不再只在 hover 时冒出来。 */
+.file-panel-grip {
+  position: absolute;
+  top: -5px;
+  left: 0;
+  right: 0;
+  height: 11px;
+  cursor: ns-resize;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+}
+
+.file-panel-grip::before {
+  content: "";
+  width: 46px;
+  height: 4px;
+  border-radius: 3px;
+  background: var(--term-dim);
+  opacity: 1;
+  transition: width 0.12s ease, background 0.12s ease;
+}
+
+.file-panel-grip:hover::before,
+[data-role="file-panel"][data-drag="true"] .file-panel-grip::before {
+  width: 72px;
+  background: var(--term-accent);
+}
+
+.file-panel-toolbar {
+  flex: 0 0 auto;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px 0 6px;
+  border-bottom: 1px solid var(--term-line);
+  min-width: 0;
+}
+
+.file-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--term-fg-2);
+  padding: 0 2px;
+  flex: 0 0 auto;
+}
+
+.file-panel-path {
+  flex: 1 1 auto;
+  min-width: 60px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--term-line);
+  border-radius: 5px;
+  background: var(--term-bg);
+  color: var(--term-fg);
+  font: 11px / 1.5 var(--term-mono);
+  text-overflow: ellipsis;
+}
+
+.file-panel-path:focus {
+  outline: none;
+  border-color: var(--term-accent-line);
+}
+
+.file-panel-tools {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.file-panel-btn {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--term-line-2);
+  border-radius: 5px;
+  background: var(--term-panel-2);
+  color: var(--term-fg);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.file-panel-btn:hover {
+  background: var(--term-raise);
+}
+
+.file-panel-btn-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--term-muted);
+}
+
+.file-panel-btn-quiet:hover {
+  background: var(--term-panel-2);
+  color: var(--term-fg);
+}
+
+.file-panel-btn-accent {
+  background: var(--term-accent-soft);
+  border-color: var(--term-accent-line);
+  color: var(--term-accent);
+}
+
+.file-panel-btn-primary {
+  background: var(--term-accent);
+  border-color: var(--term-accent);
+  color: var(--term-bg);
+  font-weight: 600;
+}
+
+.file-panel-btn-danger {
+  border-color: var(--term-danger);
+  color: var(--term-danger);
+  background: var(--term-danger-soft);
+}
+
+.file-panel-btn[disabled] {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.file-panel-icon-btn {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--term-muted);
+  font-size: 12px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.file-panel-icon-btn:hover {
+  background: var(--term-raise);
+  color: var(--term-fg);
+}
+
+.file-panel-picker {
+  display: none;
+}
+
+/* 网格：横向铺开，列宽自适应（设计稿 D2：左 9px、右 14px 安全边距）。 */
+.file-panel-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  grid-auto-rows: 74px;
+  gap: 2px 4px;
+  padding: 6px 14px 8px 9px;
+  overflow: auto;
+  align-content: start;
+}
+
+.file-panel-entry {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--term-radius);
+  background: transparent;
+  text-align: left;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.file-panel-entry:hover {
+  background: var(--term-panel-2);
+}
+
+/* 选中态：只有底色 + 文字/图标提亮，没有竖条、没有发光描边。 */
+.file-panel-entry[data-selected="true"] {
+  background: var(--term-accent-soft);
+}
+
+.file-panel-entry[data-selected="true"] .file-panel-fname {
+  color: var(--term-fg-2);
+}
+
+.file-panel-entry[data-selected="true"] .file-panel-ftype {
+  color: var(--term-accent);
+}
+
+.file-panel-ftype {
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--term-muted);
+  background: var(--term-panel-2);
+  flex: 0 0 auto;
+}
+
+.file-panel-ftype[data-kind="dir"] {
+  color: var(--term-accent);
+  background: var(--term-accent-soft);
+}
+
+.file-panel-ftype[data-kind="json"],
+.file-panel-ftype[data-kind="md"] {
+  color: var(--term-ok);
+}
+
+.file-panel-ftype[data-kind="js"],
+.file-panel-ftype[data-kind="ts"] {
+  color: var(--term-warn);
+}
+
+.file-panel-fname {
+  width: 100%;
+  font-size: 11.5px;
+  color: var(--term-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-panel-fmeta {
+  width: 100%;
+  font-size: 10px;
+  color: var(--term-dim);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: -3px;
+}
+
+.file-panel-fmore {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: none;
+  gap: 1px;
+  background: var(--term-panel-2);
+  border-radius: 4px;
+  padding: 1px;
+}
+
+.file-panel-entry:hover .file-panel-fmore,
+.file-panel-entry[data-selected="true"] .file-panel-fmore {
+  display: flex;
+}
+
+.file-panel-action {
+  border: none;
+  background: transparent;
+  color: var(--term-muted);
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.file-panel-action:hover {
+  background: var(--term-raise);
+  color: var(--term-fg);
+}
+
+.file-panel-status {
+  flex: 0 0 auto;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  border-top: 1px solid var(--term-line);
+  font-size: 10px;
+  color: var(--term-dim);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.file-panel-empty {
+  grid-column: 1 / -1;
+  margin: 8px 2px;
+  font-size: 11.5px;
+  color: var(--term-muted);
+}
+
+.file-panel-empty[data-tone="error"] {
+  color: var(--term-danger);
+}
+
+/* 上传进度 */
+.file-panel-uploads {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 14px 6px 9px;
+  border-bottom: 1px solid var(--term-line);
+  background: var(--term-bg);
+  max-height: 96px;
+  overflow: auto;
+}
+
+.file-panel-upload {
+  display: grid;
+  grid-template-columns: minmax(90px, 190px) minmax(120px, 1fr) 48px;
+  align-items: center;
+  gap: 9px;
+  min-height: 20px;
+  padding: 1px 0;
+  font-size: 11px;
+  color: var(--term-muted);
+}
+
+.file-panel-upload-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-panel-upload-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--term-raise);
+  overflow: hidden;
+}
+
+.file-panel-upload-bar i {
+  display: block;
+  height: 100%;
+  background: var(--term-accent);
+  transition: width 0.1s linear;
+}
+
+.file-panel-upload[data-state="done"] .file-panel-upload-bar i {
+  background: var(--term-ok);
+}
+
+.file-panel-upload[data-state="error"] .file-panel-upload-bar i {
+  background: var(--term-danger);
+}
+
+.file-panel-upload-pct {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 查看器 / 编辑器模态（复用 confirm-backdrop 壳） */
+/* 查看器 / 编辑器内层（外层仍是 confirm-card 的卡片壳）。 */
+.file-panel-modal {
+  width: min(820px, 84vw);
+  max-height: 74vh;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file-panel-modal-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file-panel-modal-head h2 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.file-panel-modal-path {
+  font: 10.5px / 1.5 var(--term-mono);
+  color: var(--term-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.file-panel-textarea {
+  flex: 1 1 auto;
+  min-height: 260px;
+  max-height: 56vh;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--term-line);
+  border-radius: var(--term-radius);
+  background: var(--term-bg);
+  color: var(--term-fg);
+  font: 12px / 1.55 var(--term-mono);
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+}
+
+.file-panel-textarea:focus {
+  outline: none;
+  border-color: var(--term-accent-line);
+}
+
+.file-panel-modal-text {
+  margin: 0;
+  font-size: 12px;
+  color: var(--term-muted);
+  word-break: break-all;
+}
+
+.file-panel-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.file-panel-modal-hint {
+  margin-right: auto;
+  font-size: 10.5px;
+  color: var(--term-dim);
+}
+
+.file-panel-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--term-line);
+  border-radius: var(--term-radius);
+  background: var(--term-bg);
+  color: var(--term-fg);
+  font-size: 12px;
+}
+
+.file-panel-input:focus {
+  outline: none;
+  border-color: var(--term-accent-line);
+}
+
+.file-panel-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--term-muted);
+}
+
+/* 文件面板展开时：AI 把手只在上方终端区域居中，不能盖住文件面板工具条
+   （1440×900、面板 420px 时实测会压住「关闭」按钮，点了没反应）。
+   --file-panel-h 由 app/ui/file-panel.js 在高度变化时写到 :root。 */
+html[data-files-open="true"] [data-role="ai-handle"] {
+  top: calc((100% - var(--file-panel-h, 224px)) / 2);
+}
+
+/* 文件面板内部：[hidden] 必须真的隐藏。
+   （作者样式里的 display: inline-flex / flex 会盖掉 UA 的 [hidden] { display:none }，
+   实测「回到终端目录」按钮与上传进度区都因此常显。） */
+[data-role="file-panel"] [hidden] {
+  display: none !important;
+}
+
+/* 文件面板的非危险模态（查看器 / 编辑器 / 新建 / 重命名）不要危险红框。 */
+[data-role="confirm-card"][data-tone="neutral"] {
+  border-color: var(--term-line-2);
+  width: auto;
+  max-width: min(880px, calc(100vw - 48px));
+  overflow: visible;
+}

@@ -35,6 +35,7 @@ import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { buildPolicy } from "./routes/policy.mjs";
 import { handleAiPost } from "./routes/ai.mjs";
+import { handleLocalFs, handleRemoteFs } from "./routes/fs.mjs";
 import { isStaticPath, readAppFile, sendStatic } from "./static.mjs";
 import { attachWebSocket } from "./ws.mjs";
 import { detectShell, loadNodePty, LOCKED_NODE_PTY_VERSION } from "../pty/bridge.mjs";
@@ -955,6 +956,32 @@ export async function startServer(options = {}) {
       if (req.method === "GET" && pathname === "/api/policy") {
         writeJson(res, 200, buildPolicy(), {}, cors);
         return;
+      }
+
+      /* --------------------------------------------------------- *
+       * 本地文件面板（TASK-V4-G §5.3）
+       * token 已在上面的 isApi 分支里验过了。
+       * --------------------------------------------------------- */
+      if (pathname === "/api/fs" || pathname.startsWith("/api/fs/")) {
+        const handled = await handleLocalFs({ req, res, url, cors, readBody });
+        if (handled) return;
+      }
+
+      /* --------------------------------------------------------- *
+       * 远程文件面板（TASK-V4-G §5.4）：/api/hosts/:id/fs/*
+       * 放在主机路由之前：handleHostsRequest 不认 fs 分支。
+       * --------------------------------------------------------- */
+      const remoteFsMatch = /^\/api\/hosts\/([^/]+)\/fs(\/.*)?$/.exec(pathname);
+      if (remoteFsMatch) {
+        const handled = await handleRemoteFs({
+          req,
+          res,
+          url,
+          cors,
+          readBody,
+          hostId: decodeURIComponent(remoteFsMatch[1]),
+        });
+        if (handled) return;
       }
 
       /* --------------------------------------------------------- *

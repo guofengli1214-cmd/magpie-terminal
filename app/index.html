@@ -30,6 +30,10 @@
       <button type="button" data-role="rail-hosts" hidden title="主机（即将支持）">
         <span aria-hidden="true">🖧</span><span class="rail-label">主机</span>
       </button>
+      <!-- TASK-V4-G：文件面板是终端下方的常驻区域，入口在这里（与主机分开）。 -->
+      <button type="button" data-role="rail-files" aria-pressed="false" title="文件面板">
+        <span aria-hidden="true">🗀</span><span class="rail-label">文件</span>
+      </button>
       <div class="rail-spacer" aria-hidden="true"></div>
       <button type="button" data-role="rail-settings" title="设置">
         <span aria-hidden="true">⚙</span><span class="rail-label">设置</span>
@@ -39,6 +43,9 @@
     <section class="main" data-role="main">
       <div data-role="tabbar"></div>
       <div data-role="terminal-host"></div>
+      <!-- TASK-V4-G：文件面板（终端下方，横向图标网格，高度可拖）。
+           结构由 app/ui/file-panel.js 填；这里只留挂载点。 -->
+      <div data-role="file-panel-host"></div>
       <!-- 收起与展开都只有这一个把手：展开时跟着抽屉左缘走（styling 见 layout.css）。 -->
       <button type="button" data-role="ai-handle" data-badge="0" title="打开 AI 助手" aria-label="打开 AI 助手" aria-expanded="false">
         <span class="handle-icon" aria-hidden="true">‹</span>

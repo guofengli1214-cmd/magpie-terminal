@@ -2,10 +2,15 @@
 // 负责 resize 暖场排队、onExit 无条件 kill、进程退出时的同步清理。
 
 import { EventEmitter } from "node:events";
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import os from "node:os";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { spawnPty } from "./bridge.mjs";
 import { createSentinelSession } from "./sentinel.mjs";
+import { createOsc7Scanner, decodeOsc7 } from "./osc7.mjs";
+import { withOsc7Injection } from "./osc7-inject.mjs";
 
 export const WARMUP_MS = 350;
 export const MIN_COLS = 20;
@@ -15,6 +20,71 @@ export const MAX_ROWS = 200;
 export const DEFAULT_COLS = 100;
 export const DEFAULT_ROWS = 30;
 export const OUTPUT_BUFFER_CHARS = 20000;
+
+/** 只认真正的绝对路径：POSIX `/x` 或 Windows `C:\x` / `C:/x` / 盘根 `C:`。 */
+function isAbsolutePath(value) {
+  if (typeof value !== "string" || value.length === 0) return false;
+  if (value.startsWith("/")) return true;
+  return /^[A-Za-z]:([\\/]|$)/.test(value);
+}
+
+/* ------------------------------------------------------------------ *
+ * MSYS 的 POSIX 路径（`/tmp/x`、`/usr/x`）在 Windows 上不是绝对路径。
+ * 面板要拿它去 `path.resolve()`，结果会变成 `C:\tmp\x`（不存在）。
+ * 所以带一次 `cygpath -w`（Git for Windows 自带）的尽力转换：
+ * - 只对「非盘符开头」的 POSIX 路径做；结果缓存，不重复起子进程；
+ * - cygpath 找不到 / 报错 / 超时就返回 null（调用方保持旧 cwd，只是不跟随）。
+ * ------------------------------------------------------------------ */
+const cygpathCache = new Map();
+let cygpathPath;
+
+function findCygpath() {
+  if (cygpathPath !== undefined) return cygpathPath;
+  const candidates = [];
+  const pf = process.env.ProgramFiles;
+  const pf86 = process.env["ProgramFiles(x86)"];
+  const local = process.env.LOCALAPPDATA;
+  for (const base of [pf, pf86, local ? `${local}\\Programs` : null]) {
+    if (!base) continue;
+    candidates.push(path.join(base, "Git", "usr", "bin", "cygpath.exe"));
+    candidates.push(path.join(base, "Git", "bin", "cygpath.exe"));
+  }
+  for (const dir of String(process.env.PATH || "").split(";")) {
+    if (!dir) continue;
+    candidates.push(path.join(dir, "cygpath.exe"));
+  }
+  cygpathPath = candidates.find((candidate) => {
+    try {
+      return existsSync(candidate);
+    } catch {
+      return false;
+    }
+  }) || null;
+  return cygpathPath;
+}
+
+function toWindowsNative(posixPath) {
+  if (process.platform !== "win32") return posixPath;
+  if (!posixPath.startsWith("/")) return posixPath;
+  if (/^\/[A-Za-z](\/|$)/.test(posixPath)) return posixPath; // 已被 toWindowsPath 处理成盘符
+  if (cygpathCache.has(posixPath)) return cygpathCache.get(posixPath);
+  const tool = findCygpath();
+  let result = null;
+  if (tool) {
+    try {
+      const out = execFileSync(tool, ["-w", posixPath], {
+        encoding: "utf8",
+        timeout: 2000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      if (/^[A-Za-z]:[\\/]/.test(out)) result = out.replace(/\//g, "\\");
+    } catch {
+      result = null;
+    }
+  }
+  cygpathCache.set(posixPath, result);
+  return result;
+}
 
 function clampInt(value, min, max) {
   const n = Math.floor(Number(value));
@@ -48,7 +118,10 @@ function refreshPid(session) {
 }
 
 /**
- * 事件名：session.created / pty.output / session.exited / session.failed
+ * 事件名：session.created / pty.output / session.exited / session.failed / session.cwd
+ *
+ * TASK-V4-G §5.1：`session.cwd` 由 handleOutput 里的 OSC 7 增量解析器 emit，
+ * 形如 `{ id, cwd }`；ws.mjs 直接翻成同名的下行帧。
  */
 export class SessionManager extends EventEmitter {
   /**
@@ -88,10 +161,18 @@ export class SessionManager extends EventEmitter {
     // 每会话自己的 shell（TASK-V4-F）：`shell` 参数优先，其次默认。
     const useShell = shell && typeof shell === "object" ? shell : this.shell;
 
+    // TASK-V4-G §5.2：bash 走临时 rc（--rcfile … -i）、PowerShell 走临时 prompt 覆盖，
+    // **绝不改用户的 ~/.bashrc / $PROFILE**。注入失败时 args 保持原样（只记日志）。
+    const injection = withOsc7Injection(useShell, { log: (entry) => this.emit("log", entry) });
+    const runShell = injection.shell;
+
     const session = {
       id,
-      shell: useShell,
+      shell: runShell,
       cwd: workdir,
+      // OSC 7 增量扫描器 + 临时 rc 的清理函数（会话结束 / 进程退出时调）。
+      osc7: createOsc7Scanner(),
+      cleanupShellInjection: injection.cleanup,
       cols: startCols,
       rows: startRows,
       state: "starting",
@@ -115,7 +196,7 @@ export class SessionManager extends EventEmitter {
 
     try {
       if (this.mode === "native") {
-        const handle = spawnPty(this.ptyLoad.module, useShell, {
+        const handle = spawnPty(this.ptyLoad.module, runShell, {
           cols: startCols,
           rows: startRows,
           cwd: workdir,
@@ -131,7 +212,7 @@ export class SessionManager extends EventEmitter {
         handle.onExit(({ exitCode, signal }) => this.handleExit(session, exitCode, signal));
       } else {
         const handle = createSentinelSession({
-          shell: useShell,
+          shell: runShell,
           cwd: workdir,
           onData: (data) => this.handleOutput(session, data),
           onExit: ({ exitCode, signal }) => this.handleExit(session, exitCode, signal),
@@ -158,10 +239,10 @@ export class SessionManager extends EventEmitter {
     this.emit("session.created", {
       id,
       shell: {
-        name: useShell.name,
-        version: useShell.version,
-        path: useShell.path,
-        fallback: useShell.fallback,
+        name: runShell.name,
+        version: runShell.version,
+        path: runShell.path,
+        fallback: runShell.fallback,
       },
       cwd: session.cwd,
       cols: session.cols,
@@ -184,11 +265,53 @@ export class SessionManager extends EventEmitter {
     if (session.recentOutput.length > OUTPUT_BUFFER_CHARS) {
       session.recentOutput = session.recentOutput.slice(-OUTPUT_BUFFER_CHARS);
     }
+    this.handleOsc7(session, data);
     this.emit("pty.output", { id: session.id, data });
+  }
+
+  /**
+   * 增量扫 OSC 7 并更新 session.cwd（TASK-V4-G §5.1）。
+   * 解析器自己保留跨 chunk 的半条序列，这里只处理完整的那些。
+   */
+  handleOsc7(session, data) {
+    const scanner = session.osc7;
+    if (!scanner) return;
+    let payloads;
+    try {
+      payloads = scanner.push(data);
+    } catch {
+      return;
+    }
+    if (payloads.length === 0) return;
+    let next = null;
+    for (const payload of payloads) {
+      const decoded = decodeOsc7(payload);
+      if (!decoded) continue;
+      // Windows 上 MSYS 给的 `/tmp/x` 需要 cygpath 还原成真绝对路径；
+      // 转不了就不跟随（宁可不跳，也不要让面板去看一个不存在的目录）。
+      const native = toWindowsNative(decoded);
+      if (native && isAbsolutePath(native)) next = native;
+    }
+    if (!next || next === session.cwd) return;
+    session.cwd = next;
+    this.emit("session.cwd", { id: session.id, cwd: next });
+  }
+
+  /** 会话结束时删掉临时 rc 文件（幂等）。 */
+  cleanupInjection(session) {
+    if (!session || !session.cleanupShellInjection) return;
+    const fn = session.cleanupShellInjection;
+    session.cleanupShellInjection = null;
+    try {
+      fn();
+    } catch {
+      // 忽略。
+    }
   }
 
   handleExit(session, exitCode, signal) {
     if (!session) return;
+    this.cleanupInjection(session);
     if (session.pidTimer) {
       clearTimeout(session.pidTimer);
       session.pidTimer = null;
@@ -340,6 +463,7 @@ export class SessionManager extends EventEmitter {
   close(id) {
     const session = this.sessions.get(id);
     if (!session) return false;
+    this.cleanupInjection(session);
     if (session.pidTimer) {
       clearTimeout(session.pidTimer);
       session.pidTimer = null;
@@ -369,6 +493,7 @@ export class SessionManager extends EventEmitter {
   /** 同步：只允许在 process.on('exit') 里调用。 */
   killAllSync() {
     for (const session of this.sessions.values()) {
+      this.cleanupInjection(session);
       if (session.pidTimer) {
         clearTimeout(session.pidTimer);
         session.pidTimer = null;

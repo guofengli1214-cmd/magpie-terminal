@@ -592,6 +592,14 @@ export function attachWebSocket(opts) {
     runner.dispose(info.id);
   };
 
+  // TASK-V4-G §5.1：OSC 7 解析出来的当前目录 → `{type:"session.cwd", id, cwd}`。
+  // 与 pty.output 同样遵守孤儿会话不发帧的规则（attach 时 session.resumed.cwd 兜底）。
+  const onCwd = (info) => {
+    const record = ownerOf(info.id);
+    if (!record || !record.socket) return;
+    send(record.socket, { type: "session.cwd", id: info.id, cwd: info.cwd });
+  };
+
   const onRemoteCreated = (info) => {
     const record = ownerOf(info.id);
     const target = (record && record.socket) || pendingCreateSockets.get(info.id) || null;
@@ -630,11 +638,14 @@ export function attachWebSocket(opts) {
   sessions.on("pty.output", onOutput);
   sessions.on("session.exited", onExited);
   sessions.on("session.failed", onFailed);
+  sessions.on("session.cwd", onCwd);
   if (remote) {
     remote.on("session.created", onRemoteCreated);
     remote.on("pty.output", onRemoteOutput);
     remote.on("session.exited", onRemoteExited);
     remote.on("session.failed", onRemoteFailed);
+    // 远程 shell 也发 OSC 7（远端一般是 bash，够用）。
+    remote.on("session.cwd", onCwd);
   }
 
   function close() {
@@ -648,11 +659,13 @@ export function attachWebSocket(opts) {
     sessions.off("pty.output", onOutput);
     sessions.off("session.exited", onExited);
     sessions.off("session.failed", onFailed);
+    sessions.off("session.cwd", onCwd);
     if (remote) {
       remote.off("session.created", onRemoteCreated);
       remote.off("pty.output", onRemoteOutput);
       remote.off("session.exited", onRemoteExited);
       remote.off("session.failed", onRemoteFailed);
+      remote.off("session.cwd", onCwd);
     }
     pendingCreateSockets.clear();
     for (const id of ownership.keys()) runner.dispose(id);

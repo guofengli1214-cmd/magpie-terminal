@@ -94,7 +94,8 @@ export default function createHostsPanel(elements) {
   const store = elements.store;
   const onCreateSession = typeof elements.onCreateSession === "function" ? elements.onCreateSession : () => {};
   const onNotice = typeof elements.onNotice === "function" ? elements.onNotice : () => {};
-  const onPickFile = typeof elements.onPickFile === "function" ? elements.onPickFile : () => {};
+  // TASK-V4-G：文件面板搬去终端下方后，主机面板只留一个跳转钩子。
+  const onOpenFiles = typeof elements.onOpenFiles === "function" ? elements.onOpenFiles : null;
   // TASK-V4-F：点「本机」条目 = 用当前默认 shell 新开一个本机标签（不给 shellId）。
   const onCreateLocal =
     typeof elements.onCreateLocal === "function" ? elements.onCreateLocal : () => {};
@@ -112,7 +113,6 @@ export default function createHostsPanel(elements) {
   document.body.appendChild(panel);
 
   let hosts = [];
-  let activeTab = "hosts";
   let currentSessionId = null;
   let opened = false;
 
@@ -246,14 +246,6 @@ export default function createHostsPanel(elements) {
     close();
   }
 
-  const treeHost = el("div", { "data-role": "file-tree" });
-  const fileTree = createFileTree({
-    host: treeHost,
-    api,
-    // 双击文件 → 交给 app.js 把路径填进当前远程终端（不执行）。
-    onPickFile: (path, entry) => onPickFile(path, entry),
-    onNotice,
-  });
 
   /* ---------------- 连接表单（模态） ---------------- */
 
@@ -752,9 +744,6 @@ export default function createHostsPanel(elements) {
           onNotice(result.userText || `删不掉（${result.code}）`, "warn");
           return;
         }
-        if (currentSessionId && store.getSession(currentSessionId)?.hostId === host.id) {
-          fileTree.setHost(null);
-        }
         await refreshHosts();
         onNotice(`已删除主机 ${host.name}。`, "ok");
       });
@@ -786,36 +775,28 @@ export default function createHostsPanel(elements) {
     header.appendChild(closeButton);
     panel.appendChild(header);
 
+    // TASK-V4-G：主机与文件分家。文件不再作为主机面板里的一个 tab ——
+    // 文件面板是终端下方的常驻区域（rail-files 开合）。这里只留一个按钮
+    // 把用户送过去，避免同一个信息出现两个入口两份实现。
     const tabs = el("div", { className: "hosts-tabs", role: "tablist" });
-    for (const [key, label] of [
-      ["hosts", "主机"],
-      ["files", "文件"],
-    ]) {
-      const tab = el("button", {
-        type: "button",
-        "data-role": "hosts-tab",
-        "data-tab": key,
-        role: "tab",
-        "aria-selected": activeTab === key ? "true" : "false",
-      }, label);
-      if (key === "files" && !currentSessionId) tab.disabled = true;
-      tab.addEventListener("click", () => {
-        activeTab = key;
-        render();
-      });
-      tabs.appendChild(tab);
-    }
+    const filesButton = el("button", {
+      type: "button",
+      "data-role": "hosts-open-files",
+      "data-tab": "files",
+      title: "文件在终端下方的文件面板里",
+    }, "文件面板");
+    filesButton.addEventListener("click", () => {
+      close();
+      if (typeof onOpenFiles === "function") onOpenFiles();
+    });
+    tabs.appendChild(filesButton);
     panel.appendChild(tabs);
 
-    if (activeTab === "files") {
-      panel.appendChild(treeHost);
-    } else {
-      const body = el("div", { className: "hosts-body" });
-      // 固定在最顶上的「本机」条目（TASK-V4-F §5.4）。
-      body.appendChild(renderLocalRow());
-      body.appendChild(renderHostList(snapshot));
-      panel.appendChild(body);
-    }
+    const body = el("div", { className: "hosts-body" });
+    // 固定在最顶上的「本机」条目（TASK-V4-F §5.4）。
+    body.appendChild(renderLocalRow());
+    body.appendChild(renderHostList(snapshot));
+    panel.appendChild(body);
 
     const footer = el("div", { className: "hosts-footer" });
     const addHost = el("button", { type: "button", "data-role": "host-add-footer" }, "+ 添加主机");
@@ -830,8 +811,6 @@ export default function createHostsPanel(elements) {
     if (nextId === currentSessionId) return;
     currentSessionId = nextId;
     const host = nextId ? snapshot.sessions.find((s) => s.id === nextId) : null;
-    fileTree.setHost(host ? host.hostId : null);
-    if (activeTab === "files") render();
   }
 
   return {

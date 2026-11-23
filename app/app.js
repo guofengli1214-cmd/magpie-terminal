@@ -13,6 +13,7 @@ import createToastStack from "./ui/toast.js";
 import createSettingsPanel from "./ui/settings-panel.js";
 import createRail from "./ui/rail.js";
 import createHostsPanel from "./ui/hosts-panel.js";
+import createFilePanel from "./ui/file-panel.js";
 
 const root = document.querySelector('[data-role="app"]');
 const railHost = document.querySelector('[data-role="rail"]');
@@ -25,6 +26,7 @@ const aiHandleBadge = document.querySelector('[data-role="ai-handle-badge"]');
 const toastHost = document.querySelector('[data-role="toast-stack"]');
 const settingsHost = document.querySelector('[data-role="settings-host"]');
 const statusHost = document.querySelector('[data-role="statusbar"]');
+const filePanelHost = document.querySelector('[data-role="file-panel-host"]');
 
 const store = createSessionStore();
 // Agent 状态独立成 store（PROTOCOL-AGENT.md §7），视图订阅它而不是污染会话 store。
@@ -50,6 +52,7 @@ let statusBar = null;
 let terminalView = null;
 let wsClient = null;
 let hostsPanel = null;
+let filePanel = null;
 // 远程会话建连中的 hostId → 等 session.created 时补上的元数据（用于建标签后同步面板）。
 let pendingRemoteHost = null;
 // 刚发出、还没收到 session.created 的 pty.create 数。命中这些帧时只建标签并 attach，
@@ -245,6 +248,15 @@ function handleFrame(frame) {
     }
     case "pty.output": {
       terminalView.write(frame.id, frame.data);
+      return;
+    }
+    case "session.cwd": {
+      // TASK-V4-G §5.1：服务端从 OSC 7 解出来的当前目录。
+      // 先写进 store（状态栏 / AI 上下文都读它），再交给文件面板决定要不要跳。
+      if (frame.id && store.getSession(frame.id) && typeof frame.cwd === "string") {
+        store.patchSession(frame.id, { cwd: frame.cwd });
+      }
+      if (filePanel) filePanel.onSessionCwd(frame.id, frame.cwd);
       return;
     }
     case "pty.exit": {
@@ -599,8 +611,7 @@ function init() {
     });
   }
 
-  hostsPanel = createHostsPanel({
-    api,
+  hostsPanel = createHostsPanel({    api,
     store,
     // 面板盖住终端区，但不遮标签栏 / 状态栏（底部 AI 条在 V3 已删除）。
     anchor: tabbarHost,
@@ -609,12 +620,9 @@ function init() {
     // TASK-V4-F：主机面板顶部的「本机」条目点击 = 用当前默认 shell 新开一个标签。
     onCreateLocal: (shellId) => createTab(shellId ? { shellId } : null),
     onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
-    // 双击文件 → 只把路径填进当前远程终端输入，不执行（让用户自己确认再回车）。
-    onPickFile: (remotePath) => {
-      const active = store.getActive();
-      if (!active || active.kind !== "remote") return;
-      wsClient.send({ type: "pty.input", id: active.id, data: remotePath });
-      statusBar.setNotice(`已填入路径：${remotePath}（回车才执行）`, "info");
+    // TASK-V4-G：主机面板不再自带文件树，只负责把用户送到终端的文件面板。
+    onOpenFiles: () => {
+      if (filePanel) filePanel.setOpen(true);
     },
   });
   hostsPanel.init();
@@ -717,8 +725,26 @@ function init() {
   });
   toastStack.init();
 
-  settingsPanel = createSettingsPanel({
-    host: settingsHost,
+  // TASK-V4-G：文件面板（终端下方）。入口是 rail-files，默认按上次的状态。
+  // 高度变化会改变终端可用高度 → 让 xterm 重新 fit（走常规 resize 管道）。
+  filePanel = createFilePanel({
+    host: filePanelHost,
+    api,
+    store,
+    onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
+  });
+  filePanel.init();
+  window.addEventListener("magpie:file-panel-resize", () => {
+    if (terminalView) terminalView.resizeAll();
+  });
+  window.addEventListener("magpie:file-panel-toggle", () => {
+    // 开合只改变高度：下一帧再 fit，避免读到旧布局。
+    requestAnimationFrame(() => {
+      if (terminalView) terminalView.resizeAll();
+    });
+  });
+
+  settingsPanel = createSettingsPanel({    host: settingsHost,
     api,
     onSaved: () => statusBar && statusBar.setNotice("设置已保存", "ok"),
   });
@@ -822,6 +848,13 @@ function init() {
       enumerable: false,
       writable: false,
       value: (ms) => (aiDrawer ? aiDrawer.setReadyTimeout(ms) : null),
+    });
+    // TASK-V4-G：文件面板的只读快照（验收探针用）。
+    Object.defineProperty(window, "__termDebugFiles", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: () => (filePanel ? structuredClone(filePanel.state) : null),
     });
   }
 }

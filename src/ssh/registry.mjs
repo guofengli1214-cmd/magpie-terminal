@@ -16,6 +16,7 @@ import crypto from "node:crypto";
 import { getHostRecord, lookupKnownHost, readSecret, touchHost } from "../config/store.mjs";
 import { connectClient, execCommand, mapSshError, openShell, probeHostKey } from "./client.mjs";
 import { listViaClient } from "./sftp.mjs";
+import { createOsc7Scanner, decodeOsc7 } from "../pty/osc7.mjs";
 
 export const MIN_COLS = 20;
 export const MIN_ROWS = 5;
@@ -137,6 +138,8 @@ export class RemoteRegistry extends EventEmitter {
       mode: "remote",
       pid: null,
       recentOutput: "",
+      // TASK-V4-G：远端 shell 的 OSC 7 增量扫描器。
+      osc7: createOsc7Scanner(),
       client: null,
       stream: null,
       closed: false,
@@ -279,7 +282,35 @@ export class RemoteRegistry extends EventEmitter {
     if (session.recentOutput.length > OUTPUT_BUFFER_CHARS) {
       session.recentOutput = session.recentOutput.slice(-OUTPUT_BUFFER_CHARS);
     }
+    this.handleOsc7(session, data);
     this.emit("pty.output", { id: session.id, data });
+  }
+
+  /**
+   * TASK-V4-G §5.1：远端 shell 的 OSC 7 同样采集（远端一般是 bash，够用）。
+   * Windows 远端的 `file://HOST/C:/x` 会还原成 `C:\x`；POSIX 远端原样保留。
+   */
+  handleOsc7(session, data) {
+    const scanner = session.osc7;
+    if (!scanner) return;
+    let payloads;
+    try {
+      payloads = scanner.push(data);
+    } catch {
+      return;
+    }
+    if (payloads.length === 0) return;
+    let next = null;
+    for (const payload of payloads) {
+      // 远端既可能是 Windows 也可能是 Linux：两种解码都试，取第一个像绝对路径的。
+      const win = decodeOsc7(payload, { windows: true });
+      const posix = decodeOsc7(payload, { windows: false });
+      if (win && /^[A-Za-z]:([\\/]|$)/.test(win)) next = win;
+      else if (posix && posix.startsWith("/")) next = posix;
+    }
+    if (!next || next === session.cwd) return;
+    session.cwd = next;
+    this.emit("session.cwd", { id: session.id, cwd: next });
   }
 
   handleExit(session, exitCode, signal) {

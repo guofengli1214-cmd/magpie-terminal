@@ -7,7 +7,6 @@
 import { readToken } from "./token.js";
 
 const apiError = (code, userText, extra) => ({ ok: false, code, userText, ...extra });
-
 async function getJson(path) {
   let response;
   try {
@@ -24,6 +23,21 @@ async function getJson(path) {
     return apiError("NETWORK", `连不上本地服务：${err && err.message ? err.message : "网络错误"}`);
   }
   if (!response.ok) {
+    // 服务端对所有错误都回 `{code, userText}`（中文人话）。这里必须把它透出去：
+    // 丢掉的话前端只能显示「HTTP 413」，而 413 的含义是「文件太大」——
+    // 用户看不到原因（TASK-V4-G AC6 要求提示「文件太大」/「不是文本」）。
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+    if (body && typeof body.code === "string") {
+      return apiError(
+        body.code,
+        typeof body.userText === "string" ? body.userText : `本地服务返回 HTTP ${response.status}，请重试。`,
+      );
+    }
     return apiError(`HTTP_${response.status}`, `本地服务返回 HTTP ${response.status}，请重试。`);
   }
   try {
@@ -73,8 +87,7 @@ async function sendJson(path, method, payload) {
   return { ok: true, data: body };
 }
 
-/** DELETE 没有响应体，单独走一条。 */
-async function del(path) {
+/** DELETE 没有响应体，单独走一条。 */async function del(path) {
   let response;
   try {
     response = await fetch(path, {
@@ -98,6 +111,55 @@ async function del(path) {
       ? body.userText
       : `本地服务返回 HTTP ${response.status}，请重试。`;
   return { ok: false, code, userText };
+}
+
+/** 原始 body（非 JSON）写盘：文件面板的 PUT /api/fs/write 用它。 */
+async function putRaw(url, text) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "PUT",
+      credentials: "omit",
+      headers: { "x-magpie-term-token": readToken(), "content-type": "text/plain; charset=utf-8" },
+      body: text,
+    });
+  } catch (err) {
+    return apiError("NETWORK", `连不上本地服务：${err && err.message ? err.message : "网络错误"}`);
+  }
+  let body = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  if (!response.ok) {
+    return apiError(
+      body && typeof body.code === "string" ? body.code : `HTTP_${response.status}`,
+      body && typeof body.userText === "string"
+        ? body.userText
+        : `本地服务返回 HTTP ${response.status}，请重试。`,
+    );
+  }
+  return { ok: true, data: body };
+}
+
+/**
+ * 文件接口的路径前缀：`target` 为 null 走本地 `/api/fs`，
+ * 否则是远程主机的 `/api/hosts/:id/fs`（同名同形）。
+ */
+function fsEndpoint(target, action, params = {}) {
+  const base =
+    target && typeof target.hostId === "string"
+      ? `/api/hosts/${encodeURIComponent(target.hostId)}/fs`
+      : "/api/fs";
+  const path = action ? `${base}/${action}` : base;
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    query.set(key, String(value));
+  }
+  const text = query.toString();
+  return text ? `${path}?${text}` : path;
 }
 
 export default {
@@ -158,5 +220,49 @@ export default {
   hostFiles(id, remotePath) {
     const query = new URLSearchParams({ path: remotePath || "." });
     return getJson(`/api/hosts/${encodeURIComponent(id)}/files?${query.toString()}`);
+  },
+
+  /* ---- 文件面板（TASK-V4-G §5.3 / §5.4）：本地用 /api/fs，远程用 /api/hosts/:id/fs ---- */
+
+  /** 列表：{ path, parent, entries } */
+  fsList(target, path) {
+    return getJson(fsEndpoint(target, "list", { path }));
+  },
+  /** 读文本：{ path, content, size, mtime }（413 FILE_TOO_LARGE / 415 NOT_TEXT） */
+  fsRead(target, path) {
+    return getJson(fsEndpoint(target, "read", { path }));
+  },
+  fsStat(target, path) {
+    return getJson(fsEndpoint(target, "stat", { path }));
+  },
+  fsMkdir(target, path) {
+    return sendJson(fsEndpoint(target, "mkdir"), "POST", { path });
+  },
+  fsNewFile(target, path) {
+    return sendJson(fsEndpoint(target, "newfile"), "POST", { path });
+  },
+  fsRename(target, from, to) {
+    return sendJson(fsEndpoint(target, "rename"), "POST", { from, to });
+  },
+  /** 写文本（原始 body，不是 JSON）。 */
+  fsWrite(target, path, text) {
+    return putRaw(fsEndpoint(target, "write", { path }), text);
+  },
+  /** 删除；递归只在本地用得上（远程只允许空目录）。 */
+  fsDelete(target, path, recursive) {
+    const endpoint = fsEndpoint(target, "", { path, recursive: recursive ? "1" : "0" });
+    return del(endpoint);
+  },
+  /** 下载地址（调用方自己 fetch + blob，口令走请求头，不能裸链）。 */
+  fsDownloadUrl(target, path) {
+    return fsEndpoint(target, "download", { path });
+  },
+  /** 上传用的地址与口令（XHR 自己发，才能拿 progress 事件）。 */
+  fsUploadEndpoint(target, dir) {
+    return { url: fsEndpoint(target, "upload", { path: dir }), token: readToken() };
+  },
+  /** 鉴权头（下载 / 上传都自己发请求）。 */
+  fsAuthHeader() {
+    return { "x-magpie-term-token": readToken() };
   },
 };
