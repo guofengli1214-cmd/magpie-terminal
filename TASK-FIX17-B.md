@@ -39,3 +39,36 @@ Active task: `.trellis/tasks/11-25-task-b-theme/`
 - magpie 主题设置：`~/.config/magpie/settings.json`（`theme`: system|light|dark、`accent`、`textSize`、`lang`）。
 - 真浏览器探针已有：`scripts/browser-probe.mjs`（自带极简 CDP 客户端，Chrome/Edge 路径内置）。核验用它或扩展它。
 - magpie CSS 变量真名：`--bg --fg --line --accent --accent-fg --card --sub --muted --surface --surface-2 --edge --warn --bad --ok --ring`。
+
+## A 批已合入（commit a2dfa3c）— 开工前必读
+
+- 工作区现在应是干净的（`git status --porcelain` 为空）。若不为空，先报告 blocked，不要自己 stash/clean。
+- 主题相关现状已变，别再按上面的"旧根因"理解这几处：
+  - `app/styles/tokens.css` 的 `--term-bg` 已有真实色值兜底（浅 `#f4f4f6` / 深 `#1a1a1e`），不再是 `Canvas`。
+  - `app/ui/terminal-view.js` 的 `refreshTheme()` 已被调用（A 批接上了主题切换路径），本批要保证主题变化时**所有**终端实例都 refresh。
+  - 新增 `app/styles/terminal-surface.css`（A 批修黑边用，`!important` 覆盖 xterm vendor 的 `#000`）。**不要删它、不要削弱它**；本批若要让终端底色跟随 `--term-bg`，改 `tokens.css` 的变量来源即可，覆盖规则本身保留。
+  - `app/index.html` 的引入顺序已改为：`vendor/xterm/xterm.css` → `styles/terminal-surface.css` → `styles/tokens.css` → `styles/layout.css` → `styles/components.css`。要动顺序必须在报告里说明理由并复跑黑边探针 `node scripts/probe-terminal-edges.mjs`（A 批 AC8，当时 10/10 PASS，不许回退）。
+  - `node --test` 现在 763 tests 全绿；`node scripts/doctor.mjs` 用隔离配置可达 33/33。
+
+## 涉及文件（白名单，只许改这些）
+
+- `app/styles/tokens.css`（本批主战场）
+- `app/styles/terminal-surface.css`（仅在需要让终端底色跟随变量时改，且必须复跑黑边探针）
+- `app/app.js`（主题应用、`is-dark` / `is-light` 类、轮询或事件驱动刷新）
+- `app/index.html`（仅在必须加脚本/样式引用时改）
+- `app/ui/terminal-view.js`（所有实例 refreshTheme）
+- `app/core/api.js`（调 `/api/theme`）
+- `page/boot.js`（bridge tokens 转存 / 跳转前上报）
+- `src/server/http.mjs`（`decodeTokens` 裸键归一 + `GET /api/theme` + `POST /api/theme/bridge`）
+- `src/config/store.mjs` 或新增 `src/config/magpie-settings.mjs`（只读读取 `~/.config/magpie/settings.json`）
+- `test/**`（新增/更新单测）
+- 新增 `scripts/probe-theme.mjs`（真浏览器验收脚本）
+- `.dispatch/fix17-b/**`（证据与报告）
+
+**不许改**：`app/vendor/**`、`app/styles/components.css`、`app/styles/layout.css`（D 批地盘）、`app/ui/file-panel.js`、`app/ui/ai-drawer.js`、`app/ui/hosts-panel.js`、`src/pty/**`（A 批已定稿）、`scripts/doctor.mjs`。
+
+## 本机已知坑（A 批踩过）
+
+- `node --test` 的 pty 集成测试 / doctor 若报 `STEP_TIMEOUT` 或 `console device allocation failure - too many consoles in use`，是本机残留的旧 `bash.exe` 孤儿耗尽 ConPTY 名额，**不是你的改动**。先 `Get-CimInstance Win32_Process -Filter "Name='bash.exe'"` 看启动时间，只结束 11/24 及更早的残留（今天的会话别杀），再重跑。不许改 `scripts/doctor.mjs`，不许放宽断言。
+- doctor 用 `MAGPIE_TERMINAL_CONFIG_PATH=<临时目录>/config.json`（内容 `{"version":1,"defaultShell":null}`）+ `DOCTOR_PORT=3499` 隔离跑，避免和真实配置、插件占用的 3480 端口打架。
+- 计时器/轮询要写成可测形式（导出纯函数或允许注入 interval），否则 AC3 的"不刷新就变色"没法自动化验收。
