@@ -60,7 +60,11 @@
 
 ## 6. 解除条件与遗留
 
-**解除「有条件」的唯一条件（二选一）**：
+**人类拍板记录**：
+- **人类已批准 §5 #1（`isNavigationRequest` 放宽）** —— 用户消息 `m00970`「2A」，2026-11-24 13:20。即：接受执行者按 Node 24 实测放宽（navigate 放行 / 其它 mode 带 Origin 拒 / 无 mode 看 Origin），不按卡面 §6.1 逐字照搬。此项从「打折待拍板」转为**已批准**。
+- 宿主已由用户重启（`magpie-bun` pid 31404，StartTime 2026-11-24 13:18:01），`/api/ai/sessions` 返 200、`/api/config` 含 `showApprovalEffect` → 卡 H 新代码已生效。
+
+**解除「有条件」的唯一条件（二选一，仍待人类确认）**：
 - (a) 用 `waitUntil` 替掉 `test/ssh/registry.test.mjs:297` 附近固定 `setTimeout`，使全量稳定 610/610；
 - (b) 人类确认 AC10 以「干净子集 329/329 + 单文件 17/17 + 历史 610/610」为准放行。
 
