@@ -4,12 +4,29 @@
 
 let started = null;
 
+// 上一次的 magpie 宿主退出时会带走自己的插件服务，但它松手有几秒延迟：
+// 新宿主若在这一刻启动，绑定会撞上 EADDRINUSE。直接失败会让页面永久打不开
+// （宿主只调一次 server()），所以这里像 page-chat 一样每秒重试。
+const RETRY_DELAY_MS = 1000;
+const MAX_ATTEMPTS = 120;
+
 async function start(options) {
   const { startServer } = await import("./src/server/http.mjs");
   const port = options && Number.isFinite(Number(options.port)) ? Number(options.port) : 3480;
-  const handle = await startServer({ port, shell: options && options.shell });
-  console.log(`[magpie-terminal] listening on http://127.0.0.1:${handle.port}`);
-  return handle;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const handle = await startServer({ port, shell: options && options.shell });
+      console.log(`[magpie-terminal] listening on http://127.0.0.1:${handle.port}`);
+      return handle;
+    } catch (err) {
+      if (err && err.code === "PORT_IN_USE" && attempt < MAX_ATTEMPTS) {
+        console.log(`[magpie-terminal] ${port} 还被上一次的宿主占着，${RETRY_DELAY_MS}ms 后重试（第 ${attempt} 次）`);
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 export default {
