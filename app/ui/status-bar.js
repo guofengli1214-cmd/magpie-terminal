@@ -1,5 +1,32 @@
 // 状态栏：连接状态、shell / PTY 模式、当前 cwd。错误三要素里「怎么办」也走这里。
 
+/**
+ * 状态栏的 shell 文案（TASK-FIX-RECONNECT O1）。
+ *
+ * 优先用当前活动会话真实的 shell（服务端 session.created 里带），
+ * 没有会话时才退回 /api/health 的探测值。两者都没有就是「未知」。
+ * 纯函数：不碰 DOM，便于单测锁住文案。
+ */
+export function shellLabel(snapshot, healthInfo) {
+  const active =
+    snapshot && Array.isArray(snapshot.sessions)
+      ? snapshot.sessions.find((s) => s && s.id === snapshot.activeId)
+      : null;
+  if (active && typeof active.shell === "string" && active.shell.length > 0) {
+    return `shell：${active.shell}`;
+  }
+
+  const healthShell = healthInfo && healthInfo.shell ? healthInfo.shell : null;
+  if (healthShell) {
+    const name = typeof healthShell.name === "string" && healthShell.name.length > 0 ? healthShell.name : "未知";
+    const version = typeof healthShell.version === "string" ? healthShell.version.trim() : "";
+    const fallback = healthShell.fallback ? "（回退）" : "";
+    return version ? `shell：${name} ${version}${fallback}` : `shell：${name}${fallback}`;
+  }
+
+  return "shell：未知";
+}
+
 export default function createStatusBar(elements) {
   const host = elements.host;
   const store = elements.store;
@@ -35,6 +62,11 @@ export default function createStatusBar(elements) {
 
   function statusText(snapshot) {
     if (snapshot.connection === "open") return "已连接本地服务";
+    // TASK-FIX-RECONNECT O2：口令已作废（自动刷新过一次也连不上）时，
+    // 明确告诉用户手动刷新，优先于「正在重连…」的模糊文案。
+    if (snapshot.connection !== "open" && snapshot.staleToken) {
+      return "本地服务已重启：这个页面用的口令已失效，请刷新页面（F5）再试。";
+    }
     if (snapshot.connection === "closed") {
       const waited = waitingSince ? Math.round((Date.now() - waitingSince) / 1000) : 0;
       if (waited >= Math.ceil(5000 / 1000)) {
@@ -68,14 +100,15 @@ export default function createStatusBar(elements) {
           ? `PTY：原生（node-pty ${healthInfo.nodePtyVersion || "未知"}）`
           : "PTY：降级（哨兵法）";
       host.appendChild(pty);
-
-      const shell = document.createElement("span");
-      shell.setAttribute("data-role", "status-item");
-      shell.setAttribute("data-status", "shell");
-      const fallback = healthInfo.shell && healthInfo.shell.fallback ? "（回退）" : "";
-      shell.textContent = `shell：${healthInfo.shell ? healthInfo.shell.name : "未知"} ${healthInfo.shell ? healthInfo.shell.version : ""}${fallback}`;
-      host.appendChild(shell);
     }
+
+    // shell 一栏不再依赖 health：活动会话自己带 shell（O1）；
+    // health 还没回来时也能显示会话真实的 shell。
+    const shell = document.createElement("span");
+    shell.setAttribute("data-role", "status-item");
+    shell.setAttribute("data-status", "shell");
+    shell.textContent = shellLabel(snapshot, healthInfo);
+    host.appendChild(shell);
 
     // 任务一栏（TASK-V3-C §6.6）：显示当前 AI 任务状态：空闲 / 执行中 / 待确认 N。
     // 模型名已移到抽屉标题栏的下拉里，状态栏不再重复。

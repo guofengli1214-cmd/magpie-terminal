@@ -448,6 +448,8 @@ function handleWsStatus(status) {
     store.setConnection("connecting");
     return;
   }
+  // TASK-FIX-RECONNECT O2：口令已作废（自动刷新过一次仍连不上）→ 状态栏提示手动刷新。
+  if (status.staleToken === true) store.setStaleToken(true);
   // 断线：清掉 pending 标记，下次 open 时重新 attach。
   resumePendingIds.clear();
   store.setConnection("closed");

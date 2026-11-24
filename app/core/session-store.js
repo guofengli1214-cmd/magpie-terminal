@@ -7,6 +7,9 @@ export default function createSessionStore() {
     sessions: [],
     activeId: null,
     connection: "connecting",
+    // TASK-FIX-RECONNECT O2：口令已失效（页面需要手动刷新）。
+    // 只能放内存：沙箱里 localStorage/sessionStorage 会抛 SecurityError。
+    staleToken: false,
     // V2-A 新增（不改现有字段语义）：
     // model      —— 模型下拉当前选中的 id（null 表示还没拉到清单）
     // aiOpen     —— AI 输入条 / 浮层是否展开，对应 #root[data-ai-open]
@@ -46,6 +49,7 @@ export default function createSessionStore() {
       sessions: state.sessions.map((s) => ({ ...s })),
       activeId: state.activeId,
       connection: state.connection,
+      staleToken: state.staleToken,
       model: state.model,
       aiOpen: state.aiOpen,
       aiUnread: state.aiUnread,
@@ -124,8 +128,18 @@ export default function createSessionStore() {
     },
     setConnection(value) {
       if (!connectionValues.has(value)) return;
-      if (state.connection === value) return;
+      const resetStale = value === "open" && state.staleToken;
+      if (state.connection === value && !resetStale) return;
       state.connection = value;
+      // 连上了就不该再提示「口令失效」。
+      if (value === "open") state.staleToken = false;
+      notify();
+    },
+    /** TASK-FIX-RECONNECT：口令已作废（驱动状态栏「请刷新页面」提示）。 */
+    setStaleToken(value) {
+      const next = Boolean(value);
+      if (state.staleToken === next) return;
+      state.staleToken = next;
       notify();
     },
     /** 模型下拉选中的 id；空串/null 一律归一为 null。 */
