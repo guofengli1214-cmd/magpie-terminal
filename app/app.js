@@ -32,12 +32,15 @@ const store = createSessionStore();
 // Agent 状态独立成 store（PROTOCOL-AGENT.md §7），视图订阅它而不是污染会话 store。
 const agentStore = createAgentStore();
 
+// TASK-FIX17-B：没有骨架时（node --test 直接 import 本文件的纯函数）不做
+// 任何 DOM 副作用。页面里没有 `[data-role="app"]` 时下面的 init() 本来就跑不成，
+// 所以这层守卫不是为了容错而存在，是为了让纯函数可单测。
 const banner = document.createElement("div");
 banner.setAttribute("data-role", "banner");
 banner.setAttribute("role", "status");
 banner.hidden = true;
 // 提示条放进主区顶部（骨架里 root 是网格容器，往里塞第五个格子会破布局）。
-mainHost.insertBefore(banner, mainHost.firstChild);
+if (mainHost) mainHost.insertBefore(banner, mainHost.firstChild);
 
 let health = null;
 let lastAttachedId = null;
@@ -72,6 +75,10 @@ function hideBanner() {
 function parseQuery() {
   const params = new URLSearchParams(location.search);
   const theme = params.get("theme");
+  // `theme-dark` / `theme-light` 是 A 批的类名，B 批的正式名字是 `is-dark` /
+  // `is-light`（AC6 要求「类有对应 CSS 规则」，且 classes 在 tokens.css 里
+  // 必须有真实声明）。这里两个都留：`theme-*` 兼容旧页面的外部引用，
+  // `is-*` 由 applyTheme() 按**实际生效的背景色**写，不在这里猜。
   if (theme === "dark" || theme === "light") {
     document.documentElement.style.colorScheme = theme;
     if (theme === "dark") document.documentElement.classList.add("theme-dark");
@@ -86,8 +93,183 @@ function parseQuery() {
   };
 }
 
-const options = parseQuery();
-if (options.lang) document.documentElement.lang = options.lang;
+// TASK-FIX17-B：同样的守卫。没有 `location` 时（node --test 直接 import 本文件）
+// 用一份空选项，不抛错。
+const options = typeof location === "undefined" ? { theme: null, lang: null, port: constants.DEFAULT_PORT } : parseQuery();
+if (options.lang && typeof document !== "undefined") document.documentElement.lang = options.lang;
+
+/* ======================================================================
+ * 主主题链路（TASK-FIX17-B R1 / R2 / R3 / AC3 / AC6 / AC7）
+ *
+ * 数据流：
+ *   GET /api/theme ──▶ applyTheme(payload)
+ *                       ├─ 写 --magpie-* 到 <html>（变量变成真的）
+ *                       ├─ 算亮度 → is-dark / is-light（AC6）
+ *                       ├─ 写 --mt-font-scale + 根字号（AC7）
+ *                       └─ terminalView.refreshTheme()（所有实例，AC5）
+ *
+ * 为什么是**轮询**而不是事件：magpie 改主题时，插件页面已经不在带路页了，
+ * `window.magpie` 在这个 origin 是 undefined（page/index.html:29 →
+ * boot.js:98），bridge 的 onTheme 收不到。magpie 也没有其它持久通道。
+ * 服务端现读 `~/.config/magpie/settings.json`（带 mtime 缓存）是唯一可靠来源，
+ * 轮询是让它「实时」的最小代价：一次 200 字节的 loopback GET。
+ *
+ * 可测性（卡里的约束）：纯计算部分（亮度、字号、差异比较）导出成纯函数，
+ * 轮询用可注入的 `setTimer` / `clearTimer`，所以 AC3 能用假定时器推。
+ * ====================================================================== */
+
+/** 轮询间隔（毫秒）。magpie 改设置是人工动作，1 秒足够快且能忽略不计。 */
+const THEME_POLL_MS = 1000;
+
+/**
+ * 解析 CSS 色值成 `[r,g,b]`。
+ * 支持 `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()`。
+ * 解析不了返回 null（调用方据此保留上一次的判定，不默认成深色）。
+ *
+ * @param {unknown} value
+ * @returns {[number,number,number]|null}
+ */
+export function parseCssColor(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text) return null;
+  const hex = /^#([0-9a-fA-F]{3,8})$/.exec(text);
+  if (hex) {
+    const body = hex[1];
+    const expand = (s) => Number.parseInt(s.length === 1 ? s + s : s, 16);
+    if (body.length === 3 || body.length === 4) {
+      return [expand(body[0]), expand(body[1]), expand(body[2])];
+    }
+    if (body.length === 6 || body.length === 8) {
+      return [
+        Number.parseInt(body.slice(0, 2), 16),
+        Number.parseInt(body.slice(2, 4), 16),
+        Number.parseInt(body.slice(4, 6), 16),
+      ];
+    }
+    return null;
+  }
+  const fn = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i.exec(text);
+  if (fn) {
+    return [
+      Math.min(255, Math.max(0, Math.round(Number(fn[1])))),
+      Math.min(255, Math.max(0, Math.round(Number(fn[2])))),
+      Math.min(255, Math.max(0, Math.round(Number(fn[3])))),
+    ];
+  }
+  return null;
+}
+
+/**
+ * sRGB 相对亮度（WCAG 定义，gamma 展开后再加权）。
+ * @param {[number,number,number]} rgb
+ * @returns {number} 0（黑）… 1（白）
+ */
+export function relativeLuminance(rgb) {
+  if (!Array.isArray(rgb) || rgb.length < 3) return 0;
+  const channel = (v) => {
+    const c = Math.min(255, Math.max(0, Number(v))) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
+}
+
+/** 亮度阈值：与研究卡 design.md 一致。 */
+export const DARK_LUMINANCE_THRESHOLD = 0.45;
+
+/**
+ * 由背景色判定深浅色。
+ * 服务端已经算过一遍（它知道 magpie 的 `theme` 设置），这里是**第二道保险**：
+ * 万一注入的颜色与设置不符（用户自定义主题、`color-mix()` 解析差异），
+ * 以「实际渲染出来的背景色」为准，避免页面变成「半套深色半套浅色」。
+ *
+ * @param {unknown} bg
+ * @returns {"dark"|"light"|null} 解析不了返回 null（调用方保留旧判定）
+ */
+export function schemeForBackground(bg) {
+  const rgb = parseCssColor(bg);
+  if (!rgb) return null;
+  return relativeLuminance(rgb) < DARK_LUMINANCE_THRESHOLD ? "dark" : "light";
+}
+
+/**
+ * magpie 的 `textSize`（百分比）转成根字号（px）。
+ * 夹在 80…160%：magpie 的设置面板自己也只给这个区间，超出不是「更大的字」而是
+ * 「布局碎掉」，所以宁可夹住。
+ *
+ * @param {unknown} percent
+ * @returns {number} px
+ */
+export function fontPxForTextSize(percent) {
+  const value = Number(percent);
+  const clamped = Number.isFinite(value) ? Math.min(160, Math.max(80, value)) : 100;
+  return Math.round(13 * (clamped / 100) * 100) / 100;
+}
+
+/** 上一套主题的指纹：key 变才动手，避免每秒重写 CSS 变量、每秒重画 xterm。 */
+let lastThemeKey = null;
+
+/**
+ * 把一份 `/api/theme` 响应应用到页面。**纯 DOM 操作**，不取网络。
+ *
+ * @param {{tokens?:Record<string,string>, scheme?:string, textSize?:number, lang?:string}} payload
+ * @param {object} [deps]
+ * @param {{documentElement?:object}|object} [deps.doc] 传入 Document 或直接传 `<html>` 元素
+ * @param {(info:{scheme:string,first:boolean,fontPx:number}) => void} [deps.onChanged]
+ * @returns {{changed:boolean, scheme:"dark"|"light", key:string}}
+ */
+export function applyThemePayload(payload, deps = {}) {
+  const doc = deps.doc || document;
+  // 接受 Document（有 documentElement）或直接给 `<html>` 元素：两种调用方式都支持，
+  // 单测可以只搭一个极简 `<html>` 桩，不必造整份 Document。
+  const root = doc.documentElement || doc;
+  const tokens = payload && typeof payload.tokens === "object" && payload.tokens ? payload.tokens : {};
+  const onChanged = typeof deps.onChanged === "function" ? deps.onChanged : null;
+
+  const scheme =
+    payload && (payload.scheme === "dark" || payload.scheme === "light")
+      ? payload.scheme
+      : schemeForBackground(tokens["--magpie-bg"]) || "light";
+  const fontPx = fontPxForTextSize(payload ? payload.textSize : 100);
+
+  const key = JSON.stringify({ t: tokens, s: scheme, f: fontPx });
+  if (key === lastThemeKey) return { changed: false, scheme, key };
+  const first = lastThemeKey === null;
+  lastThemeKey = key;
+
+  // ① 变量：服务端已经过白名单，这里原样写。
+  for (const [name, value] of Object.entries(tokens)) {
+    if (!/^--[a-z0-9-]+$/.test(name)) continue;
+    if (typeof value !== "string" || !value) continue;
+    try {
+      root.style.setProperty(name, value);
+    } catch {
+      // 非法值：跳过这一个，不影响其余变量。
+    }
+  }
+
+  // ② 深浅色类（AC6）。两个类互斥，永远只留一个。
+  root.classList.toggle("is-dark", scheme === "dark");
+  root.classList.toggle("is-light", scheme !== "dark");
+  // color-scheme 让滚动条 / 原生控件也跟着走（UA 绘制的部件只认它）。
+  root.style.colorScheme = scheme;
+  // 标记「服务端已给过主题」：tokens.css 里那条兜底底色只在**没有**这个标记时生效。
+  root.setAttribute("data-mt-served", "1");
+
+  // ③ 字号（AC7）：magpie 的 textSize 映射到根字号与终端的 --term-font-size。
+  root.style.fontSize = `${fontPx}px`;
+  root.style.setProperty("--mt-font-scale", String(Math.round((fontPx / 13) * 1000) / 1000));
+
+  // ④ 通知终端。**所有**实例都要重上色（AC5）：xterm 的 theme 是构造时的
+  //    JS 对象，改 CSS 变量不会自动生效（theme-tokens.md §4）。
+  if (onChanged) onChanged({ scheme, first, fontPx });
+  return { changed: true, scheme, key };
+}
+
+/** 只给测试用：清掉指纹缓存，让下一发 applyThemePayload 一定生效。 */
+export function resetThemeFingerprint() {
+  lastThemeKey = null;
+}
 
 function createTab(frameOptions) {
   const shellId =
@@ -685,6 +867,124 @@ function syncAgentBadge(snapshot) {
   store.setPendingCount(count);
 }
 
+/**
+ * 浏览器自己看到的系统深浅色（magpie 的 `theme: "system"` 靠它判断）。
+ * 拿不到（老 WebView2 没有 matchMedia）就返回 null，让服务端用已知信息推。
+ * @returns {"dark"|"light"|null}
+ */
+function systemPreference() {
+  try {
+    if (typeof window.matchMedia !== "function") return null;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  } catch {
+    return null;
+  }
+}
+
+/** 主题轮询的返回句柄：只给测试 / 页面卸载时用。 */
+let themeSync = null;
+
+/**
+ * 启动主题同步（AC3 的「不刷新就变色」就是由它保证的）。
+ *
+ * 四个触发点：
+ *   ① 启动时立刻一发（首帧注入可能没覆盖到，比如在普通浏览器里打开）
+ *   ② 每 `THEME_POLL_MS` 一发（magpie 改设置 → 下一拍就生效）
+ *   ③ `visibilitychange` 回到可见时立刻一发（后台标签页的定时器会被节流）
+ *   ④ `focus` 时也立刻一发（与③互补：有些 WebView 不发 visibilitychange）
+ *
+ * 所有定时器都可注入，所以单测不用真等 1 秒（见 test/app/theme-sync.test.mjs）。
+ *
+ * @param {object} [deps]
+ * @param {() => Promise<object>} [deps.fetchTheme] 取主题的函数（默认走 api.theme）
+ * @param {(payload:object) => object} [deps.apply] 应用主题的函数
+ * @param {(fn:() => void, ms:number) => any} [deps.setTimer]
+ * @param {(handle:any) => void} [deps.clearTimer]
+ * @param {number} [deps.intervalMs]
+ * @param {EventTarget} [deps.events] 监听 visibilitychange / focus 的目标
+ * @returns {{stop:()=>void, tick:()=>Promise<object|null>}}
+ */
+export function createThemeSync(deps = {}) {
+  const fetchTheme = typeof deps.fetchTheme === "function" ? deps.fetchTheme : () => api.theme(systemPreference());
+  const apply =
+    typeof deps.apply === "function"
+      ? deps.apply
+      : (payload) =>
+          applyThemePayload(payload, {
+            onChanged: () => {
+              // **所有**终端实例都要重上色（AC5）：refreshTheme() 内部遍历 views。
+              if (terminalView) terminalView.refreshTheme();
+            },
+          });
+  const setTimer = typeof deps.setTimer === "function" ? deps.setTimer : (fn, ms) => setTimeout(fn, ms);
+  const clearTimer = typeof deps.clearTimer === "function" ? deps.clearTimer : (h) => clearTimeout(h);
+  const intervalMs = Number.isFinite(deps.intervalMs) ? deps.intervalMs : THEME_POLL_MS;
+  const events = deps.events === undefined ? (typeof window !== "undefined" ? window : null) : deps.events;
+
+  let stopped = false;
+  let timer = null;
+  let inFlight = false;
+
+  async function tick() {
+    if (stopped || inFlight) return null;
+    inFlight = true;
+    let result = null;
+    try {
+      const response = await fetchTheme();
+      // api.theme() 把非 2xx 统一成 {ok:false}；拿不到就保留当前配色（不白屏）。
+      if (response && response.ok && response.data) result = apply(response.data);
+    } catch {
+      // 网络抖动：下一拍再试。主题不是关键路径，绝不让它把页面弄崩。
+    } finally {
+      inFlight = false;
+    }
+    return result;
+  }
+
+  function schedule() {
+    if (stopped) return;
+    timer = setTimer(() => {
+      tick();
+      schedule();
+    }, intervalMs);
+  }
+
+  function onVisible() {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    tick();
+  }
+
+  // ③④ 事件驱动：后台标签页的 setInterval 会被节流到分钟级，
+  // 靠这两个事件保证「切回 magpie 窗口时颜色已经是对的」。
+  if (events && typeof events.addEventListener === "function") {
+    events.addEventListener("visibilitychange", onVisible);
+    events.addEventListener("focus", onVisible);
+  }
+
+  const handle = {
+    tick,
+    stop() {
+      stopped = true;
+      if (timer !== null) clearTimer(timer);
+      timer = null;
+      if (events && typeof events.removeEventListener === "function") {
+        events.removeEventListener("visibilitychange", onVisible);
+        events.removeEventListener("focus", onVisible);
+      }
+    },
+  };
+  tick();
+  schedule();
+  return handle;
+}
+
+function startThemeSync() {
+  if (themeSync) return themeSync;
+  themeSync = createThemeSync();
+  if (typeof window !== "undefined") window.addEventListener("beforeunload", () => themeSync && themeSync.stop());
+  return themeSync;
+}
+
 function init() {
   applyAiOpen(store.getSnapshot().aiOpen);
 
@@ -1021,22 +1321,9 @@ function init() {
     }
   }, constants.CONNECT_TIMEOUT_MS);
 
-  // TASK-FIX17-A R4：跟随系统主题变化重新给终端上色。
-  // magpie 不推送主题变更（theme-tokens.md §4 待定项），但用户在系统里切深浅色时
-  // 我们自己的 prefers-color-scheme 变量会变 → 终端必须跟着变，否则就成「一半白一半黑」。
-  // `?theme=dark|light` 显式指定时不跟随（magpie 的窗口主题是唯一权威）。
-  if (!options.theme && typeof window.matchMedia === "function") {
-    try {
-      const media = window.matchMedia("(prefers-color-scheme: dark)");
-      const onSchemeChange = () => {
-        if (terminalView) terminalView.refreshTheme();
-      };
-      if (typeof media.addEventListener === "function") media.addEventListener("change", onSchemeChange);
-      else if (typeof media.addListener === "function") media.addListener(onSchemeChange);
-    } catch {
-      // 老 WebView2 没有 matchMedia：忽略，用首帧的配色。
-    }
-  }
+  // TASK-FIX17-B R1：主题的**唯一驱动**。启动一发 + 1s 轮询 + 切回标签页时立刻一发。
+  // 换掉 A 批的 matchMedia 监听：现在深浅色由 magpie 的设置决定，不由媒体查询。
+  startThemeSync();
 
   // 调试出口：只读快照 + 假帧注入，仅 loopback。避免被打包/污染。
   // __termDebugFrame 的用途：验收探针在内核（TASK-V3-D）尚未合入时注入 agent.* 帧，
@@ -1071,6 +1358,15 @@ function init() {
         return terminalView ? terminalView.bufferLines(target) : { cols: 0, rows: 0, lines: [] };
       },
     });
+    // TASK-FIX17-B 验收用：读某个终端实例**真正在用**的 xterm theme 与字号。
+    // 只看 CSS 变量不够 —— xterm 的 theme 是构造时的 JS 对象，改变量不会自动生效，
+    // 「页面变白了、终端还是黑的」就是这么来的（AC5 要断言到这一层）。
+    Object.defineProperty(window, "__termDebugTheme", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: (id) => (terminalView ? terminalView.themeReport(id) : null),
+    });
     // 慢网关模拟用：调整「内核未就绪」看门狗时长（毫秒）。
     Object.defineProperty(window, "__termDebugWatchdog", {
       configurable: false,
@@ -1088,4 +1384,11 @@ function init() {
   }
 }
 
-init();
+/* 启动。
+ *
+ * TASK-FIX17-B：加了 `root` 存在性判断。理由：本文件的其余导出
+ * （`applyThemePayload` / `schemeForBackground` / `createThemeSync` / …）是**纯函数**，
+ * 必须能被 `node --test` 直接 import 而不用拉一整套 DOM 桩。没骨架时不启动——
+ * 这本来就是唯一合理的解释：页面里没有 `[data-role="app"]` 时，init() 内部
+ * 每一句 `document.querySelector('[data-role="…"]')` 都会是 null，本来就跑不成。 */
+if (root) init();

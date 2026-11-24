@@ -1,61 +1,109 @@
 /* 颜色只允许出现在本文件的变量声明处。
    magpie 下发的令牌保持原名；项目自建的加 --term- 前缀。
-   服务端会在应用页 <head> 里注入一份 :root 覆盖（来自 tokens）。 */
+   服务端在应用页 <head> 里注入 html:root{--magpie-:…} 覆盖（来自 bridge tokens
+   + ~/.config/magpie/settings.json），下面是读不到注入时的兜底。
+
+   ========================================================================
+   TASK-FIX17-B：整份文件重写为「全部由 --magpie-* 派生」
+   ========================================================================
+
+   三条硬规则（本批的验收就在这三条上）：
+
+   1. **没有 `@media (prefers-color-scheme)`**。
+      深浅色由 magpie 决定，不由操作系统媒体查询决定 —— 后者只反映操作系统，
+      而 magpie 的窗口主题可以被用户手动覆盖，二者经常不一致（theme-tokens.md §4）。
+      现在的唯一信号是 `app/app.js` 根据 `--magpie-bg` 的亮度给 `<html>` 加的
+      `is-dark` / `is-light` 类；下面每个派生变量都有这两套值。
+
+   2. **没有与主题无关的绝对色**（`#000` / `#fff` / `rgba(120,120,120,…)`）。
+      唯一允许写颜色字面量的地方是「基准层」`--mt-*`：那是 magpie 令牌缺失时的
+      兜底，与 A 批 `--term-bg` 的兜底同一个道理（不能是 `Canvas` 这类关键字，
+      xterm 拿到关键字会回落成纯黑）。其余全部用 `color-mix()` / `rgb(from …)`
+      从基准层或语义色派生。
+
+   3. **面板底色必须不透明**（`--term-panel-2` 等）。
+      修之前浅色下该值是 `rgba(120,120,120,0.12)`（88% 透明），这是「三个下拉框
+      透明看不清」（问题 8）的根因。D 批负责下拉框的具体 UI，B 批只保证底色来源
+      是不透明实色。
+
+   派生表达式的可读约定：`color-mix(in srgb, A N%, B)` 里 A 是主色。
+   */
 
 :root {
   color-scheme: light dark;
 
-  /* 来自 magpie 的兜底（服务端注入的会覆盖这里）。
-     TASK-FIX17-A R4：这里不能再写 `Canvas` / `CanvasText` 这类**系统色关键字**。
-     它们是浏览器关键字，`getComputedStyle(...).getPropertyValue('--term-bg')`
-     读到的是字符串 `Canvas` 而不是色值 —— 把它交给 xterm 的 theme.background
-     等于放弃上色，xterm 只能回落成黑色（浅色主题下终端整块黑、四边黑边）。
-     因此改成真实色值，浅色/深色各一套（下面 @media 里再覆盖一次深色）。
-     B 批会接管完整主题系统，本批只保证「不黑」。 */
+  /* ---- 基准层：magpie 令牌 + 兜底 --------------------------------------
+     服务端注入的 `html:root{--magpie-*}` 会覆盖这里的兜底值（特异性 0,1,1 > 0,1,0）。
+     兜底值取 magpie 自己的浅色一套（`is-light` / `is-dark` 会各自再盖一次）。
+     不再写 `Canvas` / `CanvasText` 这类系统色关键字：`getComputedStyle` 读到的是
+     字符串 `Canvas` 而不是色值，交给 xterm 的 theme.background 等于放弃上色，
+     xterm 只能回落纯黑（A 批实测的「浅色主题下终端整块黑」根因）。 */
   --magpie-bg: #f4f4f6;
-  --magpie-fg: #1f2328;
+  --magpie-fg: #1c1c21;
+  --magpie-fg-2: #4b4b53;
+  --magpie-card: #ffffff;
+  --magpie-line: #e3e3e8;
+  --magpie-accent: #4f46e5;
+  --magpie-accent-fg: #ffffff;
   --magpie-muted: #6b7280;
   --magpie-font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  /* 语义基准（magpie 令牌里没有对应项时用；深浅两套值分别写在 is-dark / is-light）。
+     之所以单独一层 --mt-*：派生表达式需要一个**稳定的名字**，
+     否则「危险色从哪来」在文件里要追三层 var()。 */
+  --mt-danger: #b3261e;
+  --mt-danger-fg: #ffffff;
+  --mt-warn: #7a4a00;
+  --mt-ok: #116329;
+  --mt-raised: color-mix(in srgb, var(--magpie-fg) 6%, var(--magpie-card));
+  --mt-sunken: color-mix(in srgb, var(--magpie-fg) 4%, var(--magpie-bg));
 
-  /* 项目级语义变量（明色一套值） */
+  /* ---- 文字 ----------------------------------------------------------- */
   --term-bg: var(--magpie-bg);
   --term-fg: var(--magpie-fg);
+  --term-fg-2: var(--magpie-fg-2);
   --term-muted: var(--magpie-muted);
-  --term-panel-bg: var(--magpie-bg);
-  --term-border: var(--magpie-muted);
-  --term-accent: var(--magpie-fg);
-  --term-danger: #b3261e;
-  --term-danger-fg: #ffffff;
-  --term-warn: #7a4a00;
-  /* 确认卡边框/底色（L1-05）：新增 token，避免在组件里散写 rgba。 */
-  --term-warn-border: rgba(122, 74, 0, 0.38);
-  --term-warn-bg: rgba(122, 74, 0, 0.07);
-  --term-ok: #116329;
-  --term-focus: var(--magpie-fg);
-  --term-selection: rgba(90, 120, 180, 0.35);
-  --term-scrollbar: rgba(120, 120, 120, 0.5);
-  --term-shadow: rgba(0, 0, 0, 0.28);
-  --term-rail-active-bg: rgba(90, 120, 180, 0.18);
+  --term-dim: color-mix(in srgb, var(--magpie-muted) 82%, var(--magpie-bg));
 
-  /* 终端 ANSI 16 色（暗色主题友好，亮色下也被验证过对比度） */
-  --term-ansi-black: #1c1c1c;
-  --term-ansi-red: #c93c37;
-  --term-ansi-green: #2e7d32;
-  --term-ansi-yellow: #8a6d00;
-  --term-ansi-blue: #1565c0;
-  --term-ansi-magenta: #8e24aa;
-  --term-ansi-cyan: #00796b;
-  --term-ansi-white: #d6d6d6;
-  --term-ansi-bright-black: #767676;
-  --term-ansi-bright-red: #ef5350;
-  --term-ansi-bright-green: #66bb6a;
-  --term-ansi-bright-yellow: #c9a227;
-  --term-ansi-bright-blue: #64b5f6;
-  --term-ansi-bright-magenta: #ba68c8;
-  --term-ansi-bright-cyan: #4dd0e1;
-  --term-ansi-bright-white: #ffffff;
+  /* ---- 线条 ----------------------------------------------------------- */
+  --term-border: var(--magpie-line);
+  --term-line: var(--magpie-line);
+  --term-line-2: color-mix(in srgb, var(--magpie-line) 78%, var(--magpie-fg));
+  --term-line-3: color-mix(in srgb, var(--magpie-line) 56%, var(--magpie-fg));
 
-  /* 尺寸 / 排版 */
+  /* ---- 面板底色（**必须不透明**，问题 8 的根因） ---------------------- */
+  --term-panel-bg: var(--magpie-card);
+  /* 面板的次级底色（下拉框 / 卡片内嵌块）：magpie-card 往背景方向压一点，
+     结果仍是不透明实色（alpha == 1，AC8）。 */
+  --term-panel-2: color-mix(in srgb, var(--magpie-fg) 5%, var(--magpie-card));
+  /* 浮起来的块（弹层里的输入行等）：比 panel-2 再亮/暗一档。 */
+  --term-raise: var(--mt-raised);
+
+  /* ---- 主色 ----------------------------------------------------------- */
+  --term-accent: var(--magpie-accent);
+  --term-accent-fg: var(--magpie-accent-fg);
+  --term-accent-line: color-mix(in srgb, var(--magpie-accent) 46%, var(--magpie-line));
+  --term-accent-soft: color-mix(in srgb, var(--magpie-accent) 16%, var(--magpie-card));
+  --term-focus: var(--magpie-accent);
+  --term-selection: color-mix(in srgb, var(--magpie-accent) 32%, transparent);
+  --term-rail-active-bg: color-mix(in srgb, var(--magpie-accent) 20%, var(--magpie-card));
+
+  /* ---- 语义色（从语义基准派生，不再是硬编码的明暗两套） ---------------- */
+  --term-danger: var(--mt-danger);
+  --term-danger-fg: var(--mt-danger-fg);
+  --term-warn: var(--mt-warn);
+  --term-ok: var(--mt-ok);
+  --term-warn-border: color-mix(in srgb, var(--mt-warn) 38%, transparent);
+  --term-warn-bg: color-mix(in srgb, var(--mt-warn) 7%, var(--magpie-card));
+  --term-warn-soft: color-mix(in srgb, var(--mt-warn) 16%, var(--magpie-card));
+  --term-ok-soft: color-mix(in srgb, var(--mt-ok) 16%, var(--magpie-card));
+  --term-danger-soft: color-mix(in srgb, var(--mt-danger) 16%, var(--magpie-card));
+
+  /* ---- 阴影 / 遮罩 ---------------------------------------------------- */
+  --term-shadow: color-mix(in srgb, var(--magpie-fg) 28%, transparent);
+  --term-backdrop: color-mix(in srgb, var(--magpie-fg) 42%, transparent);
+  --term-scrollbar: color-mix(in srgb, var(--magpie-fg) 40%, transparent);
+
+  /* ---- 尺寸 / 排版 ---------------------------------------------------- */
   /* --term-min-main / --term-ai-width / --term-ai-min 是旧右栏布局的变量：
      V2-A 已不再使用（保留声明只为不让外部引用一次性断掉，取值不再影响布局）。 */
   --term-min-main: 480px;
@@ -73,8 +121,14 @@
   --term-radius: 6px;
   --term-gap: 8px;
   --term-mono: ui-monospace, Menlo, Consolas, "Cascadia Mono", monospace;
-  --term-font-size: 13px;
+  /* TASK-FIX17-B AC7：终端字号跟随 magpie 的 textSize。
+     `--mt-font-scale` 由 app.js 写成 `textSize/100`（缺省 1）。
+     组件里的 px 字号不跟着放大（只影响终端与根字号），这是刻意的：
+     布局是按 13px 调的，整体缩放会把三栏网格挤坏。 */
+  --mt-font-scale: 1;
+  --term-font-size: calc(13px * var(--mt-font-scale));
   --term-line-height: 1.2;
+  --mt-font-size: 13px;
 
   /* TASK-V2-B：主机面板 / 文件树（覆盖层，不参与 .main 的 flex） */
   --term-hosts-width: 212px;
@@ -90,97 +144,113 @@
   /* V4-E：标签条 / 状态栏 / 抽屉边线 / 悬浮层用色。 */
   --term-tabbar-height: 40px;
   --term-statusbar-height: 26px;
-  --term-panel-2: rgba(120, 120, 120, 0.12);
-  --term-raise: rgba(120, 120, 120, 0.2);
-  --term-line: var(--term-border);
-  --term-line-2: var(--term-border);
-  --term-line-3: var(--term-border);
-  --term-fg-2: var(--term-fg);
-  --term-dim: var(--term-muted);
-  --term-accent-line: rgba(90, 120, 180, 0.46);
   --term-radius-lg: 8px;
   /* 把手的点击热区：与视觉同宽 24px（取消隐形外扩，避免盖住终端最右一列）。 */
   --term-handle-hit: 24px;
   --term-toast-width: 340px;
-  --term-backdrop: rgba(0, 0, 0, 0.42);
-  --term-ok-soft: rgba(17, 99, 41, 0.16);
-  --term-warn-soft: rgba(122, 74, 0, 0.16);
-  --term-danger-soft: rgba(179, 38, 30, 0.16);
-  --term-accent-soft: rgba(90, 120, 180, 0.16);
+
+  /* ---- 终端 ANSI 16 色（浅色主题一套） --------------------------------
+     TASK-FIX17-B R3：xterm 的 theme 对象由 `app/ui/terminal-view.js:buildTheme()`
+     从这些变量读，所以只要这里跟着 `is-light` / `is-dark` 换，终端就跟着换。
+
+     这一套是按「浅底深字」调的（与 magpie 的浅色背景配套）：
+     ansi-white 必须**比 --term-bg 暗**，否则浅色主题里会出现「深底白字」的反色。
+     深色一套在下面的 `html.is-dark` 里。 */
+  --term-ansi-black: #3a3a44;
+  --term-ansi-red: #b3261e;
+  --term-ansi-green: #116329;
+  --term-ansi-yellow: #7a4a00;
+  --term-ansi-blue: #0b57d0;
+  --term-ansi-magenta: #8e24aa;
+  --term-ansi-cyan: #00696b;
+  --term-ansi-white: #6f6f7a;
+  --term-ansi-bright-black: #6f6f7a;
+  --term-ansi-bright-red: #c93c37;
+  --term-ansi-bright-green: #2e7d32;
+  --term-ansi-bright-yellow: #8a6d00;
+  --term-ansi-bright-blue: #1565c0;
+  --term-ansi-bright-magenta: #a142bd;
+  --term-ansi-bright-cyan: #00838f;
+  --term-ansi-bright-white: #8a8a95;
 }
 
-/* 显式主题（`?theme=dark|light` → app.js 给 <html> 加的类）的**兜底**底色。
-   只用兜底、不改上游链路：必须能被服务端注入的 `html:root{…}` 盖过。
-   特异性算一下：
-     `html:root`（注入）        = 0,1,1
-     `:root:where(.theme-dark)` = 0,1,0   ← `:where()` 贡献 0 特异性
-     `:root.theme-dark`         = 0,2,0   ✗ 会盖掉用户主题（D7-2b 真浏览器实测失败）
-   所以这里必须用 `:where()` 包住类名，否则 magpie 下发的主题令牌失效。
-   作用：`?theme=dark` 与系统亮色并存时，至少终端不会是纯黑（问题 3）。
-   完整的明暗两套语义色仍由 B 批接管。 */
-:root:where(.theme-dark) {
-  --magpie-bg: #1a1a1e;
-  --magpie-fg: #e5e7eb;
-  --magpie-muted: #9aa4b0;
-}
+/* ==========================================================================
+   浅色 / 深色两套
+   --------------------------------------------------------------------------
+   这两个类由 `app/app.js` 的 `applyTheme()` 根据**实际生效的 `--magpie-bg`**
+   （服务端算好的 + 浏览器现读的）写到 <html> 上。AC6 要求它们有对应 CSS 规则
+   并且 `getComputedStyle` 能证明两边不同 —— 下面就是那两条规则。
 
-:root:where(.theme-light) {
-  --magpie-bg: #f4f4f6;
-  --magpie-fg: #1f2328;
+   为什么不用 `:root.is-dark`：服务端注入的 `html:root{…}` 是 0,1,1，
+   `:root.is-dark` 是 0,2,0 —— 会**盖掉**用户主题（D7-2b 真浏览器实测失败）。
+   所以这里用 `:root:where(.is-dark)`（`:where()` 贡献 0 特异性）→ 0,1,0，
+   一定低于注入层。变量是按「注入生效后的值」派生的，落在这里不会反客为主。
+   ========================================================================== */
+
+:root:where(.is-light) {
+  --mt-danger: #b3261e;
+  --mt-danger-fg: #ffffff;
+  --mt-warn: #7a4a00;
+  --mt-ok: #116329;
+  /* muted：最弱的一档文字（`--term-muted` 全仓用得最多）。两套必须各自有值，
+     否则深色主题会拿浅色的灰去配深底（对比度只有 3.6:1，说明文字发虚）。 */
   --magpie-muted: #6b7280;
+
+  /* 浅色 ANSI：与上面的默认值一致（`is-light` 是显式声明，不是第二套色）。 */
+  --term-ansi-black: #3a3a44;
+  --term-ansi-red: #b3261e;
+  --term-ansi-green: #116329;
+  --term-ansi-yellow: #7a4a00;
+  --term-ansi-blue: #0b57d0;
+  --term-ansi-magenta: #8e24aa;
+  --term-ansi-cyan: #00696b;
+  --term-ansi-white: #6f6f7a;
+  --term-ansi-bright-black: #6f6f7a;
+  --term-ansi-bright-red: #c93c37;
+  --term-ansi-bright-green: #2e7d32;
+  --term-ansi-bright-yellow: #8a6d00;
+  --term-ansi-bright-blue: #1565c0;
+  --term-ansi-bright-magenta: #a142bd;
+  --term-ansi-bright-cyan: #00838f;
+  --term-ansi-bright-white: #8a8a95;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    /* TASK-FIX17-A R4：深色下的底色兜底。取值对齐 magpie 的暗色 `--bg`（#1a1a1e）
-       与 `--fg`（#e5e7eb），不用 Canvas 关键字（理由见文件顶部）。 */
-    --magpie-bg: #1a1a1e;
-    --magpie-fg: #e5e7eb;
-    --magpie-muted: #9aa4b0;
-    --term-danger: #ff8a80;
-    --term-danger-fg: #2a0f0d;
-    --term-warn: #ffcc80;
-    /* L1-01：暗色 muted 不能再用 GrayText（#808080），确认卡/主机地址/设置档位
-       说明都会掉到 2.39–2.94:1；与 v4.css 的 --v4-muted 对齐。 */
-    --term-muted: #9aa4b0;
-    /* L1-05：mockup 的确认卡边框/底色（v4.css:874-880）。 */
-    --term-warn-border: rgba(227, 179, 65, 0.38);
-    --term-warn-bg: rgba(227, 179, 65, 0.07);
-    --term-ok: #a5d6a7;
-    --term-border: #3a3f46;
-    --term-panel-bg: #14171c;
-    --term-panel-2: #181d24;
-    --term-raise: #1c222b;
-    --term-line: #232a33;
-    --term-line-2: #3a3f46;
-    --term-line-3: #4a515b;
-    --term-fg-2: #f0f6fc;
-    --term-dim: #8f99a4;
-    --term-accent-line: rgba(120, 160, 220, 0.46);
-    --term-selection: rgba(120, 160, 220, 0.35);
-    --term-scrollbar: rgba(160, 160, 160, 0.5);
-    --term-shadow: rgba(0, 0, 0, 0.6);
-    --term-rail-active-bg: rgba(120, 160, 220, 0.22);
-    --term-ansi-black: #2b2b2b;
-    --term-ansi-red: #ff7b72;
-    --term-ansi-green: #7ee787;
-    --term-ansi-yellow: #e3b341;
-    --term-ansi-blue: #79c0ff;
-    --term-ansi-magenta: #d2a8ff;
-    --term-ansi-cyan: #56d4dd;
-    --term-ansi-white: #c9d1d9;
-    --term-ansi-bright-black: #8b949e;
-    --term-ansi-bright-red: #ffa198;
-    --term-ansi-bright-green: #a6f3b0;
-    --term-ansi-bright-yellow: #f2cc60;
-    --term-ansi-bright-blue: #a5d6ff;
-    --term-ansi-bright-magenta: #e2c5ff;
-    --term-ansi-bright-cyan: #89e6ec;
-    --term-ansi-bright-white: #f0f6fc;
-    --term-backdrop: rgba(0, 0, 0, 0.62);
-    --term-ok-soft: rgba(165, 214, 167, 0.18);
-    --term-warn-soft: rgba(255, 204, 128, 0.18);
-    --term-danger-soft: rgba(255, 138, 128, 0.18);
-    --term-accent-soft: rgba(120, 160, 220, 0.18);
-  }
+:root:where(.is-dark) {
+  --mt-danger: #ff8a80;
+  --mt-danger-fg: #2a0f0d;
+  --mt-warn: #ffcc80;
+  --mt-ok: #a5d6a7;
+  --magpie-muted: #9aa4b0;
+
+  /* 深色 ANSI：原来的 `@media (prefers-color-scheme: dark)` 那一套，
+     现在挂在 `is-dark` 上（这是个真类，不是空声明）。 */
+  --term-ansi-black: #2b2b2b;
+  --term-ansi-red: #ff7b72;
+  --term-ansi-green: #7ee787;
+  --term-ansi-yellow: #e3b341;
+  --term-ansi-blue: #79c0ff;
+  --term-ansi-magenta: #d2a8ff;
+  --term-ansi-cyan: #56d4dd;
+  --term-ansi-white: #c9d1d9;
+  --term-ansi-bright-black: #8b949e;
+  --term-ansi-bright-red: #ffa198;
+  --term-ansi-bright-green: #a6f3b0;
+  --term-ansi-bright-yellow: #f2cc60;
+  --term-ansi-bright-blue: #a5d6ff;
+  --term-ansi-bright-magenta: #e2c5ff;
+  --term-ansi-bright-cyan: #89e6ec;
+  --term-ansi-bright-white: #f0f6fc;
+}
+
+/* 显式深浅色的**兜底底色**（`?theme=dark|light` 在服务端完全读不到 magpie 设置
+   时才用得上；正常链路里服务端已经把这些值注入成 `html:root{--magpie-bg}`）。
+   特异性同样是 0,1,0（`is-dark` / `is-light`），盖不过注入层。 */
+:root:where(.is-light):where(:not([data-mt-served])) {
+  --magpie-bg: #f4f4f6;
+  --magpie-fg: #1c1c21;
+}
+
+:root:where(.is-dark):where(:not([data-mt-served])) {
+  --magpie-bg: #1a1a1e;
+  --magpie-fg: #ededf1;
 }

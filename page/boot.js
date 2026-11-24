@@ -4,8 +4,16 @@
 // 且 connect-src 没有单列，所以任何脚本发起的网络请求都会被静默拒绝。
 // 唯一能做的联网动作是 location.replace()。因此这里「直接跳」，不探测服务是否活着。
 //
-// 认证 token 的交接：带路页拿不到 token（它是服务端进程内随机生成的），
-// 所以这里只带 theme / tokens；服务端在返回应用页时用 Set-Cookie 下发 mt。
+// 主题令牌的交接（TASK-FIX17-B R1）：
+//   ① 带路页的 CSP 是 `default-src 'none'`，fetch / XHR / WebSocket **全部不可用**
+//     （连 no-cors 都被静默拒绕），所以 boot 页**不能**自己 POST 令牌给服务。
+//     能做的只有把令牌放进跳转 URL 的 query。服务端在 `GET /` 里把这份令牌
+//     顺手存进进程内缓存（`bridgeTheme`），`GET /api/theme` 就靠它 + 现读的
+//     `~/.config/magpie/settings.json` 合成主题。这样 magpie 改主题后页面
+//     **不刷新**也能跟（app.js 轮询 /api/theme）。
+//   ② query 的 `theme` / `tokens` 同时也用于首屏注入，不能等到 JS 跑起来。
+//   ③ `onTheme` 照旧注册：bridge 会 push `theme` 事件。但它只能影响
+//     **下一次**跳转（跳转后 window.magpie 就没了），所以里面只改内存变量。
 (async () => {
   const DEFAULT_PORT = 3480;
   const HTTP_PREFIX = "http" + "://";
@@ -25,6 +33,18 @@
     }
   } catch {
     // 没有 bridge 就退回默认主题。
+  }
+
+  // magpie 运行中换主题时 bridge 会 push `theme` 事件：改写待跳转的令牌，
+  // 下一次（重试 / 重开）就带上最新的那一套。不要指望它能穿过跳转。
+  try {
+    window.magpie?.onTheme?.((next) => {
+      if (!next || typeof next !== "object") return;
+      if (typeof next.dark === "boolean") theme = next.dark ? "dark" : "light";
+      if (next.tokens && typeof next.tokens === "object") tokens = next.tokens;
+    });
+  } catch {
+    // 旧版 magpie 没有 onTheme：不影响跳转。
   }
 
   try {
@@ -57,6 +77,11 @@
       // 编码不了就只带主题。
     }
   }
+
+  // 把令牌交给自己的服务：带路页的 CSP 不允许任何网络请求（`default-src 'none'`，
+  // fetch / XHR / WS 全部静默失败），所以这里**不发请求**，令牌只走 query；
+  // 服务端在 `GET /` 里把它存进进程内缓存。保留这段注释是为了不让下一个人
+  // 再试一次「在 boot.js 里 POST」—— 那样只会静默失败。
 
   function said() {
     return document.getElementById("said");

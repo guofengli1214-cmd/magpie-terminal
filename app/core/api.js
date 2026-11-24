@@ -198,6 +198,31 @@ export default {
   shells() {
     return getJson("/api/shells");
   },
+  /**
+   * GET /api/theme：当前主题（TASK-FIX17-B R1）。
+   *
+   * 返回 `{ scheme, theme, source, textSize, lang, tokens, settingsOk, settingsReason }`，
+   * `tokens` 的键全部是 `--magpie-*` 形态。
+   *
+   * `prefer` 是浏览器自己看到的系统深浅色（`matchMedia`）：magpie 的
+   * `theme: "system"` 语义就是「跟随操作系统」，而服务端是普通进程看不到
+   * 操作系统的当前配色，只能由页面告诉它。
+   *
+   * @param {"dark"|"light"|null} [prefer]
+   */
+  theme(prefer) {
+    const query = prefer === "dark" || prefer === "light" ? `?prefer=${prefer}` : "";
+    return getJson(`/api/theme${query}`);
+  },
+  /**
+   * POST /api/theme/bridge：把 bridge 令牌交给服务端缓存。
+   *
+   * 带路页发不了这个请求（CSP `default-src 'none'`），所以正常链路里不会走到；
+   * 保留它是因为 `app` 页在普通浏览器里打开时可以用它手工注入一套主题（验收 / 排查）。
+   */
+  pushTheme(tokens, dark) {
+    return sendJson("/api/theme/bridge", "POST", { tokens, dark });
+  },
 
   /* ---- AI 会话（TASK-V4-H §5.4） ---- */
 

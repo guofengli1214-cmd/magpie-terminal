@@ -39,6 +39,7 @@ import { handleAiPost } from "./routes/ai.mjs";
 import { handleLocalFs, handleRemoteFs } from "./routes/fs.mjs";
 import { isStaticPath, readAppFile, sendStatic } from "./static.mjs";
 import { attachWebSocket } from "./ws.mjs";
+import { readMagpieSettings, normalizeAccent } from "../config/magpie-settings.mjs";
 import { TITLE_MAX, createSessionStore } from "../ai/sessions.mjs";
 import { detectShell, loadNodePty, LOCKED_NODE_PTY_VERSION } from "../pty/bridge.mjs";
 import { SessionManager } from "../pty/session.mjs";
@@ -160,7 +161,21 @@ function writeForbidden(res, cors = {}) {
   res.end(body);
 }
 
-function decodeTokens(raw) {
+/**
+ * 解 query 里的 `tokens`（base64 JSON）。
+ *
+ * TASK-FIX17-B R1：**接受裸键**并归一成 `--magpie-<key>`。
+ * 修之前这条链是断的：`page/boot.js` 的 bridge 给的 tokens 键是裸的
+ * （`bg` / `fg` / `card` …），这里只收 `/^--/` 开头的键 → 全部被丢弃，
+ * 实测注入是空的 `{}`。
+ *
+ * 同时继续接受已带前缀的键（`--magpie-bg` / `--bg`），幂等不重复加前缀。
+ * 键与值的白名单在 `sanitizeTokens()`，任何不合法一律丢弃。
+ *
+ * @param {unknown} raw
+ * @returns {Record<string,string>|null} 归一后的 `--magpie-*` 表；整体不可解析时 null
+ */
+export function decodeTokens(raw) {
   if (typeof raw !== "string" || raw.length === 0) return null;
   let buffer;
   try {
@@ -176,41 +191,393 @@ function decodeTokens(raw) {
     return null;
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const clean = {};
-  for (const [key, value] of Object.entries(parsed)) {
-    if (!/^--[A-Za-z0-9_-]+$/.test(key)) continue;
-    if (typeof value !== "string" && typeof value !== "number") continue;
-    const text = String(value).trim();
-    if (!text) continue;
-    // 防注入：值里不许出现尖括号、花括号、分号。
-    if (/[<>{};]/.test(text)) continue;
-    clean[key] = text;
-  }
-  return clean;
+  return sanitizeTokens(parsed).tokens;
 }
 
-function buildRootStyle(tokens) {
-  if (!tokens) return "";
-  const lines = Object.entries(tokens).map(([key, value]) => `  ${key}: ${value};`);
+/* ------------------------------------------------------------------ *
+ * 主题令牌（TASK-FIX17-B R1 / R2 / R3）
+ *
+ * 三层数据，优先级从高到低：
+ *   1. bridge 缓存（page/boot.js 跳转前 POST 来的 magpie 真实令牌）——最准
+ *   2. ~/.config/magpie/settings.json（theme / accent / textSize / lang）
+ *      → `src/config/magpie-settings.mjs` 只读地读它
+ *   3. MAGPIE_PALETTE 的兜底调色板（从宿主二进制里取到的浅/深两套实测值）
+ *
+ * `tokens` 是观感数据、**不是凭据**（theme-tokens.md §5）；口令是另一回事。
+ * ------------------------------------------------------------------ */
+
+/** bridge 上报的令牌里我们认得的键（其余原样保留，不猜语义也不丢）。 */
+export const KNOWN_TOKEN_KEYS = Object.freeze([
+  "bg",
+  "fg",
+  "fg-2",
+  "line",
+  "accent",
+  "accent-fg",
+  "accent-soft",
+  "card",
+  "sub",
+  "muted",
+  "surface",
+  "surface-2",
+  "edge",
+  "warn",
+  "bad",
+  "ok",
+  "ring",
+  "font",
+  "code",
+]);
+
+/**
+ * magpie 的实测调色板（从宿主二进制的样式表里取到的两套值）。
+ * 只作为兜底：bridge 或 `accent` 设置一给出真值，就用真值。
+ */
+export const MAGPIE_PALETTE = Object.freeze({
+  light: Object.freeze({
+    bg: "#f4f4f6",
+    fg: "#1c1c21",
+    "fg-2": "#4b4b53",
+    card: "#ffffff",
+    line: "#e3e3e8",
+    // muted 是「最弱的一档文字」（`--term-muted` 在全仓用了 60 次）。
+    // 它必须**两套都有值**：只给浅色一套的话，深色主题下会拿浅色的灰去配深底，
+    // 对比度只有 3.6:1（实测），那些说明文字会发虚。
+    muted: "#6b7280",
+    accent: "#4f46e5",
+    "accent-fg": "#ffffff",
+  }),
+  dark: Object.freeze({
+    bg: "#1a1a1e",
+    fg: "#ededf1",
+    "fg-2": "#b9b9c1",
+    card: "#232327",
+    line: "#333339",
+    muted: "#9aa4b0",
+    accent: "#a5b4fc",
+    "accent-fg": "#14142a",
+  }),
+});
+
+/** accent 未设且 bridge 没给时的兜底色（浅色）。 */
+export const DEFAULT_ACCENT = "#2563eb";
+
+/* ---- 键 / 值白名单（安全项，AC10） ----
+ *
+ * 值是「用户可控字符串」，会拼进 <style> 与 JSON。所以用**允许集**：
+ *   键  ^--[a-z0-9-]+$
+ *   值  [#a-zA-Z0-9(),.%/ +-] 且不含 < > ; { } \ " ' 与换行
+ * 任一不合法 → 该键丢弃，不报错（记一条不带原值的 warn）。
+ */
+
+/** 归一后的键。 */
+const TOKEN_KEY_PATTERN = /^--[a-z0-9-]{1,42}$/;
+/** 裸键（bridge 的 tokens 键不带前缀）。 */
+const TOKEN_BARE_KEY_PATTERN = /^[a-z][a-z0-9-]{0,40}$/;
+/** 值允许的字符集（允许集，不是黑名单）。 */
+const TOKEN_VALUE_PATTERN = /^[#a-zA-Z0-9(),.%/+ -]{1,64}$/;
+/** 值里绝不允许出现的字符（双保险）。 */
+const TOKEN_VALUE_FORBIDDEN = /[<>{};\\"'\r\n]/;
+/** 键长度上限（含前缀）。 */
+const TOKEN_KEY_MAX = 44;
+
+/**
+ * 判断一个键是否合法，并给出归一后的名字。
+ *
+ * 归一规则（R1）：
+ *   `bg`            → `--magpie-bg`
+ *   `--bg`         → `--magpie-bg`   （裸键带 `--` 前缀的形态）
+ *   `--magpie-bg` → `--magpie-bg`   （已经归一过，幂等）
+ *
+ * 为什么没有「原样保留 magpie 自有变量」的分支：bridge 的 `paint()` 对每个
+ * token 都执行 `root.style.setProperty("--magpie-" + k, v)`（宿主二进制里的原文），
+ * 所以页面上的变量名**永远**是 `--magpie-<裸键>`。一个 `--font` 输入的真意
+ * 就是 magpie 的 `font` 令牌 → `--magpie-font`。留一个「原样透传 `--font`」的
+ * 分支只会产生两份名字不同、语义相同的变量（实测不可达，已删）。
+ *
+ * @param {unknown} key
+ * @returns {string|null} 归一后的键；不合法返回 null
+ */
+export function normalizeTokenKey(key) {
+  if (typeof key !== "string") return null;
+  const text = key.trim();
+  if (!text || text.length > TOKEN_KEY_MAX) return null;
+  // 已经归一过的：幂等返回（校验形状）。
+  if (/^--magpie-[a-z0-9-]+$/.test(text)) return TOKEN_KEY_PATTERN.test(text) ? text : null;
+  // 裸键：补 magpie- 前缀。
+  if (TOKEN_BARE_KEY_PATTERN.test(text)) return `--magpie-${text}`;
+  // `--bg` 这种「只带前缀的裸键」：同样补 magpie- 前缀。
+  if (text.startsWith("--")) {
+    const body = text.slice(2);
+    if (TOKEN_BARE_KEY_PATTERN.test(body)) return `--magpie-${body}`;
+  }
+  return null;
+}
+
+/**
+ * 判断一个值是否安全（可拼进 <style>）。
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isSafeTokenValue(value) {
+  if (typeof value !== "string" && typeof value !== "number") return false;
+  const text = String(value).trim();
+  if (!text || text.length > 64) return false;
+  if (TOKEN_VALUE_FORBIDDEN.test(text)) return false;
+  return TOKEN_VALUE_PATTERN.test(text);
+}
+
+/**
+ * 归一 + 过滤一份「键 → 值」表。
+ *
+ * @param {unknown} raw
+ * @returns {{tokens:Record<string,string>, dropped:number}}
+ *   dropped 是丢弃的键数（只计数，绝不回显原值——它可能是注入串）。
+ */
+export function sanitizeTokens(raw) {
+  const tokens = {};
+  let dropped = 0;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { tokens, dropped };
+  for (const [key, value] of Object.entries(raw)) {
+    const name = normalizeTokenKey(key);
+    if (!name || !isSafeTokenValue(value)) {
+      dropped += 1;
+      continue;
+    }
+    tokens[name] = String(value).trim();
+  }
+  return { tokens, dropped };
+}
+
+/**
+ * 解析 `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()` 为 `[r,g,b]`。
+ * @param {unknown} value
+ * @returns {[number,number,number]|null}
+ */
+export function parseColor(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  const hex = /^#([0-9a-fA-F]{3,8})$/.exec(text);
+  if (hex) {
+    const body = hex[1];
+    const expand = (s) => Number.parseInt(s.length === 1 ? s + s : s, 16);
+    if (body.length === 3 || body.length === 4) return [expand(body[0]), expand(body[1]), expand(body[2])];
+    if (body.length === 6 || body.length === 8) {
+      return [
+        Number.parseInt(body.slice(0, 2), 16),
+        Number.parseInt(body.slice(2, 4), 16),
+        Number.parseInt(body.slice(4, 6), 16),
+      ];
+    }
+    return null;
+  }
+  const fn = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i.exec(text);
+  if (fn) {
+    return [
+      Math.min(255, Math.max(0, Math.round(Number(fn[1])))),
+      Math.min(255, Math.max(0, Math.round(Number(fn[2])))),
+      Math.min(255, Math.max(0, Math.round(Number(fn[3])))),
+    ];
+  }
+  return null;
+}
+
+/**
+ * sRGB 相对亮度（WCAG 定义，gamma 展开后再加权）。
+ * @param {[number,number,number]} rgb
+ * @returns {number} 0（黑）… 1（白）
+ */
+export function relativeLuminance(rgb) {
+  if (!Array.isArray(rgb) || rgb.length < 3) return 0;
+  const channel = (value) => {
+    const c = Math.min(255, Math.max(0, Number(value))) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
+}
+
+/** 判定阈值：与 design.md 一致（0.45）。 */
+export const DARK_LUMINANCE_THRESHOLD = 0.45;
+
+/**
+ * 由背景色判定是深色还是浅色。
+ * @param {string} bg
+ * @param {{theme?:string}} [hint]
+ * @returns {"dark"|"light"}
+ */
+export function resolveScheme(bg, hint = {}) {
+  // magpie 的 theme 设置是唯一权威（theme-tokens.md §4）；`system` 时才看亮度。
+  const theme = typeof hint.theme === "string" ? hint.theme : "";
+  if (theme === "dark") return "dark";
+  if (theme === "light") return "light";
+  const rgb = parseColor(bg);
+  if (!rgb) return "light";
+  return relativeLuminance(rgb) < DARK_LUMINANCE_THRESHOLD ? "dark" : "light";
+}
+
+/**
+ * 合成一套主题。
+ *
+ * 三种数据来源的优先级（theme-tokens.md §4「magpie 是唯一权威」）：
+ *   1. `settings.theme === "dark"|"light"` → **直接决定**深浅色；bridge 报的
+ *      旧令牌只有当时深浅色与现在一致时才拿来用（否则会得到另一套配色）。
+ *   2. `settings.theme === "system"` → 跟随「已知的系统深浅色」。这个时候有两个可能
+ *      的信号：bridge 上报的 `dark`（magpie 自己在启动时按操作系统算好的结果）与
+ *      浏览器现读的 `prefers-color-scheme`。**bridge 优先**：theme-tokens.md §4 写明
+ *      窗口主题可能被用户手动覆盖过，prefers-color-scheme 只反映操作系统，
+ *      二者常常不一致；而且带路页给的 `?theme=` / `?tokens=` 正是映射到 bridgeScheme 的。
+ *      没 bridge 时才用 prefer（在普通浏览器里直接开插件页的那种情况）。
+ *   3. 都没有 → 浅色兜底。
+ *
+ * @param {object} input
+ * @param {Record<string,string>} [input.bridgeTokens] 已归一过的 bridge 令牌
+ * @param {"dark"|"light"|null} [input.bridgeScheme] bridge 上报时的深浅色
+ * @param {object} [input.settings] magpie 设置（readMagpieSettings().settings）
+ * @param {"dark"|"light"|null} [input.prefer] 调用方给的系统深浅色提示
+ * @returns {{
+ *   scheme:"dark"|"light",
+ *   theme:string,
+ *   source:string,
+ *   textSize:number,
+ *   lang:string,
+ *   tokens:Record<string,string>,
+ * }}
+ */
+export function composeTheme(input = {}) {
+  const bridge = input.bridgeTokens && typeof input.bridgeTokens === "object" ? input.bridgeTokens : {};
+  const settings = input.settings && typeof input.settings === "object" ? input.settings : {};
+  const theme = typeof settings.theme === "string" ? settings.theme : "system";
+  const bridgeScheme =
+    input.bridgeScheme === "dark" || input.bridgeScheme === "light" ? input.bridgeScheme : null;
+  const prefer = input.prefer === "dark" || input.prefer === "light" ? input.prefer : null;
+
+  // 1) 定深浅色。
+  let scheme;
+  if (theme === "dark" || theme === "light") scheme = theme;
+  // bridge 优先于浏览器现读的 matchMedia（理由见上面第 2 条）。
+  else scheme = bridgeScheme || prefer || "light";
+
+  // 2) bridge 令牌只在「同一套深浅色」下可用：magpie 改了主题而令牌还是旧的时，
+  // 继续用旧令牌会得到「半套深色半套浅色」—— 正是本卡要修的症状。
+  const bridgeUsable = bridgeScheme === scheme;
+  const palette = MAGPIE_PALETTE[scheme];
+  const accentSetting = normalizeAccent(settings.accent);
+  const pick = (name, fallback) => (bridgeUsable && bridge[`--magpie-${name}`]) || fallback;
+
+  const bg = pick("bg", palette.bg);
+  // 拿到背景后再复核一次：背景亮度与设置冲突时以**背景亮度**为准（防「设置说深、颜色是浅」）。
+  const finalScheme = resolveScheme(bg, theme === "system" ? {} : { theme });
+  const finalPalette = MAGPIE_PALETTE[finalScheme];
+
+  const accent = pick("accent", accentSetting || finalPalette.accent || DEFAULT_ACCENT);
+  const accentFg = pick("accent-fg", finalPalette["accent-fg"] || "#ffffff");
+
+  const tokens = {
+    "--magpie-bg": bg,
+    "--magpie-fg": pick("fg", finalPalette.fg),
+    "--magpie-fg-2": pick("fg-2", finalPalette["fg-2"]),
+    "--magpie-muted": pick("muted", finalPalette.muted),
+    "--magpie-line": pick("line", finalPalette.line),
+    "--magpie-card": pick("card", finalPalette.card),
+    "--magpie-accent": accent,
+    "--magpie-accent-fg": accentFg,
+  };
+
+  // 3) bridge 报了、我们没枚举到的键：原样透传（不猜语义，也不丢）。
+  if (bridgeUsable) {
+    for (const [key, value] of Object.entries(bridge)) {
+      if (Object.prototype.hasOwnProperty.call(tokens, key)) continue;
+      if (!normalizeTokenKey(key)) continue;
+      tokens[key] = value;
+    }
+  }
+
+  return {
+    scheme: finalScheme,
+    theme,
+    // source 说明这一套是打哪儿来的，便于 curl / 报告里判断链路是否真的通了。
+    source: bridgeUsable && bridge["--magpie-bg"] ? "bridge" : theme === "system" ? "system" : "settings",
+    textSize: Number.isFinite(Number(settings.textSize)) ? Number(settings.textSize) : 100,
+    lang: typeof settings.lang === "string" && settings.lang ? settings.lang : "system",
+    tokens,
+  };
+}
+
+/**
+ * 把令牌表渲染成注入用的 `<style>`。
+ *
+ * 选择器必须是 `html:root` 而不是 `:root`：
+ * 这段 <style> 注入在 <head> 最前（theme-tokens.md 要求「首帧不闪」），
+ * 但 tokens.css 里也有 `:root { … }` 兜底值。同特异性下后出现的 rules 胜出
+ * → 注入值会被兜底值盖掉（真浏览器实测 getComputedStyle 读回兜底色，D7-2 失败）。
+ * `html:root` 比 `:root` 多一个类型选择器（0,1,1 > 0,1,0），无论顺序都胜出。
+ *
+ * 拼字符串之前再过一遍白名单：这是把字符串塞进 `<style>` 的最后一道关。
+ *
+ * @param {Record<string,string>|null} tokens
+ * @returns {string}
+ */
+export function buildRootStyle(tokens) {
+  if (!tokens || typeof tokens !== "object") return "";
+  const lines = [];
+  for (const [key, value] of Object.entries(tokens)) {
+    if (!TOKEN_KEY_PATTERN.test(key)) continue;
+    if (!isSafeTokenValue(value)) continue;
+    lines.push(`  ${key}: ${String(value).trim()};`);
+  }
   if (lines.length === 0) return "";
-  // 选择器必须是 `html:root` 而不是 `:root`：
-  // 这段 <style> 注入在 <head> 最前（theme-tokens.md 要求「首帧不闪」），
-  // 但 tokens.css 里也有 `:root { --magpie-bg: Canvas; … }` 兜底值。
-  // 同特异性下后出现的 rules 胜出 → 注入值会被兜底值盖掉（真浏览器实测
-  // getComputedStyle 读回 `Canvas`，D7-2 失败）。
-  // `html:root` 比 `:root` 多一个类型选择器（0,1,1 > 0,1,0），无论顺序都胜出。
   return `<style>html:root {\n${lines.join("\n")}\n}</style>`;
 }
 
-async function renderAppIndex(tokens, token) {
+/**
+ * magpie 的 `textSize`（百分比）→ 根字号（px）。与 app.js 的 `fontPxForTextSize`
+ * 必须给出同一个值（两边都是 13px 基准，夹在 80…160%）。
+ *
+ * @param {unknown} percent
+ * @returns {number}
+ */
+export function fontPxForTextSize(percent) {
+  const value = Number(percent);
+  const clamped = Number.isFinite(value) ? Math.min(160, Math.max(80, value)) : 100;
+  return Math.round(13 * (clamped / 100) * 100) / 100;
+}
+
+/**
+ * 首屏字号注入（AC7）。
+ *
+ * 为什么不能只靠 app.js 行内写：`app.js` 是 module，天然 defer，首帧会先按 13px
+ * 画一屏再跳字号（暗色窗口里尤其明显）。
+ *
+ * 为什么没有 `tokens` 里：AC1 要求 `tokens` 的键**全部**是 `--magpie-*` 形态，
+ * 字号不属于 magpie 的令牌。所以另起一条 `html:root` 规则（同样特异性 0,1,1，
+ * 能压过 tokens.css / layout.css）。
+ *
+ * @param {number} textSize
+ * @returns {string}
+ */
+export function buildFontStyle(textSize) {
+  const px = fontPxForTextSize(textSize);
+  const scale = Math.round((px / 13) * 1000) / 1000;
+  if (px === 13) return "";
+  return `<style>html:root {\n  --mt-font-scale: ${scale};\n  font-size: ${px}px;\n}</style>`;
+}
+
+async function renderAppIndex(tokens, token, scheme, textSize) {
   const raw = await readAppFile("index.html");
-  const style = buildRootStyle(tokens);
+  const style = buildRootStyle(tokens) + buildFontStyle(textSize);
   const meta = token ? tokenMetaTag(token) : "";
   const injected = meta ? meta + "\n" + style : style;
+  // 首帧就要带 `is-dark` / `is-light`：ANSI 16 色与两套语义色都挂在这个类上
+  // （AC6）。如果等 app.js 跑到才加，暗色窗口里的终端会先白一帧。
+  // 同时也写 `data-mt-served`，告诉 tokens.css 「变量已经由服务端给过」，
+  // 那条兜底底色就不应该再生效。
+  const classes = scheme === "dark" || scheme === "light" ? `is-${scheme}` : "";
+  const withClass =
+    classes === "" ? raw : raw.replace("<html ", `<html class="${classes}" data-mt-served="1" `);
   // 在注释占位处注入；没有占位则插到 </head> 前。
   const marker = "<!-- 服务端在此处注入 <style>:root{…tokens…}</style> -->";
-  if (raw.includes(marker)) return raw.replace(marker, injected);
-  return raw.replace("</head>", injected + "\n" + "</head>");
+  if (withClass.includes(marker)) return withClass.replace(marker, injected);
+  return withClass.replace("</head>", injected + "\n" + "</head>");
 }
 
 /** 读请求体，超过上限返回 null 并已经回应 413。 */
@@ -361,6 +728,45 @@ export async function startServer(options = {}) {
   let wsHandle = null;
   // TASK-V4-H §5.1：AI 会话存储（REST 与 WS 共用一个实例，写链才能串行）。
   const aiSessions = options.aiSessions || createSessionStore({ log });
+
+  /**
+   * bridge 上报的主题令牌缓存（`POST /api/theme/bridge` 写，`GET /api/theme` 读）。
+   *
+   * 为什么必须缓存：带路页跳转之后 `window.magpie` 在应用页是 undefined
+   * （page/index.html:29 → boot.js:98），bridge 的 `onTheme` 就没人收了。
+   * 所以 boot 页在跳转**之前**把最新令牌 POST 给自己的服务，服务端存内存。
+   * 只存内存不落盘：令牌是观感数据（不是凭据），重启重走一遍带路页即可。
+   *
+   * @type {{tokens:Record<string,string>, scheme:"dark"|"light"|null, at:number}|null}
+   */
+  let bridgeTheme = options.bridgeTheme || null;
+
+  /** 取出当前主题（设置文件 + bridge 缓存），附上调用方的系统深浅色提示。 */
+  /**
+   * 取出当前主题（设置文件 + bridge 缓存），附上调用方的系统深浅色提示。
+   *
+   * **新鲜度规则（很关键）**：bridge 缓存是「页面被打开那一刻」的快照。用户之后
+   * 在 magpie 里改了主题，写的是 `settings.json`（mtime 会变新）。如果继续信快照，
+   * 页面就永远看不到变化——那正是本卡要修的「不刷新就不变色」。
+   * 所以：settings.json 的 mtime 比快照新时，**整份快照作废**（令牌与 scheme 都不再用）。
+   * 只丢 scheme 不行：旧令牌里的 `--magpie-bg` 是旧那一套配色，会得到「浅色主题
+   * + 深色背景」的半套色。丢了之后走 `MAGPIE_PALETTE`（magpie 自己的实测调色板），
+   * 颜色不会比用户自定义主题更差到哪里去，但至少深浅一致。
+   */
+  async function currentTheme(prefer) {
+    const { settings, ok, reason, mtimeMs } = await readMagpieSettings();
+    const bridgeIsFresh = Boolean(
+      bridgeTheme && (mtimeMs === null || mtimeMs === undefined || bridgeTheme.at >= mtimeMs),
+    );
+    const theme = composeTheme({
+      // 快照比设置文件旧 → 整份作废（只丢 scheme 不行：旧 bg 会得到半套色）。
+      bridgeTokens: bridgeIsFresh && bridgeTheme ? bridgeTheme.tokens : null,
+      bridgeScheme: bridgeIsFresh && bridgeTheme ? bridgeTheme.scheme : null,
+      settings,
+      prefer,
+    });
+    return { ...theme, settingsOk: ok, settingsReason: reason };
+  }
 
   server.on("request", (req, res) => {
     handleRequest(req, res).catch((err) => {
@@ -800,8 +1206,33 @@ export async function startServer(options = {}) {
         writeJson(res, 403, { code: "FORBIDDEN" });
         return;
       }
-      const tokens = decodeTokens(url.searchParams.get("tokens"));
-      const html = await renderAppIndex(tokens, token);
+      const queryTokens = decodeTokens(url.searchParams.get("tokens"));
+      // 首屏：query 的 bridge 令牌（如果有）+ magpie 设置文件（theme / accent）。
+      // 两路合起来才能保证「刷新一次页面、bridge 没给令牌」时颜色也对。
+      // 优先级：`?theme=dark|light`（带路页给的）> 设置文件的 theme > bridge > 兜底。
+      const queryTheme = url.searchParams.get("theme");
+      const preferRaw = url.searchParams.get("prefer");
+      const prefer = preferRaw === "dark" || preferRaw === "light" ? preferRaw : null;
+      const { settings } = await readMagpieSettings();
+      const queryScheme = queryTheme === "dark" || queryTheme === "light" ? queryTheme : null;
+      // bridge 令牌顺手存进进程内缓存：带路页跳转后 window.magpie 就没了
+      // （bridge 只注入到带路页那个 origin），这是唯一能把它们带过来的通道。
+      // 只存「确实解出了东西」的那次，避免手敲一个空 query 把好缓存抹掉。
+      if (queryTokens && Object.keys(queryTokens).length > 0) {
+        bridgeTheme = {
+          tokens: queryTokens,
+          scheme: queryScheme || resolveScheme(queryTokens["--magpie-bg"] || "", {}),
+          at: Date.now(),
+        };
+      }
+      const effectiveSettings = queryScheme ? { ...settings, theme: queryScheme } : settings;
+      const composed = composeTheme({
+        bridgeTokens: queryTokens,
+        bridgeScheme: queryScheme || (queryTokens ? resolveScheme(queryTokens["--magpie-bg"] || "", {}) : null),
+        settings: effectiveSettings,
+        prefer,
+      });
+      const html = await renderAppIndex(composed.tokens, token, composed.scheme, composed.textSize);
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "content-length": Buffer.byteLength(html),
@@ -1058,6 +1489,57 @@ export async function startServer(options = {}) {
           {},
           cors,
         );
+        return;
+      }
+
+      /* --------------------------------------------------------- *
+       * 主题（TASK-FIX17-B R1）
+       *
+       *   GET  /api/theme?prefer=dark|light   当前主题（变量表 + 深浅色 + 字号）
+       *   POST /api/theme/bridge              bridge 令牌上报（boot 页跳转前调）
+       *
+       * token 已在上面的 isApi 分支验过；与 /api/models 同级，不做例外。
+       *
+       * 为什么需要 GET /api/theme：magpie 改了主题后，页面不能刷——`page/boot.js`
+       * 已经跳走了，`window.magpie` 在这个 origin 是 undefined，bridge 的 onTheme
+       * 收不到事件。唯一的冷态通道就是服务端现读 magpie 的设置文件。
+       * --------------------------------------------------------- */
+      if (req.method === "GET" && pathname === "/api/theme") {
+        const preferRaw = url.searchParams.get("prefer");
+        const prefer = preferRaw === "dark" || preferRaw === "light" ? preferRaw : null;
+        const payload = await currentTheme(prefer);
+        writeJson(res, 200, payload, {}, cors);
+        return;
+      }
+
+      if (pathname === "/api/theme/bridge") {
+        if (req.method !== "POST") {
+          writeJson(res, 405, { code: "METHOD_NOT_ALLOWED", userText: "这个接口只支持 POST。" }, {}, cors);
+          return;
+        }
+        const body = await readBody(req, res);
+        if (res.writableEnded) return;
+        const parsed = parseJsonBody(body);
+        if (!parsed) {
+          writeJson(res, 400, { code: "BAD_BODY", userText: "请求体必须是 JSON 对象。" }, {}, cors);
+          return;
+        }
+        // 令牌与深浅色都要过白名单：这是唯一一个「进程外写入主题」的入口。
+        const { tokens, dropped } = sanitizeTokens(parsed.tokens);
+        const rawScheme = parsed.dark === true ? "dark" : parsed.dark === false ? "light" : null;
+        const scheme = rawScheme || resolveScheme(tokens["--magpie-bg"] || "", {});
+        bridgeTheme = { tokens, scheme, at: Date.now() };
+        log({
+          level: "info",
+          code: "THEME_BRIDGE",
+          msg: "bridge theme stored",
+          route: "POST /api/theme/bridge",
+          tokenCount: Object.keys(tokens).length,
+          // 只记丢弃的数量，**不记原值**（它可能是注入串）。
+          dropped,
+          scheme,
+        });
+        writeJson(res, 200, { ok: true, stored: Object.keys(tokens).length, dropped, scheme }, {}, cors);
         return;
       }
 

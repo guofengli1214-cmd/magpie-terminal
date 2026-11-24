@@ -11,6 +11,32 @@ function readVar(name) {
   }
 }
 
+/**
+ * 读终端字号（px）。
+ *
+ * TASK-FIX17-B AC7：`--term-font-size` 现在是 `calc(13px * var(--mt-font-scale))`。
+ * **自定义属性的 computed 值不会把 `calc()` 算开**（按规范它们是「已替换的指定值」），
+ * 所以 `getComputedStyle(root).getPropertyValue('--term-font-size')` 读到的是字面串
+ * `calc(13px * 1.3)`，`parseFloat` 得 NaN。
+ *
+ * 因此这里的读取顺序是：
+ *   ① `--mt-font-scale`（app.js 写的纯数字，最准）→ 13 × scale
+ *   ② 万一是老的硬编码 px（A 批的形态）→ 直接 `parseFloat`
+ *   ③ 都读不到 → 13px
+ *
+ * @returns {number}
+ */
+function readFontSize() {
+  const scale = Number.parseFloat(readVar("--mt-font-scale"));
+  if (Number.isFinite(scale) && scale >= 0.5 && scale <= 4) {
+    return Math.round(13 * scale * 100) / 100;
+  }
+  const literal = readVar("--term-font-size").replace(/calc\([^)]*\)/g, "");
+  const parsed = Number.parseFloat(literal);
+  if (Number.isFinite(parsed) && parsed >= 6 && parsed <= 72) return parsed;
+  return 13;
+}
+
 // 颜色只来自 tokens.css 里的 CSS 变量；这里不写任何颜色字面量。
 function buildTheme() {
   const pick = (name) => readVar(name) || undefined;
@@ -81,7 +107,7 @@ export default function createTerminalView(elements) {
     pane.hidden = true;
     host.appendChild(pane);
 
-    const fontSize = Number.parseInt(readVar("--term-font-size"), 10) || 13;
+    const fontSize = readFontSize();
     const lineHeightRaw = Number.parseFloat(readVar("--term-line-height")) || 1.2;
     const fontFamily = `${readVar("--term-mono") || "ui-monospace, Menlo, Consolas, monospace"}, ui-monospace, Menlo, Consolas, monospace`;
 
@@ -246,7 +272,7 @@ export default function createTerminalView(elements) {
       pane.style.visibility = "hidden";
       pane.style.pointerEvents = "none";
       host.appendChild(pane);
-      const fontSize = Number.parseInt(readVar("--term-font-size"), 10) || 13;
+      const fontSize = readFontSize();
       const lineHeightRaw = Number.parseFloat(readVar("--term-line-height")) || 1.2;
       const fontFamily = `${readVar("--term-mono") || "ui-monospace, Menlo, Consolas, monospace"}, ui-monospace, Menlo, Consolas, monospace`;
       let terminal = null;
@@ -337,13 +363,32 @@ export default function createTerminalView(elements) {
       for (const id of views.keys()) scheduleFit(id);
     },
     refreshTheme() {
-      // TASK-FIX17-A R4：这个函数原本从未被调用（终端配色永远停在构造时那一次）。
-      // 现在改主题 / 字号 / 令牌晚到时都会走它（见 app.js 的 applyTheme 与 fit）。
-      // 实现改成「先同步配色、再重新 fit」：只改 theme 不重新 fit，字宽变了会裁右边。
+      // TASK-FIX17-B R3 / AC5：把「当前 CSS 变量算出来的配色」同步到**所有**实例。
+      //
+      // 修之前只 sync 了当前那一个（A 批接上了调用路径，但只 refresh 了一个），
+      // 结果是 magpie 换主题时后台标签页的终端还停在旧配色。
+      // 现在遍历 `views`：每个实例都重读变量、重写 theme、重新 fit
+      // （字号可能跟着 textSize 变了，不重新 fit 会裁掉右边几列）。
+      // 由 app.js 的 createThemeSync 驱动（启动一发 + 1s 轮询 + visibilitychange/focus）。
+      //
+      // @returns {number} 真正发生了变更的实例数（测试与调试用）
+      let changed = 0;
+      const fontSize = readFontSize();
       for (const view of views.values()) {
-        syncTheme(view);
+        if (syncTheme(view)) changed += 1;
+        // 字号可能变了（magpie textSize）：xterm 的 fontSize 是构造时的值，
+        // 只改 CSS 变量不会重排，所以这里同步写一次再 fit。
+        if (view.terminal && view.terminal.options && view.terminal.options.fontSize !== fontSize) {
+          try {
+            view.terminal.options.fontSize = fontSize;
+            changed += 1;
+          } catch {
+            // 旧版本 xterm 不允许改 fontSize：忽略，下次新建实例时会读到新值。
+          }
+        }
         scheduleFit(view.id);
       }
+      return changed;
     },
     recentOutput(id, lines) {
       const view = views.get(id);
@@ -378,6 +423,59 @@ export default function createTerminalView(elements) {
       const view = views.get(id);
       if (!view) return { cols: 80, rows: 24 };
       return { cols: view.terminal.cols, rows: view.terminal.rows };
+    },
+    /**
+     * 验收/排查用：读某个实例**真正在用**的 xterm theme 对象与字号。
+     *
+     * 为什么不能只看 CSS 变量：xterm 的 theme 是构造时传入的 JS 对象，
+     * 改 CSS 变量不会自动生效（theme-tokens.md §4）。「页面变白了、终端还是黑的」
+     * 就是只改了变量、没同步实例造成的。所以 AC5 的断言必须落到这里。
+     *
+     * @param {string} [id] 不给就用第一个实例
+     * @returns {{id:string|null, background:string|null, foreground:string|null, white:string|null, black:string|null, fontSize:number|null, count:number}}
+     */
+    themeReport(id) {
+      const target = id ? views.get(id) : views.values().next().value;
+      if (!target) {
+        return { id: null, background: null, foreground: null, palette: {}, fontSize: null, count: views.size };
+      }
+      const theme = (target.terminal.options && target.terminal.options.theme) || {};
+      // 把 16 色 ANSI 也带出来：AC5 要断言的是「用户屏幕上那套色」的对比度，
+      // 不是 CSS 里写了什么。变量相等不代表实例上写对了（theme 是构造时的快照）。
+      const palette = {};
+      for (const key of [
+        "black",
+        "red",
+        "green",
+        "yellow",
+        "blue",
+        "magenta",
+        "cyan",
+        "white",
+        "brightBlack",
+        "brightRed",
+        "brightGreen",
+        "brightYellow",
+        "brightBlue",
+        "brightMagenta",
+        "brightCyan",
+        "brightWhite",
+      ]) {
+        palette[key] = theme[key] || null;
+      }
+      return {
+        id: target.id,
+        background: theme.background || null,
+        foreground: theme.foreground || null,
+        white: theme.white || null,
+        black: theme.black || null,
+        palette,
+        fontSize:
+          target.terminal.options && Number.isFinite(target.terminal.options.fontSize)
+            ? target.terminal.options.fontSize
+            : null,
+        count: views.size,
+      };
     },
     dispose(id) {
       const view = views.get(id);
