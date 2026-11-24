@@ -51,7 +51,12 @@ html, body {
 }
 
 /* 覆盖式抽屉：宽度变化只影响自己，终端列数不变。
-   pointer-events 关闭态要关掉，否则透明区域会挡住终端点击。 */
+   pointer-events 关闭态要关掉，否则透明区域会挡住终端点击。
+
+   visibility 也必须跟着关：`pointer-events: none` 只挡鼠标，**挡不住键盘焦点** ——
+   收起后 agent-input 仍能被 Tab / 程序聚焦、能打字、回车就发（TASK-V4-S §6.9，
+   P0-焦点-b 实测）。JS 那边还加了 inert + aria-hidden，CSS 这层是旧 WebView2 的兜底。
+   过渡时长必须与滑动一致用 0.18s，否则抽屉会「瞬间消失」再滑。 */
 [data-role="ai-drawer"] {
   position: absolute;
   top: 0;
@@ -69,14 +74,23 @@ html, body {
   background: var(--term-panel-bg);
   box-shadow: -20px 0 48px var(--term-shadow);
   transform: translateX(100%);
-  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  /* 展开时 visibility 立刻切换（0s 延迟），收起时延后 0.18s 等滑完。 */
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0s;
+  visibility: visible;
   will-change: transform;
   pointer-events: none;
+}
+
+/* 收起态：滑完再把 visibility 切掉（延迟 0.18s），否则抽屉会先消失再滑。 */
+[data-role="app"][data-ai-open="false"] [data-role="ai-drawer"] {
+  visibility: hidden;
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0.18s;
 }
 
 [data-role="app"][data-ai-open="true"] [data-role="ai-drawer"] {
   transform: translateX(0);
   pointer-events: auto;
+  visibility: visible;
 }
 
 [data-role="tabbar"] {

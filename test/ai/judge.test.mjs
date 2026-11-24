@@ -316,3 +316,138 @@ test("config 缺失也不抛错", async () => {
   const verdict = await judge({ command: "ls -la", review: reviewer({ risk: "safe" }) });
   assert.equal(verdict.decision, "auto");
 });
+
+// ===========================================================================
+// TASK-V4-S §6.3 S11 / §6.6 J1–J4
+// ===========================================================================
+
+test("S11：用户白名单写 cat 也不能自动放行读密钥（第 1.5 级）", async () => {
+  const review = reviewer({ risk: "safe" });
+  const config = {
+    ...baseConfig,
+    autonomy: "loose",
+    allowlist: [{ pattern: "cat", mode: "prefix", enabled: true }],
+  };
+  const verdict = await judge({ command: "cat secrets.key", config, review });
+  assert.equal(verdict.decision, "confirm");
+  assert.equal(verdict.hit, "deny:sensitive-path");
+  assert.equal(review.calls.length, 0, "敏感路径不该去调审阅");
+});
+
+test("S11b：敏感路径在任何档位都 confirm，且白名单命中不了", async () => {
+  for (const autonomy of ["strict", "balanced", "loose"]) {
+    const review = reviewer({ risk: "safe" });
+    const config = {
+      ...baseConfig,
+      autonomy,
+      allowlist: [{ pattern: "cat", mode: "prefix", enabled: true }],
+    };
+    const verdict = await judge({ command: "cat ~/.ssh/id_rsa", config, review });
+    assert.equal(verdict.decision, "confirm", `${autonomy} 档必须 confirm`);
+    assert.equal(verdict.hit, "deny:sensitive-path");
+    assert.equal(review.calls.length, 0);
+  }
+});
+
+test("J1：含换行的复合命令不许交给审阅（P1-3）", async () => {
+  const review = reviewer({ risk: "safe" });
+  const verdict = await judge({
+    command: "echo hi\nrm -rf /x",
+    config: { ...baseConfig, autonomy: "balanced" },
+    review,
+  });
+  assert.equal(verdict.decision, "confirm");
+  assert.equal(verdict.hit, "unparsable");
+  assert.equal(review.calls.length, 0, "切不开的命令不该去调审阅");
+});
+
+test("J2：输出重定向不许交给审阅", async () => {
+  const review = reviewer({ risk: "safe" });
+  const verdict = await judge({
+    command: "ls > out.txt",
+    config: { ...baseConfig, autonomy: "balanced" },
+    review,
+  });
+  assert.equal(verdict.decision, "confirm");
+  assert.equal(verdict.hit, "redirect");
+  assert.equal(review.calls.length, 0);
+});
+
+test("J3：命令替换不许交给审阅", async () => {
+  const review = reviewer({ risk: "safe" });
+  const verdict = await judge({
+    command: "echo $(rm -rf x)",
+    config: { ...baseConfig, autonomy: "balanced" },
+    review,
+  });
+  assert.equal(verdict.decision, "confirm");
+  assert.equal(verdict.hit, "substitution");
+  assert.equal(review.calls.length, 0);
+});
+
+test("J3b：引号不闭合与后台执行也都不交审阅", async () => {
+  for (const command of ['echo "unclosed', "ls & rm x", "echo hi \\"]) {
+    const review = reviewer({ risk: "safe" });
+    const verdict = await judge({ command, config: { ...baseConfig, autonomy: "balanced" }, review });
+    assert.equal(verdict.decision, "confirm", `${command} 必须 confirm`);
+    assert.equal(review.calls.length, 0, `${command} 不该调审阅（hit=${verdict.hit}）`);
+  }
+});
+
+test("J4：正常命令照旧走审阅（不回退成 confirm-only）", async () => {
+  const review = reviewer({ risk: "safe" });
+  const verdict = await judge({
+    command: "npm run build",
+    config: { ...baseConfig, autonomy: "balanced" },
+    review,
+  });
+  assert.equal(verdict.decision, "auto");
+  assert.equal(review.calls.length, 1, "正常路径必须调一次审阅");
+});
+
+// ===========================================================================
+// TASK-V4-S §6.5 P1-2：`rm -rf ~/` 归一后进硬禁止第 1 级，
+// judge 在 forbiddenReason 就返回，永远走不到审阅。
+// 修前：loose 档 + 假审阅 caution/reversible → auto（VERIFY-V4-G §4 P1-2 逐字复现）。
+// ===========================================================================
+
+test("P1-2：rm -rf ~/ 在宽松档 + 审阅 caution 下仍 confirm，且审阅未被调用", async () => {
+  const review = reviewer({ risk: "caution", reversible: true, why: "清理家目录里的临时文件" });
+  const verdict = await judge({
+    command: "rm -rf ~/",
+    config: { ...baseConfig, autonomy: "loose", reviewModel: "some/model" },
+    model: "m/x",
+    review,
+  });
+  assert.equal(verdict.decision, "confirm", `实际 decision=${verdict.decision} reason=${verdict.reason}`);
+  assert.ok(/硬性禁止/.test(verdict.reason), `reason 应以「硬性禁止」开头：${verdict.reason}`);
+  assert.equal(review.calls.length, 0, "硬禁止不该去调审阅");
+});
+
+test("P1-2b：其余 P1-1 变体也都在第 1 级被拦（任何档位）", async () => {
+  for (const command of [
+    "rm -rf $HOME/",
+    "rm -rf ~/.",
+    "rm -rf //",
+    "rm -rf /**",
+    "rm -rf /./",
+    "rm -rf /tmp/../..",
+    "chmod 777 /",
+    "rd /s /q C:\\",
+    "Remove-Item -Recurse -Force C:\\",
+    "del /f /s /q C:\\Users",
+  ]) {
+    for (const autonomy of ["strict", "balanced", "loose"]) {
+      const review = reviewer({ risk: "caution", reversible: true });
+      const verdict = await judge({
+        command,
+        config: { ...baseConfig, autonomy, reviewModel: "some/model" },
+        model: "m/x",
+        review,
+      });
+      assert.equal(verdict.decision, "confirm", `${command} @${autonomy} 必须 confirm`);
+      assert.ok(/硬性禁止/.test(verdict.reason), `${command} @${autonomy} reason=${verdict.reason}`);
+      assert.equal(review.calls.length, 0, `${command} @${autonomy} 不该调审阅`);
+    }
+  }
+});

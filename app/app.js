@@ -507,9 +507,35 @@ function toggleAi() {
 
 /** #root[data-ai-open] / 把手 aria-expanded 的唯一同步点。
  *  覆盖式抽屉不改终端宽度，所以这里绝不调用 terminalView.resizeAll()/fit：
- *  那会触发 pty.resize → SIGWINCH → bash 多画一行提示符。 */
+ *  那会触发 pty.resize → SIGWINCH → bash 多画一行提示符。
+ *
+ *  TASK-V4-S §6.9（P0-焦点-b）：收起态必须真的不可交互。
+ *  只靠 `transform: translateX(100%)` 把抽屉挪出视野不够 —— 里面的输入框仍然
+ *  能 Tab 到、能程序聚焦、能打字、回车能把请求发出去（VERIFY-V4-G §7 用 CDP
+ *  打 20 个字符全都进了看不见的输入框，用户完全看不到自己打了什么）。 */
 function applyAiOpen(open) {
   root.setAttribute("data-ai-open", open ? "true" : "false");
+  if (aiDrawerHost) {
+    // 三重关死：inert 挡聚焦与点击，aria-hidden 挡读屏，CSS visibility 兜底旧 WebView2
+    //（旧内核不认 inert 时至少还看不见、点不到）。
+    if (open) {
+      aiDrawerHost.removeAttribute("inert");
+      aiDrawerHost.removeAttribute("aria-hidden");
+    } else {
+      aiDrawerHost.setAttribute("inert", "");
+      aiDrawerHost.setAttribute("aria-hidden", "true");
+      // 焦点如果还在抽屉里，挪到把手上 —— 否则 inert 会让焦点掉到 <body>，
+      // 下一次 Tab 从头开始，用户会以为自己按丢了。
+      const active = document.activeElement;
+      if (active && aiDrawerHost.contains(active)) {
+        try {
+          if (aiHandle) aiHandle.focus();
+        } catch {
+          // 忽略。
+        }
+      }
+    }
+  }
   if (aiHandle) {
     aiHandle.setAttribute("aria-expanded", open ? "true" : "false");
     aiHandle.setAttribute("title", open ? "收起 AI 助手" : "打开 AI 助手");

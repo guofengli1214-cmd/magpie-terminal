@@ -7,8 +7,23 @@ import {
   DANGEROUS_ARGUMENTS,
   PARAM_ARGUMENTS,
 } from "./allowlist.mjs";
+// 切段只有一份实现（TASK-V4-S §6.2）：用户白名单也用它，两份实现会漂移开新口子。
+import { splitSegments } from "./segments.mjs";
+import { isSensitivePath } from "./sensitive.mjs";
 
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * 「会吐出文件内容」的只读命令头。
+ *
+ * `ls` / `dir` / `pwd` / `echo` / `netstat` / `ss` / `ping` / `where`(无参) 都**不在**里面：
+ * 它们不吐文件内容，把它们列进来只会造成误伤（`ls ~/.ssh` 看文件名并不泄露密钥）。
+ *
+ * 注意 `where` 在默认层级软件靠 PARAM_ARGUMENTS 判定，实际吐路径不开内容；
+ * 为了与卡 §6.3 的表一致，这里仍包含 `where` / `which` —— 它们只是列路径，
+ * 但列出敏感目录下有什么文件本身就是信息泄露，宁可多确认。
+ */
+const READ_HEADS = new Set(["cat", "type", "head", "tail", "stat", "grep", "where", "which"]);
 
 function verdict(decision, reason, hit) {
   return { decision, reason, hit };
@@ -50,118 +65,6 @@ export function classify(command, opts = {}) {
   } catch {
     return verdict("confirm", "判定过程异常，按危险处理", "exception");
   }
-}
-
-/**
- * 按 && || ; | 切段，同时拒绝无法安全切分的构造。
- */
-function splitSegments(input) {
-  const segments = [];
-  let current = "";
-  let quote = "";
-  let any = false;
-
-  for (let i = 0; i < input.length; i += 1) {
-    const ch = input[i];
-    const next = input[i + 1];
-
-    if (quote === "'") {
-      current += ch;
-      if (ch === "'") quote = "";
-      continue;
-    }
-
-    if (quote === '"') {
-      current += ch;
-      if (ch === "\\" && i + 1 < input.length) {
-        current += input[i + 1];
-        i += 1;
-        continue;
-      }
-      if (ch === '"') quote = "";
-      if (ch === "`") {
-        return { ok: false, reason: "命令替换无法静态判定", hit: "substitution" };
-      }
-      if (ch === "$" && next === "(") {
-        return { ok: false, reason: "命令替换无法静态判定", hit: "substitution" };
-      }
-      continue;
-    }
-
-    if (ch === "\\") {
-      if (i + 1 >= input.length) {
-        return { ok: false, reason: "命令以反斜杠结尾，无法切分", hit: "unparsable" };
-      }
-      current += ch + input[i + 1];
-      i += 1;
-      continue;
-    }
-
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      current += ch;
-      continue;
-    }
-
-    if (ch === "`") {
-      return { ok: false, reason: "命令替换无法静态判定", hit: "substitution" };
-    }
-    if (ch === "$" && next === "(") {
-      return { ok: false, reason: "命令替换无法静态判定", hit: "substitution" };
-    }
-    if (ch === "\n" || ch === "\r") {
-      return { ok: false, reason: "命令含换行，无法按单行切分", hit: "unparsable" };
-    }
-    if (ch === ">") {
-      return { ok: false, reason: "命令含输出重定向，可能写文件", hit: "redirect" };
-    }
-    if (ch === "<") {
-      return { ok: false, reason: "命令含输入重定向，无法判定来源", hit: "redirect" };
-    }
-
-    if (ch === "&") {
-      if (next === "&") {
-        segments.push(current);
-        current = "";
-        any = true;
-        i += 1;
-        continue;
-      }
-      return { ok: false, reason: "命令含后台执行符号", hit: "unparsable" };
-    }
-
-    if (ch === "|") {
-      segments.push(current);
-      current = "";
-      any = true;
-      if (next === "|") i += 1;
-      continue;
-    }
-
-    if (ch === ";") {
-      segments.push(current);
-      current = "";
-      any = true;
-      continue;
-    }
-
-    current += ch;
-  }
-
-  if (quote !== "") {
-    return { ok: false, reason: "引号不闭合，命令无法切分", hit: "unparsable" };
-  }
-
-  segments.push(current);
-
-  const cleaned = segments.map((s) => s.trim());
-  if (cleaned.some((s) => s.length === 0)) {
-    return { ok: false, reason: "存在空命令段，命令无法切分", hit: "unparsable" };
-  }
-  if (!any && cleaned.length === 1 && cleaned[0].length === 0) {
-    return { ok: false, reason: "空命令不执行", hit: "noop" };
-  }
-  return { ok: true, segments: cleaned };
 }
 
 /** 最小词法器：只认单 / 双引号与反斜杠。 */
@@ -394,6 +297,15 @@ function inspectSegment(segment, allowlist, denylist) {
   }
 
   if (allowlist.heads.includes(head)) {
+    // 敏感路径：命令头只读也要确认。放在「允许」之后统一拦，避免每个分支各写一遍。
+    // 为什么放在这里：allowlist.heads 分支是 cat / head / tail 这类「会吐文件内容」的
+    // 命令的唯一出口（它们不走子命令分支），所以这道拦在这里覆盖面最全。
+    if (READ_HEADS.has(head)) {
+      const hitPath = args.find((arg) => !arg.startsWith("-") && isSensitivePath(arg));
+      if (hitPath) {
+        return { ok: false, reason: "这条命令会读出密钥或凭据文件，需要你确认", hit: "deny:sensitive-path" };
+      }
+    }
     return { ok: true, hit: `allow:${head}` };
   }
 

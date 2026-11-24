@@ -4,12 +4,18 @@
 // 所有 /api/fs 请求都已经过了那道门）。但它必须自己把路径守死：
 //   - 必须是绝对路径（`path.isAbsolute`）
 //   - 不许含 NUL
-//   - 先 resolve() 再用（`..` 归一，符号链接不展开 —— 与用户 shell 的视角一致）
+//   - 先 resolve() 再用（`..` 归一）
+//   - 敏感路径用**真实路径**判定（TASK-V4-S §6.7，P1-4）：
+//     以前只 resolve 不展开符号链接 / junction，于是建一个指向家目录的 junction
+//     再经它列表就能读到不该读的目录（VERIFY-V4-G §4 P1-4 实测 139 条）。
+//     现在读操作先 realpath 再判敏感；写 / 删 / 新建要求 realpath 与 resolve 一致，
+//     这样「经链接写到别处」「以为删的是链接其实删的是目标目录」都被拒。
 //   - 删除的禁区：盘根、家目录根本身
 //
 // 错误一律抛 `{code, userText}`（中文人话），由路由层翻成 HTTP 状态码。
 
 import { createReadStream } from "node:fs";
+import { realpath } from "node:fs/promises";
 import {
   mkdir,
   open,
@@ -23,6 +29,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { isSensitivePath } from "../policy/sensitive.mjs";
 
 /** 文本查看的默认上限（1 MB）。 */
 export const MAX_READ_BYTES = 1024 * 1024;
@@ -67,6 +74,59 @@ export function guardPath(input, opts = {}) {
     throw fsError("INVALID_PATH", `${label}解析不出绝对路径。`);
   }
   return resolved;
+}
+
+/**
+ * 取真实路径（展开符号链接 / junction）。
+ *
+ * 目标还不存在时（新建文件 / 新建文件夹 / 第一次上传）返回原路径：
+ * 这种场景没有「链接后面藏着什么」的问题，调用方会再对父目录做一次真实路径检查。
+ *
+ * @param {string} target 已经过 guardPath 的绝对路径
+ * @returns {Promise<string>}
+ */
+export async function realPathOf(target) {
+  try {
+    return await realpath(target);
+  } catch {
+    // ENOENT（目标还不存在）/ EACCES（父目录不可读）：按「就是它自己」处理。
+    return target;
+  }
+}
+
+/**
+ * 读操作（列目录 / 读文件 / 下载 / stat）的敏感路径判定。
+ *
+ * 用真实路径判，而不是用户给的字符串：junction / 符号链接会把 `C:	mp\link`
+ * 指到家目录，只比字符串就全漏。
+ *
+ * @param {string} real 真实路径
+ * @returns {string|null} 拒绝原因（中文）或 null
+ */
+export function sensitiveBlockedReason(real) {
+  if (isSensitivePath(real)) return "这个位置是密钥或凭据目录，不能通过文件面板访问。";
+  return null;
+}
+
+/**
+ * 写 / 删 / 新建前的跨链接检查：真实路径必须与 resolve 结果一致。
+ *
+ * 为什么：经符号链接 / junction 的写入与删除会落到「看起来不是这里」的地方 ——
+ * 用户以为删的是链接，实际删的是目标目录里的文件。宁可拒绝。
+ *
+ * 目标不存在时 realPathOf 返回 target，比较相等 → 放行（正常的新建场景）。
+ *
+ * @param {string} target 已经过 guardPath 的绝对路径
+ * @param {{label?:string}} [opts]
+ */
+async function assertNoLinkHop(target, opts = {}) {
+  const label = opts.label || "这个路径";
+  const real = await realPathOf(target);
+  if (path.resolve(real) !== path.resolve(target)) {
+    throw fsError("FORBIDDEN_PATH", `${label}经过符号链接，为安全起见不能写入或删除。`);
+  }
+  const blocked = sensitiveBlockedReason(path.resolve(real));
+  if (blocked) throw fsError("FORBIDDEN_PATH", blocked);
 }
 
 /**
@@ -134,6 +194,10 @@ function typeOf(info) {
  */
 export async function listDirectory(rawPath) {
   const target = guardPath(rawPath);
+  // P1-4：用真实路径判敏感（junction 指家目录时只比字符串会全漏）。
+  const realListing = await realPathOf(target);
+  const listingBlocked = sensitiveBlockedReason(realListing);
+  if (listingBlocked) throw fsError("FORBIDDEN_PATH", listingBlocked);
   let info;
   try {
     info = await fsStat(target);
@@ -194,6 +258,9 @@ export function compareEntries(a, b) {
  */
 export async function readTextFile(rawPath, opts = {}) {
   const target = guardPath(rawPath);
+  const realRead = await realPathOf(target);
+  const readBlocked = sensitiveBlockedReason(realRead);
+  if (readBlocked) throw fsError("FORBIDDEN_PATH", readBlocked);
   const maxBytes =
     Number.isFinite(Number(opts.maxBytes)) && Number(opts.maxBytes) > 0
       ? Math.min(Number(opts.maxBytes), MAX_READ_BYTES)
@@ -243,7 +310,10 @@ export async function readTextFile(rawPath, opts = {}) {
  */
 export async function writeFileAtomic(rawPath, data) {
   const target = guardPath(rawPath, { label: "目标路径" });
+  // P1-4：目标与父目录都不许经链接跳过去（新建时目标不存在，realPathOf 返回它自己）。
+  await assertNoLinkHop(target, { label: "目标路径" });
   const parent = path.dirname(target);
+  await assertNoLinkHop(parent, { label: "目标目录" });
   let parentInfo;
   try {
     parentInfo = await fsStat(parent);
@@ -294,6 +364,10 @@ export async function writeFileAtomic(rawPath, data) {
  */
 export async function makeDirectory(rawPath) {
   const target = guardPath(rawPath);
+  // 目标不存在时 realPathOf 返回它自己；已存在时若经链接就拒。
+  await assertNoLinkHop(target, { label: "这个路径" });
+  const parent = path.dirname(target);
+  await assertNoLinkHop(parent, { label: "上级目录" });
   try {
     await mkdir(target, { recursive: true });
   } catch (err) {
@@ -308,7 +382,9 @@ export async function makeDirectory(rawPath) {
  */
 export async function makeFile(rawPath) {
   const target = guardPath(rawPath);
+  await assertNoLinkHop(target, { label: "目标路径" });
   const parent = path.dirname(target);
+  await assertNoLinkHop(parent, { label: "目标目录" });
   try {
     await fsStat(parent);
   } catch (err) {
@@ -351,6 +427,10 @@ export async function renamePath(rawFrom, rawTo) {
   }
   const blocked = deletionBlockedReason(from);
   if (blocked) throw fsError("FORBIDDEN_PATH", `不能重命名：${blocked}`);
+  // 两端都不许经链接：重命名会把东西搬到「看起来不是这里」的地方。
+  await assertNoLinkHop(from, { label: "原路径" });
+  await assertNoLinkHop(to, { label: "新路径" });
+  await assertNoLinkHop(path.dirname(to), { label: "新路径的上级目录" });
   try {
     await fsStat(from);
   } catch (err) {
@@ -381,6 +461,17 @@ export async function removePath(rawPath, opts = {}) {
   const target = guardPath(rawPath);
   const blocked = deletionBlockedReason(target);
   if (blocked) throw fsError("FORBIDDEN_PATH", `不能删除：${blocked}`);
+  // P1-4：经 junction / 符号链接的删除，实际删的是**目标目录里的内容**，
+  // 用户以为自己删的只是链接。宁可拒绝，让他去资源管理器里自己处理。
+  const realRemoval = await realPathOf(target);
+  if (path.resolve(realRemoval) !== path.resolve(target)) {
+    throw fsError(
+      "FORBIDDEN_PATH",
+      "这个路径经过符号链接，为安全起见不能写入或删除。可以先用系统的文件管理器删掉链接本身。",
+    );
+  }
+  const removalBlocked = sensitiveBlockedReason(path.resolve(realRemoval));
+  if (removalBlocked) throw fsError("FORBIDDEN_PATH", removalBlocked);
   let info;
   try {
     info = await fsStat(target);
@@ -417,6 +508,9 @@ export async function removePath(rawPath, opts = {}) {
 /** @param {string} rawPath */
 export async function statPath(rawPath) {
   const target = guardPath(rawPath);
+  const realStat = await realPathOf(target);
+  const statBlocked = sensitiveBlockedReason(realStat);
+  if (statBlocked) throw fsError("FORBIDDEN_PATH", statBlocked);
   try {
     const info = await fsStat(target);
     return {
@@ -436,6 +530,9 @@ export async function statPath(rawPath) {
 /** 下载用的可读流；文件不存在 / 是目录都会先抛。 */
 export async function openDownloadStream(rawPath) {
   const target = guardPath(rawPath);
+  const realDownload = await realPathOf(target);
+  const downloadBlocked = sensitiveBlockedReason(realDownload);
+  if (downloadBlocked) throw fsError("FORBIDDEN_PATH", downloadBlocked);
   let info;
   try {
     info = await fsStat(target);
@@ -451,7 +548,9 @@ export async function openDownloadStream(rawPath) {
 /** 给上传用：把可读流写到目标文件（先 .tmp 再 rename）。 */
 export async function writeStreamAtomic(rawPath, readable, opts = {}) {
   const target = guardPath(rawPath, { label: "目标路径" });
+  await assertNoLinkHop(target, { label: "目标路径" });
   const parent = path.dirname(target);
+  await assertNoLinkHop(parent, { label: "目标目录" });
   try {
     const parentInfo = await fsStat(parent);
     if (!parentInfo.isDirectory()) throw fsError("NOT_A_DIRECTORY", "上传目标的父路径不是一个目录。");
@@ -493,7 +592,10 @@ export async function writeStreamAtomic(rawPath, readable, opts = {}) {
 
 /** 写一个小文本文件（上传本地路径时内部用；不导出到路由）。 */
 export async function writeTextFile(rawPath, text) {
-  await writeFile(guardPath(rawPath), String(text ?? ""), "utf8");
+  const target = guardPath(rawPath);
+  await assertNoLinkHop(target, { label: "目标路径" });
+  await assertNoLinkHop(path.dirname(target), { label: "目标目录" });
+  await writeFile(target, String(text ?? ""), "utf8");
   return { ok: true };
 }
 

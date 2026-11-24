@@ -464,16 +464,50 @@ export default function createSettingsPanel(elements) {
     setTimeout(() => closeModal(), 500);
   }
 
+  /**
+   * 设置页打开时要把「设置以外的东西」关死。
+   *
+   * 为什么要 inert：设置面板是 `role="dialog"`，但以前打开后 `document.activeElement`
+   * 仍是终端的 `TEXTAREA.xterm-helper-textarea` —— 用户以为自己在设置页，手一打字
+   * 命令就真的跑进 shell（VERIFY-V4-G §7 P0-焦点-a 用 CDP 真敲命令验证过）。
+   *
+   * 这三个容器都是 `#root`（data-role="app"）的直接子元素。
+   * 绝对不能给 `[data-role="settings-host"]` 设 inert：设置页自己就在里面。
+   */
+  const INERT_SELECTORS = ['[data-role="rail"]', '[data-role="main"]', '[data-role="statusbar"]'];
+
+  function setBackgroundInert(on) {
+    for (const selector of INERT_SELECTORS) {
+      const node = document.querySelector(selector);
+      if (!node) continue;
+      if (on) node.setAttribute("inert", "");
+      else node.removeAttribute("inert");
+    }
+  }
+
   function open() {
     if (opened) return;
     opened = true;
     focusBefore = document.activeElement;
     if (!backdrop) build();
     backdrop.hidden = false;
+    setBackgroundInert(true);
     document.addEventListener("keydown", onGlobalKeydown, true);
-    void load();
-    const focusTarget = backdrop.querySelector('[data-role="autonomy-option"]');
-    if (focusTarget) requestAnimationFrame(() => focusTarget.focus());
+    void load().then(() => {
+      // 焦点必须等 load() 建完 DOM 再进：autonomy-option 是 async load 里才渲染的，
+      // 之前用 rAF 时元素还不存在（实测焦点留在终端，打字直接跑进 shell）。
+      if (!opened) return;
+      const target =
+        backdrop.querySelector('[data-role="autonomy-option"]') ||
+        backdrop.querySelector("button, [href], input, select, textarea");
+      if (target && typeof target.focus === "function") {
+        try {
+          target.focus();
+        } catch {
+          // 忽略：焦点不是安全边界，失败也不该让设置页打不开。
+        }
+      }
+    });
   }
 
   function onGlobalKeydown(event) {
@@ -489,6 +523,8 @@ export default function createSettingsPanel(elements) {
     if (statusTimer) clearTimeout(statusTimer);
     statusTimer = null;
     if (backdrop) backdrop.hidden = true;
+    // 先解除 inert，再把焦点还回去：inert 还在时 focus() 会被忽略。
+    setBackgroundInert(false);
     if (focusBefore && typeof focusBefore.focus === "function") {
       try {
         focusBefore.focus();

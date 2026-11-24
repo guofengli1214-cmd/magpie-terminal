@@ -115,3 +115,49 @@ test("isValidAllowlistEntry 的形状契约", () => {
 test("上限常量是 200（PROTOCOL §1）", () => {
   assert.equal(ALLOWLIST_MAX_ENTRIES, 200);
 });
+
+// ---------------------------------------------------------------- TASK-V4-S §6.2 A1–A8
+// P0-2：prefix 白名单只能逐段命中。以前只看整串开头，`mkdir … && rm -rf …`
+// 会被整条自动执行（VERIFY-V4-G §4 P0-2 逐字复现）。
+
+test("A1：mkdir … && rm … 不命中（以前命中，就是 P0-2）", () => {
+  assert.equal(matchAllowlist("mkdir -p /tmp/x && rm -rf /tmp/victim", [prefix("mkdir")]), null);
+});
+
+test("A2：mkdir … ; rm … 不命中", () => {
+  assert.equal(matchAllowlist("mkdir -p /tmp/x; rm -rf /tmp/victim", [prefix("mkdir")]), null);
+});
+
+test("A3：mkdir … | tee … 不命中（管道后段不是 mkdir）", () => {
+  assert.equal(matchAllowlist("mkdir -p /tmp/x | tee /tmp/y", [prefix("mkdir")]), null);
+});
+
+test("A4：每一段都命中才放行 —— mkdir a && mkdir b", () => {
+  assert.equal(matchAllowlist("mkdir a && mkdir b", [prefix("mkdir")])?.hit, "mkdir");
+});
+
+test("A5：mkdir a b 仍命中（不误伤多参数）", () => {
+  assert.equal(matchAllowlist("mkdir a b", [prefix("mkdir")])?.hit, "mkdir");
+});
+
+test("A6：mkdirx / mkdirx a 仍不命中（词边界不回退）", () => {
+  assert.equal(matchAllowlist("mkdirx", [prefix("mkdir")]), null);
+  assert.equal(matchAllowlist("mkdirx a", [prefix("mkdir")]), null);
+});
+
+test("A7：exact 只认整条单段 —— npm run build && npm run test 不命中", () => {
+  assert.equal(matchAllowlist("npm run build && npm run test", [exact("npm run build")]), null);
+  assert.equal(matchAllowlist("npm run build", [exact("npm run build")])?.hit, "npm run build");
+});
+
+test("A8：ls && ls -la 命中（两段都命中同一条）", () => {
+  assert.equal(matchAllowlist("ls && ls -la", [prefix("ls")])?.hit, "ls");
+});
+
+test("A9：切不开的命令一律不命中（换行 / 重定向 / 命令替换 / 引号不闭合）", () => {
+  const list = [prefix("echo")];
+  assert.equal(matchAllowlist("echo hi\nrm -rf /x", list), null);
+  assert.equal(matchAllowlist("echo hi > out.txt", list), null);
+  assert.equal(matchAllowlist("echo $(rm -rf x)", list), null);
+  assert.equal(matchAllowlist('echo "unclosed', list), null);
+});

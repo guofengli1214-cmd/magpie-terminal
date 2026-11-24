@@ -9,6 +9,7 @@ import {
   checkHttpGate,
   checkToken,
   generateToken,
+  isNavigationRequest,
   maskToken,
   readToken,
   tokenMetaTag,
@@ -700,6 +701,20 @@ export async function startServer(options = {}) {
     // 根路径：带路页跳进来的入口。
     // 不再下发 cookie（沙箱 opaque origin 收不到也用不了）；口令注入 HTML 的 <meta>。
     if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
+      // P0-1（TASK-V4-S §6.1）：首页 HTML 里注入口令，所以只服务「用户真在打开页面」的
+      // 导航请求。`Origin: null`（沙箱 iframe 的 fetch）与 cors 模式一律不给 HTML。
+      if (!isNavigationRequest(req)) {
+        // 不给 HTML，也不给 ACAO：让恶意页连响应体都读不到。
+        // 这里刻意不用 writeForbidden（它带 cors），否则沙箱 fetch 能通过 CORS 读到 body。
+        log({
+          level: "warn",
+          code: "AUTH_NOT_NAVIGATION",
+          msg: "root html refused for non-navigation request",
+          route: `GET ${pathname}`,
+        });
+        writeJson(res, 403, { code: "FORBIDDEN" });
+        return;
+      }
       const tokens = decodeTokens(url.searchParams.get("tokens"));
       const html = await renderAppIndex(tokens, token);
       res.writeHead(200, {

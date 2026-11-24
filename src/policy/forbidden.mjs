@@ -14,6 +14,9 @@
 // 且白名单也绕不过。切段规则：`;` `&&` `||` `|` `&` 都算下一段的开始，
 // 每段的第一个 token（跳过 env/xargs/eval 这类包装器）才是命令头。
 
+import path from "node:path";
+import os from "node:os";
+
 /** 把任意空白压成一个空格并按此切词；引号剥掉（`rm -rf '/'` 与 `rm -rf /` 等价）。 */
 function tokenize(command) {
   return String(command)
@@ -244,24 +247,127 @@ function pipesIntoInterpreter(command) {
 }
 
 /** `rm` 的递归删除目标是否落在「危险目标」集合里（§8 表格第三类）。 */
-// 全部小写：isDangerousRmTarget 会先 toLowerCase 再比对。
-const DANGEROUS_RM_TARGETS = new Set([
-  "/",
-  "/*",
-  "~",
-  "~/*",
-  "$home",
-  "${home}",
-  "$home/*",
-  "${home}/*",
-  "c:\\",
-  "c:/",
-  "*",
-]);
+// 全部按归一形态书写：`normalizeDangerTarget()` 会把 `~/`、`$HOME/`、`~/.`、`//`、
+// `/./`、`/tmp/../..` 这些写法全部折成下面这几个形态（P1-1）。
+const DANGEROUS_RM_TARGETS = new Set(["/", "/*", "~", "~/*", "*", "c:", "c:/*"]);
 
-function isDangerousRmTarget(target) {
-  const t = String(target || "").toLowerCase();
-  return DANGEROUS_RM_TARGETS.has(t);
+/**
+ * 把删除目标归一成「比较用的形态」（TASK-V4-S §6.4，P1-1）。
+ *
+ * 为什么要归一：以前集合只认 11 个字面量（`/` `/ *` `~` `$HOME` `C:\` …），
+ * 带尾斜杠、`$HOME/`、`~/.`、`//`、`/./`、`/tmp/../..` 全部漏判
+ * （VERIFY-V4-G §4 P1-1 实测 11/11 漏判）。
+ *
+ * 规则（顺序不能变）：
+ *   1. 去首尾空白与成对引号
+ *   2. `\` → `/`
+ *   3. 小写
+ *   4. `$home` / `${home}` / `%userprofile%` → `~`
+ *   5. 折叠连续 `/`（`//` → `/`），并把尾部的 `/**` 折成 `/*`
+ *   6. 反复去掉尾部 `/` 与末尾 `/.`
+ *   7. 用 path.posix.normalize 处理 `..`（`/tmp/../..` → `/`、`$HOME//x/..` → `~`）
+ *   8. `//` 已经是 `/`；`..` 开头的形态不在本函数内判，由 `isDangerousRmTarget()` 当危险处理
+ *
+ * `/**` 与 `/*` 归一后同一个形态（第 5 步的尾部折叠）。
+ *
+ * @param {unknown} target
+ * @returns {string}
+ */
+export function normalizeDangerTarget(target) {
+  let text = String(target === undefined || target === null ? "" : target).trim();
+  // 1) 成对引号（`rm -rf '/'` 与 `rm -rf /` 等价）。
+  if (text.length >= 2) {
+    const first = text[0];
+    const last = text[text.length - 1];
+    if ((first === "'" || first === '"') && last === first) text = text.slice(1, -1).trim();
+  }
+  // 2) 反斜杠统一成正斜杠。
+  text = text.replace(/\\/g, "/");
+  // 3) 小写。
+  text = text.toLowerCase();
+  // 4) 家目录变量的各种写法。
+  text = text.replace(/\$\{home\}/g, "~").replace(/\$home/g, "~").replace(/%userprofile%/g, "~");
+  // 5) 折叠连续斜杠（`//` → `/`），但保留开头的 `//`（UNC 风格）供第 8 步判定。
+  const leadingDouble = text.startsWith("//");
+  text = text.replace(/\/{2,}/g, "/");
+  // 5b) 通配符尾斜杠：`/**` / `~/**` 与 `/*` / `~/*` 是同一回事，
+  //     先在尾部折叠一次（否则下面的尾斜杠规则碰不到它，`/**` 会原样漏网）。
+  text = text.replace(/\/\*\*$/, "/*");
+  // 6) 反复去尾部 `/` 与 `/.`。`~/` → `~`，`~/.` → `~`，`/./` → `/`。
+  let previous = null;
+  while (previous !== text) {
+    previous = text;
+    // `/.` 就是根、`~/.` 就是家目录：先折它们，否则 `/./` 会被尾部斜杠规则削成空串。
+    if (text === "/.") {
+      text = "/";
+      continue;
+    }
+    if (text === "~/.") {
+      text = "~";
+      continue;
+    }
+    if (text.length > 2 && text.endsWith("/.")) {
+      text = text.slice(0, -2);
+      continue;
+    }
+    if (text.length > 1 && text.endsWith("/")) {
+      text = text.slice(0, -1);
+      continue;
+    }
+  }
+  // 7) `..` 归一。只对纯 POSIX 形式走 posix.normalize（`~` 开头的交给第 6 步的规则）。
+  if (text.startsWith("/")) {
+    // path.posix 只做字符串处理，不碰文件系统，跨平台行为一致（`/tmp/../..` → `/`）。
+    text = path.posix.normalize(text);
+  } else if (text.startsWith("~/")) {
+    // `~` 开头的也要处理 `..`：`$HOME//x/..` 折成 `~`（家目录本身，属危险目标）。
+    const rest = path.posix.normalize(text.slice(1));
+    text = rest === "/" || rest.length === 0 ? "~" : `~${rest}`;
+  }
+  // 再跑一次尾部清理：posix.normalize('/tmp/../..') 在部分平台上会留下尾斜杠形态。
+  if (text.length > 1 && text.endsWith("/")) text = text.slice(0, -1);
+  if (text === "/.") text = "/";
+  // 8) `//`（UNC/盘根变体）统一成 `/`；`..` 开头交给 isDangerousRmTarget 判危险。
+  if (leadingDouble && text === "/") return "/";
+  return text;
+}
+
+/**
+ * 归一后落在集合里 / 明显是向上越界的（`..` 开头 / UNC 盘根）都算危险目标。
+ * @param {unknown} target
+ * @returns {boolean}
+ */
+export function isDangerousRmTarget(target) {
+  const t = normalizeDangerTarget(target);
+  if (DANGEROUS_RM_TARGETS.has(t)) return true;
+  // 归一后仍是 `..` 开头（`rm -rf ../../..` 这种向上跑到根）：按危险处理。
+  if (t === ".." || t.startsWith("../")) return true;
+  // 只有盘符（`c:` / `d:`）：那是盘根。
+  if (/^[a-z]:$/.test(t)) return true;
+  return false;
+}
+
+/**
+ * cmd / PowerShell 删除用的加严判据：除了根与家目录，**家目录的父级**也算危险。
+ *
+ * 为什么单独开一条：Windows 上 `%USERPROFILE%` 是 `C:\Users\<名字>`，
+ * `del /s C:\Users` 会把所有用户的桌面 / 文档一起删（P1-1 的 F11 就是这条）。
+ * 它不等于家目录，但删掉它比删家目录更坏，所以归到同一级。
+ *
+ * 只在删除命令上用它，不影响 `chmod`/`chown`（那两条不需要这条加严）。
+ *
+ * @param {unknown} target
+ * @returns {boolean}
+ */
+export function isDangerousDeleteTarget(target) {
+  if (isDangerousRmTarget(target)) return true;
+  const t = normalizeDangerTarget(target);
+  const home = normalizeDangerTarget(os.homedir());
+  if (t === home) return true;
+  const parentOfHome = normalizeDangerTarget(path.dirname(os.homedir()));
+  // 盘根（`c:/` 归一后是 `c:`）与家目录父级：删它们等于删掉整台机器的用户数据。
+  if (parentOfHome.length > 1 && t === parentOfHome) return true;
+  return false;
 }
 
 function isRecursiveRmFlag(token) {
@@ -271,7 +377,15 @@ function isRecursiveRmFlag(token) {
   return /r/i.test(token.slice(1));
 }
 
-/** 递归删除 + 危险目标：只看每段命令头是不是 rm（参数里出现 rm 不算）。 */
+/**
+ * 递归删除 + 危险目标：只看每段命令头是不是 rm（参数里出现 rm 不算）。
+ *
+ * 目标先过 `normalizeDangerTarget()`（P1-1）：`~/` `$HOME/` `~/.` `//` `/**` `/./`
+ * `/tmp/../..` 全部折成集合里的形态。
+ *
+ * 另外补上「`rm -rf /` 不带 -r 但也写全了根」这类变体？不需要 —— rm 不带递归就删不掉目录，
+ * 保留递归前置条件能避开 `rm -f /tmp/../x` 这类正常用法。
+ */
 function destroysDangerousTarget(heads) {
   for (const item of heads) {
     if (item.head !== "rm" && item.head !== "rm.exe") continue;
@@ -286,6 +400,85 @@ function destroysDangerousTarget(heads) {
       targets.push(arg);
     }
     if (recursive && targets.some(isDangerousRmTarget)) return true;
+  }
+  return false;
+}
+
+/** 参数里是否有任一命中 flagRe 的项（不分命令头，用于 cmd/PowerShell 风格）。 */
+function argsHave(args, flagRe) {
+  for (const arg of args) {
+    if (flagRe.test(String(arg))) return true;
+  }
+  return false;
+}
+
+/** 参数里的位置目标（非 `-` / `/` 开头的选项；cmd 风格 `/s` `/q` 跳过）。 */
+function positionalTargets(args) {
+  const out = [];
+  for (const arg of args) {
+    const text = String(arg);
+    if (text.startsWith("-")) continue;
+    // cmd 的选项是 `/s` `/q` `/f`；但盘根 `/` 与路径 `/tmp` 也是斜杠开头。
+    // 判据：单字母斜杠项当选项，其余当路径（`/` 本体与 `/` 开头带字母的路径都保留）。
+    if (/^\/[A-Za-z]{1,2}$/.test(text)) continue;
+    out.push(text);
+  }
+  return out;
+}
+
+/**
+ * cmd 的 `rd` / `rmdir`（带 `/s`）与 `del` / `erase`（带 `/s`）。
+ *
+ * 为什么单开一条：这些命令的命令头不是 rm，以前完全不在硬禁止覆盖面内
+ * （P1-1 实测 `rd /s /q C:\`、`del /f /s /q C:\Users` 都返回 null）。
+ * 均为「粗筛 + 复用 normalizeDangerTarget」：宁可多确认不可漏。
+ */
+function destroysWindowsTarget(heads) {
+  for (const item of heads) {
+    const head = item.head.toLowerCase();
+    if (head !== "rd" && head !== "rmdir" && head !== "del" && head !== "erase") continue;
+    // `/s` 大小写不敏感（cmd 习惯 /S）。
+    const recursive = argsHave(item.args, /^\/[sS]$/);
+    if (!recursive) continue;
+    if (positionalTargets(item.args).some(isDangerousDeleteTarget)) return true;
+  }
+  return false;
+}
+
+/**
+ * PowerShell 的 `Remove-Item` / `ri` / `del`：带 `-Recurse`（或 `-r`）且目标是
+ * 盘根 / 家目录 / `*` → 危险。
+ *
+ * PowerShell 的选项大小写与缩写都很多（`-Recurse` `-Recurse:$true` `-r`），
+ * 所以用「前两个字母是 r- 开头的已知形式」做粗筛，不枚举全部。
+ */
+function destroysPowerShellTarget(heads) {
+  for (const item of heads) {
+    // PowerShell cmdlet 名大小写不敏感（`Remove-Item` / `remove-item` 同一回事）。
+    const head = item.head.toLowerCase();
+    if (head !== "remove-item" && head !== "ri" && head !== "del" && head !== "rmdir") continue;
+    const recursive = argsHave(item.args, /^-(recurse|r)(:.+)?$/i);
+    if (!recursive) continue;
+    if (positionalTargets(item.args).some(isDangerousDeleteTarget)) return true;
+  }
+  return false;
+}
+
+/**
+ * `chmod` / `chown` 的目标是根（`/` 或 `/*`）时判危险，**无论有没有 `-R`**。
+ *
+ * 以前只挡 `chmod -R`：`chmod 777 /` 不带 -R 时返回 null（P1-1 已复现）。
+ * `chmod 777 /` 确实不会递归，但它会把根目录本身改成全开 —— 用户迟早会被挡在外面，
+ * 属「不可撤销且影响全盘」，不值得放行。
+ */
+function changesRootPermission(heads) {
+  for (const item of heads) {
+    if (item.head !== "chmod" && item.head !== "chown") continue;
+    for (const target of positionalTargets(item.args)) {
+      const t = normalizeDangerTarget(target);
+      // `777` 这种模式串归一后不变，进不了集合，不会误伤。
+      if (t === "/" || t === "/*") return true;
+    }
   }
   return false;
 }
@@ -319,9 +512,12 @@ export function forbiddenReason(command) {
     if (hasHead(heads, ["parted"])) return "磁盘分区命令（parted）";
 
     if (destroysDangerousTarget(heads)) return "递归删除根目录或家目录（rm -rf / ~）";
+    if (destroysWindowsTarget(heads)) return "递归删除盘根或家目录（rd /s、del /s）";
+    if (destroysPowerShellTarget(heads)) return "递归删除盘根或家目录（Remove-Item -Recurse）";
 
     if (hasFlagFor(heads, "chmod", /^-[a-zA-Z]*R[a-zA-Z]*$/)) return "递归修改权限（chmod -R）";
     if (hasFlagFor(heads, "chown", /^-[a-zA-Z]*R[a-zA-Z]*$/)) return "递归修改所有者（chown -R）";
+    if (changesRootPermission(heads)) return "修改根目录权限（chmod / chown /）";
     if (hasHead(heads, ["takeown"])) return "接管文件所有权（takeown）";
     if (hasHead(heads, ["icacls"])) return "修改文件权限（icacls）";
 

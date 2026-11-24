@@ -44,8 +44,52 @@ export function checkHost(hostHeader, port) {
 }
 
 /**
+ * 是不是「用户真在打开这个页面」的导航请求（TASK-V4-S §6.1，P0-1）。
+ *
+ * 为什么需要它：首页 HTML 里注入了 64 位口令，而 `<iframe sandbox="allow-scripts">`
+ * 造出的 opaque origin（Origin: null）可以让任意网页 fetch 到我们自己的服务。
+ * 如果只校验 Origin，就会把口令交给任何网页 —— 实测 `Origin: null` 请求 `GET /`
+ * 拿到 200 + ACAO + 带真 token 的 <meta>（VERIFY-V4-G §4 P0-1）。
+ *
+ * 实测三种真实请求头（2026-11-24，两端口 + 真沙箱 iframe）：
+ *   magpie 里的合法导航：无 origin 头，sec-fetch-mode: navigate, sec-fetch-dest: iframe
+ *   沙箱里恶意 fetch  ：origin: null,  sec-fetch-mode: cors,     sec-fetch-dest: empty
+ *   curl / Node fetch ：两者都没有
+ *
+ * 另一条实测事实（TASK-V4-S 执行时复测）：Node 24 的全局 fetch 会自带
+ * `sec-fetch-mode: cors`，所以「有 sec-fetch-mode 就是浏览器」并不成立。
+ * 因此判定用「负面清单」而不是白名单：
+ *   - `sec-fetch-mode: navigate`            → 放行（真导航）
+ *   - `sec-fetch-mode` 是其它值且带了 Origin
+ *                                           → 拒（浏览器跨源脚本 fetch）
+ *   - `sec-fetch-mode` 是其它值但没有 Origin
+ *                                           → 放行（curl / Node fetch / doctor；
+ *                                             无 Origin 的请求浏览器不会替他做跨源读取，
+ *                                             沙箱里的恶意 fetch **一定**带 Origin: null）
+ *   - 没有 sec-fetch-mode：
+ *       有 Origin → 拒；没有 Origin → 放行
+ */
+export function isNavigationRequest(req) {
+  const headers = req && req.headers ? req.headers : {};
+  const mode = headers["sec-fetch-mode"];
+  const hasMode = typeof mode === "string" && mode.length > 0;
+  const hasOrigin = headers.origin !== undefined && headers.origin !== null;
+  if (hasMode) {
+    // 只有 navigate 才是「打开页面」。fetch / img / script / beacon 都是别的值。
+    if (mode.trim().toLowerCase() === "navigate") return true;
+    // 浏览器发的跨源请求一定带 Origin；不带 Origin 的 cors 形态来自命令行 / Node fetch。
+    return !hasOrigin;
+  }
+  // 没有 Sec-Fetch-*：带 Origin 说明是浏览器里的跨源脚本，不放行。
+  return !hasOrigin;
+}
+
+/**
  * Origin 校验：缺省、字面量 "null"、自身 origin 三种放行。
  * "null" 必须按字面量比较，不能当成「没有 Origin」。
+ *
+ * 注意：这里放行 "null" 是为了 /api 与静态资源；带口令的首页 HTML 另有
+ * isNavigationRequest() 一道门，见 http.mjs 根路径分支。
  */
 export function checkOrigin(originHeader, port) {
   if (originHeader === undefined) return { ok: true };

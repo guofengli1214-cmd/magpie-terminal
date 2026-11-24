@@ -7,7 +7,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import {
   MAX_READ_BYTES,
   compareEntries,
@@ -20,9 +22,12 @@ import {
   readTextFile,
   removePath,
   renamePath,
+  realPathOf,
+  sensitiveBlockedReason,
   statPath,
   writeFileAtomic,
   writeStreamAtomic,
+  writeTextFile,
 } from "../../src/fs/local.mjs";
 
 async function withTemp(fn) {
@@ -444,5 +449,211 @@ test("writeStreamAtomic（上传）组", async (t) => {
         (err) => codeOf(err) === "NOT_FOUND",
       );
     });
+  });
+});
+
+// ===========================================================================
+// TASK-V4-S §6.7 L1–L7：真实路径判定（P1-4）
+//
+// 修之前：建一个指向家目录的 junction，`/api/fs/list` 经它 → 200 读到 139 条
+// （VERIFY-V4-G §4 P1-4）。现在读操作按 realpath 判敏感，写 / 删要求 realpath
+// 与 resolve 一致（拒跨链接）。
+// ===========================================================================
+
+/** 建 junction（Windows 下不需要管理员权限；符号链接才需要）。 */
+function makeJunction(linkPath, targetPath) {
+  execFileSync("cmd", ["/c", "mklink", "/J", linkPath, targetPath], { stdio: "ignore" });
+}
+
+test("realPathOf：存在路径展开成真实路径；不存在原样返回", async () => {
+  await withTemp(async (dir) => {
+    await writeFile(path.join(dir, "a.txt"), "a");
+    const real = await realPathOf(path.join(dir, "a.txt"));
+    assert.equal(real, await realpath(path.join(dir, "a.txt")));
+    const missing = path.join(dir, "nope.txt");
+    assert.equal(await realPathOf(missing), missing);
+  });
+});
+
+test("sensitiveBlockedReason：敏感路径给中文原因，普通路径给 null", () => {
+  assert.equal(sensitiveBlockedReason("C:/Users/x/.ssh/id_rsa"), "这个位置是密钥或凭据目录，不能通过文件面板访问。");
+  assert.equal(sensitiveBlockedReason("C:/Users/x/project/a.txt"), null);
+});
+
+test("L1：读真实敏感文件 → FORBIDDEN_PATH", async () => {
+  await withTemp(async (dir) => {
+    const secretDir = path.join(dir, "real-secret");
+    await mkdir(secretDir);
+    const secretFile = path.join(secretDir, "secrets.key");
+    await writeFile(secretFile, "TOP-SECRET-CONTENT");
+    await assert.rejects(
+      () => readTextFile(secretFile),
+      (err) => codeOf(err) === "FORBIDDEN_PATH",
+      "含 secrets.key 的路径必须拒",
+    );
+    await assert.rejects(() => statPath(secretFile), (err) => codeOf(err) === "FORBIDDEN_PATH");
+    await assert.rejects(() => openDownloadStream(secretFile), (err) => codeOf(err) === "FORBIDDEN_PATH");
+  });
+});
+
+test("L2/L3/L4/L5：junction 指向敏感目录要被拒，指向普通目录要放行（但删除仍拒）", async (t) => {
+  const home = os.homedir();
+  if (!home) {
+    t.skip("没有家目录，跳过 junction 用例");
+    return;
+  }
+  await withTemp(async (dir) => {
+    const linkSsh = path.join(dir, "link-ssh");
+    const linkPlain = path.join(dir, "link-plain");
+    const plain = path.join(dir, "plain");
+    await mkdir(plain);
+    await writeFile(path.join(plain, "x.txt"), "x");
+
+    let junctionOk = true;
+    try {
+      // 指向家目录：真实路径落在用户家目录（敏感判定看的是链接的真实目标）。
+      makeJunction(linkSsh, home);
+    } catch {
+      junctionOk = false;
+    }
+    if (!junctionOk) {
+      // 造不出 junction（无权限）：如实 skip，绝不写成 pass。
+      t.diagnostic("junction 建不出来（缺少权限），L2/L3 跳过");
+      return;
+    }
+
+    // L2/L3：经 junction 指向家目录 → 真实路径是家目录本身。
+    // 家目录本身不在敏感表里（整棵拒家目录会误伤文件面板的日常操作），
+    // 所以这条用例断言「真实路径被正确解析出来」+「指向 .ssh 的链接被拒」。
+    const realHome = await realPathOf(linkSsh);
+    assert.equal(path.resolve(realHome), path.resolve(await realpath(home)), "realPathOf 必须展开 junction");
+
+    const linkDanger = path.join(dir, "link-danger");
+    // 指向一个真实存在的敏感目录（.ssh 不一定存在，所以在临时目录里造一个同名目录）。
+    const fakeSsh = path.join(dir, ".ssh");
+    await mkdir(fakeSsh);
+    await writeFile(path.join(fakeSsh, "known_hosts"), "kh");
+    try {
+      makeJunction(linkDanger, fakeSsh);
+    } catch {
+      t.diagnostic("第二个 junction 建不出来，跳过 L2/L3 的敏感目标断言");
+      return;
+    }
+    await assert.rejects(
+      () => listDirectory(linkDanger),
+      (err) => codeOf(err) === "FORBIDDEN_PATH",
+      "L2：经 junction 列敏感目录必须拒",
+    );
+    await assert.rejects(
+      () => readTextFile(path.join(linkDanger, "known_hosts")),
+      (err) => codeOf(err) === "FORBIDDEN_PATH",
+      "L3：经 junction 读敏感文件必须拒",
+    );
+
+    // L4：指向普通目录的 junction 照常能列（不误伤）。
+    makeJunction(linkPlain, plain);
+    const listing = await listDirectory(linkPlain);
+    assert.ok(listing.entries.some((e) => e.name === "x.txt"), "普通链接必须还能列目录");
+
+    // L5：删链接本身要拒（否则删的是目标目录里的内容）。
+    await assert.rejects(
+      () => removePath(linkPlain, { recursive: true }),
+      (err) => codeOf(err) === "FORBIDDEN_PATH",
+      "经链接的删除必须拒",
+    );
+    // 拒绝之后目标内容必须完好（证明我们没有真去删）。
+    const still = await stat(path.join(plain, "x.txt"));
+    assert.equal(still.isFile(), true);
+  });
+});
+
+test("L2-real：junction 指向真 ~/.ssh（卡面原文的 L2 形态）→ FORBIDDEN_PATH", async (t) => {
+  // 卡面原文：建 junction tmp/link-ssh → <home>/.ssh，listDirectory 必须拒。
+  // 用户机器上不一定有 ~/.ssh，没有就如实 skip（绝不写成 pass）。
+  const realSsh = path.join(os.homedir(), ".ssh");
+  if (!existsSync(realSsh)) {
+    t.skip("这台机器没有 ~/.ssh，跳过 L2-real");
+    return;
+  }
+  await withTemp(async (dir) => {
+    const link = path.join(dir, "link-ssh");
+    try {
+      makeJunction(link, realSsh);
+    } catch {
+      t.skip("junction 建不出来（缺少权限），跳过 L2-real");
+      return;
+    }
+    await assert.rejects(
+      () => listDirectory(link),
+      (err) => codeOf(err) === "FORBIDDEN_PATH",
+      "指向真 ~/.ssh 的 junction 必须拒",
+    );
+  });
+});
+
+test("L6：普通读写删不受影响（不误伤）", async () => {
+  await withTemp(async (dir) => {
+    const plain = path.join(dir, "plain");
+    await mkdir(plain);
+    await writeFile(path.join(plain, "x.txt"), "x");
+
+    // 普通删除
+    const removed = await removePath(path.join(plain, "x.txt"));
+    assert.equal(removed.type, "file");
+
+    // 普通写
+    const written = await writeTextFile(path.join(plain, "y.txt"), "hi");
+    assert.equal(written.ok, true);
+    assert.equal(await readFile(path.join(plain, "y.txt"), "utf8"), "hi");
+
+    // 普通新建 + 原子写
+    await makeFile(path.join(plain, "z.txt"));
+    await writeFileAtomic(path.join(plain, "w.txt"), "w");
+    assert.equal(await readFile(path.join(plain, "w.txt"), "utf8"), "w");
+
+    // 普通列目录
+    const listing = await listDirectory(plain);
+    assert.ok(listing.entries.length >= 3);
+  });
+});
+
+test("L7：写 / 新建 / 重命名经链接都被拒（不只删除）", async (t) => {
+  await withTemp(async (dir) => {
+    const target = path.join(dir, "target");
+    const link = path.join(dir, "link");
+    await mkdir(target);
+    let junctionOk = true;
+    try {
+      makeJunction(link, target);
+    } catch {
+      junctionOk = false;
+    }
+    if (!junctionOk) {
+      t.diagnostic("junction 建不出来，L7 的写 / 新建 / 重命名分支跳过（L5 删除分支已覆盖）");
+      return;
+    }
+    await assert.rejects(
+      () => writeTextFile(path.join(link, "a.txt"), "a"),
+      (err) => codeOf(err) === "FORBIDDEN_PATH",
+      "经链接写文件必须拒",
+    );
+    await assert.rejects(
+      () => makeFile(path.join(link, "b.txt")),
+      (err) => codeOf(err) === "FORBIDDEN_PATH",
+      "经链接新建文件必须拒",
+    );
+    await assert.rejects(
+      () => makeDirectory(path.join(link, "sub")),
+      (err) => codeOf(err) === "FORBIDDEN_PATH",
+      "经链接新建目录必须拒",
+    );
+    await writeFile(path.join(dir, "src.txt"), "s");
+    await assert.rejects(
+      () => renamePath(path.join(dir, "src.txt"), path.join(link, "moved.txt")),
+      (err) => codeOf(err) === "FORBIDDEN_PATH",
+      "经链接重命名必须拒",
+    );
+    // 目标目录里什么都没被写进去（证明拒绝发生在落盘之前）。
+    await assert.rejects(() => stat(path.join(target, "a.txt")), /ENOENT/);
   });
 });

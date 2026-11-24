@@ -5,7 +5,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { forbiddenReason } from "../../src/policy/forbidden.mjs";
+import { forbiddenReason, normalizeDangerTarget } from "../../src/policy/forbidden.mjs";
 
 const cases = [
   { command: "sudo rm -rf /", why: "提权" },
@@ -224,4 +224,99 @@ test("修复2：参数里出现危险命令名不拦，命令头是真危险命�
   assert.equal(forbiddenReason("man sudo"), null);
   // 命令头：拦。
   assert.equal(typeof forbiddenReason("reboot"), "string");
+});
+
+// ===========================================================================
+// TASK-V4-S §6.4 F1–F14：危险删除目标归一化（P1-1）
+// 修之前这 11 条命令全部返回 null（VERIFY-V4-G §4 P1-1 实测 11/11 漏判）。
+// ===========================================================================
+
+const mustHitF = [
+  ["F1", "rm -rf ~/"],
+  ["F2", "rm -rf $HOME/"],
+  ["F3", "rm -rf ~/."],
+  ["F4", "rm -rf //"],
+  ["F5", "rm -rf /**"],
+  ["F6", "rm -rf /./"],
+  ["F7", "rm -rf /tmp/../.."],
+  ["F8", "chmod 777 /"],
+  ["F9", "rd /s /q C:\\"],
+  ["F10", "Remove-Item -Recurse -Force C:\\"],
+  ["F11", "del /f /s /q C:\\Users"],
+];
+
+for (const [id, command] of mustHitF) {
+  test(`${id}：${JSON.stringify(command)} 必须命中硬禁止`, () => {
+    const reason = forbiddenReason(command);
+    assert.equal(typeof reason, "string", `${command} 必须命中（修前返回 null，即 P1-1）`);
+    assert.ok(reason.length > 0);
+    assert.ok(/[\u4e00-\u9fa5]/.test(reason), `原因必须是中文：${reason}`);
+  });
+}
+
+test("F1a：$HOME 与 ${HOME} 各种写法都命中（含 /. 尾）", () => {
+  for (const command of [
+    "rm -rf ${HOME}/",
+    "rm -rf $HOME",
+    "rm -rf ~",
+    "rm -rf /*",
+    "rm -rf *",
+    "rm -rf ~/*",
+    "rm -rf C:\\",
+  ]) {
+    assert.notEqual(forbiddenReason(command), null, `${command} 必须命中`);
+  }
+});
+
+test("F12：不误伤正常删除 / 权限命令", () => {
+  for (const command of [
+    "rm -rf ./build",
+    "rm -rf /tmp/mydir",
+    "rm -rf dist",
+    "chmod 777 ./x",
+    "chmod 777 /tmp/mydir",
+    "chown me /tmp/mydir",
+  ]) {
+    assert.equal(forbiddenReason(command), null, `${command} 不该命中，实际：${forbiddenReason(command)}`);
+  }
+});
+
+test("F13：V3-D-FIX1 的成果不许回退（词出现在参数里不拦）", () => {
+  for (const command of [
+    'git commit -m "fix reboot bug"',
+    "git commit -m reboot",
+    "npm run format",
+    "rg shutdown src/",
+    'grep -rn "sudo" docs/',
+    "echo dd",
+    "ls | grep halt",
+    "cat format.log",
+    "npm run remove-item",
+  ]) {
+    assert.equal(forbiddenReason(command), null, `${command} 不该命中，实际：${forbiddenReason(command)}`);
+  }
+});
+
+// F14：单测直测归一函数
+test("F14：normalizeDangerTarget 的归一结果", () => {
+  assert.equal(normalizeDangerTarget("~/./"), "~");
+  assert.equal(normalizeDangerTarget("/tmp/../.."), "/");
+  assert.equal(normalizeDangerTarget("$HOME//x/.."), "~");
+  assert.equal(normalizeDangerTarget("~/"), "~");
+  assert.equal(normalizeDangerTarget("~/. "), "~");
+  assert.equal(normalizeDangerTarget("$HOME/"), "~");
+  assert.equal(normalizeDangerTarget("${HOME}/"), "~");
+  assert.equal(normalizeDangerTarget("%USERPROFILE%/"), "~");
+  assert.equal(normalizeDangerTarget("//"), "/");
+  assert.equal(normalizeDangerTarget("/./"), "/");
+  assert.equal(normalizeDangerTarget("/**"), "/*");
+  assert.equal(normalizeDangerTarget("C:\\"), "c:");
+  assert.equal(normalizeDangerTarget("C:/"), "c:");
+  assert.equal(normalizeDangerTarget("'/tmp/mydir'"), "/tmp/mydir");
+  assert.equal(normalizeDangerTarget("C:\\Users\\x"), "c:/users/x");
+  assert.equal(normalizeDangerTarget(""), "");
+  assert.equal(normalizeDangerTarget(null), "");
+  // 正常目标归一后不进危险集合。
+  assert.equal(normalizeDangerTarget("./build"), "./build");
+  assert.equal(normalizeDangerTarget("/tmp/mydir"), "/tmp/mydir");
 });

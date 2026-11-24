@@ -2,21 +2,33 @@
 //
 // 严格按顺序，命中即返回：
 //   1. 硬禁止（src/policy/forbidden.mjs）      → 永远 confirm
+//   1.5 敏感路径读取（src/policy/sensitive.mjs）→ 永远 confirm（白名单也绕不过）
 //   2. 用户白名单（config.allowlist，§2 语义） → auto
 //   3. 内置只读白名单（src/policy/classify.mjs）→ 它说 auto 就 auto
+//   3.5 切不开的命令（unparsable / redirect / substitution …）→ 直接 confirm，不交审阅
 //   4. 第二 AI 审阅（src/ai/review.mjs）        → 按 autonomy 映射
 //   5. 兜底                                     → confirm
 //
 // `autonomy === "strict"` 时跳过第 4 级（不调审阅，直接 confirm）。
-// 第 1 级任何档位、任何白名单都不能绕过 —— 这是 AC5 的锁。
+// 第 1 级与 1.5 级任何档位、任何白名单都不能绕过 —— 这是 AC5 / AC6 的锁。
 
 import { classify } from "../policy/classify.mjs";
 import { forbiddenReason } from "../policy/forbidden.mjs";
+import { sensitiveReadTarget } from "../policy/sensitive.mjs";
 import { matchAllowlist } from "./allowlist.mjs";
 import { reviewCommand } from "./review.mjs";
 
 /** 审阅服务不可用时给用户看的原因（PROTOCOL §5 第 4 级原文）。 */
 export const REVIEW_UNAVAILABLE_REASON = "审阅服务不可用，按需要确认处理";
+
+/**
+ * 这些 hit 说明「命令根本切不开」，不能交给 AI 审阅。
+ *
+ * 为什么：审阅模型只看得到命令文本，`echo hi\nrm -rf /` 这种它往往只瞄到
+ * 第一行无害片段就回 safe，于是 judge 把一条复合命令放成 auto
+ * （VERIFY-V4-G §4 P1-3 已逐字复现）。
+ */
+const UNREVIEWABLE_HITS = new Set(["unparsable", "substitution", "redirect", "exception", "invalid-input"]);
 
 /**
  * 判级。
@@ -60,6 +72,14 @@ export async function judge({ command, config, cwd, model, review } = {}) {
     return result("confirm", `硬性禁止：${forbidden}`, forbidden, null, null);
   }
 
+  // 1.5 敏感路径读取：用户白名单也不能自动放行读密钥的操作。
+  //     否则用户在设置页写一条 `cat` 的 prefix 白名单，`cat secrets.key`
+  //     就又变成 auto 了（P0-3 的另一条腿）。
+  const sensitiveHit = sensitiveReadTarget(text);
+  if (sensitiveHit) {
+    return result("confirm", "这条命令会读出密钥或凭据文件，需要你确认", "deny:sensitive-path", null, null);
+  }
+
   // 2. 用户白名单。
   const allowHit = matchAllowlist(text, conf.allowlist);
   if (allowHit) {
@@ -70,6 +90,14 @@ export async function judge({ command, config, cwd, model, review } = {}) {
   const builtin = classify(text);
   if (builtin && builtin.decision === "auto") {
     return result("auto", builtin.reason || "内置只读白名单", builtin.hit === undefined ? null : builtin.hit, null, null);
+  }
+
+  // 3.5 切不开的命令不许交给审阅（P1-3）。
+  //     命令切不开（换行 / 重定向 / 命令替换 / 引号不闭合 / 空段）时，
+  //     审阅模型看到的往往是「第一行看起来无害」的片段，会误判成 safe。
+  //     这类命令一律直接确认，不给审阅开口子的机会。
+  if (builtin && UNREVIEWABLE_HITS.has(String(builtin.hit))) {
+    return result("confirm", builtin.reason || "这条命令无法静态判定，需要你确认", builtin.hit, null, null);
   }
 
   // 审阅关闭（reviewModel === ""）或严格档：不调审阅，直接确认。

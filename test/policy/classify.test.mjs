@@ -257,3 +257,57 @@ test("git show 不能顺带放行 git 的写操作或未知子命令", () => {
   assert.equal(classify("git clean -fd").decision, "confirm");
   assert.equal(classify("git checkout main").decision, "confirm");
 });
+
+// ===========================================================================
+// TASK-V4-S §6.3 S7–S10：敏感路径（P0-3）
+// 修之前 `cat ~/.config/magpie-terminal/secrets.key` → auto / allow:cat，
+// 用户完全不被告知就读到了自己的密钥（VERIFY-V4-G §4 P0-3）。
+// ===========================================================================
+
+test("S7：cat 本插件 secrets.key → confirm / deny:sensitive-path", () => {
+  const result = classify("cat ~/.config/magpie-terminal/secrets.key");
+  assert.equal(result.decision, "confirm");
+  assert.equal(result.hit, "deny:sensitive-path");
+  assert.match(result.reason, /密钥|凭据/);
+});
+
+test("S8：head -c 100 <ssh 私钥> → confirm（选项与数字不挡判定）", () => {
+  const result = classify("head -c 100 /home/u/.ssh/id_rsa");
+  assert.equal(result.decision, "confirm");
+  assert.equal(result.hit, "deny:sensitive-path");
+});
+
+test("S9：cat .env → confirm", () => {
+  assert.equal(classify("cat .env").decision, "confirm");
+  assert.equal(classify("cat .env.local").decision, "confirm");
+  assert.equal(classify("cat /app/.env.production").decision, "confirm");
+});
+
+test("S9b：其它读命令同样被拦（tail / grep / stat / type）", () => {
+  for (const command of [
+    "tail -n 20 ~/.aws/credentials",
+    "grep password ~/.config/magpie-terminal/secrets.json",
+    "stat C:/Users/x/.ssh/known_hosts",
+    "type C:/Users/x/.npmrc",
+    "cat certs/server.pem",
+  ]) {
+    const result = classify(command);
+    assert.equal(result.decision, "confirm", `${command} 必须 confirm`);
+    assert.equal(result.hit, "deny:sensitive-path", `${command} hit=${result.hit}`);
+  }
+});
+
+test("S10：普通只读命令不误伤（AC5）", () => {
+  assert.equal(classify("cat README.md").decision, "auto");
+  assert.equal(classify("cat src/index.mjs").decision, "auto");
+  assert.equal(classify("grep foo src/index.mjs").decision, "auto");
+  assert.equal(classify("ls -la").decision, "auto");
+  assert.equal(classify("head -n 5 package.json").decision, "auto");
+  assert.equal(classify("tail -n 5 src/policy/classify.mjs").decision, "auto");
+  assert.equal(classify("stat package.json").decision, "auto");
+});
+
+test("S10b：敏感路径只在「会吐内容」的命令头上拦 —— ls ~/.ssh 仍是 auto", () => {
+  // ls 只列文件名、不吐文件内容（AC5 要求不误伤日常命令）。
+  assert.equal(classify("ls ~/.ssh").decision, "auto");
+});

@@ -478,3 +478,118 @@ test("注入的 tokens 用 html:root 选择器（否则被 tokens.css 兜底值�
   assert.match(html, /html:root\s*\{/);
   assert.ok(html.includes("--magpie-bg: #1e1e2e;"));
 });
+
+// ===========================================================================
+// TASK-V4-S §6.1 N1–N6：根 HTML 只服务导航请求（P0-1）
+//
+// 修之前：`Origin: null` 请求 `GET /` → 200 + `access-control-allow-origin: null`，
+// body 里带真 64 位 token（VERIFY-V4-G §4 P0-1）。任意网页一个沙箱 iframe
+// 就能偷到口令，再用它开 WS 执行任意命令。
+// ===========================================================================
+
+/** 用原始 socket 发一个可伪造任意头的 GET，返回 {status, headers, body}。 */
+function rawGet(pathAndQuery, extraHeaderLines) {
+  const requestText = [
+    `GET ${pathAndQuery} HTTP/1.1`,
+    `Host: 127.0.0.1:${port}`,
+    "Connection: close",
+    ...(extraHeaderLines || []),
+    "",
+    "",
+  ].join("\r\n");
+  return rawHttp(port, requestText).then(parseRawResponse);
+}
+
+function parseRawResponse(text) {
+  const split = text.indexOf("\r\n\r\n");
+  const head = split === -1 ? text : text.slice(0, split);
+  const body = split === -1 ? "" : text.slice(split + 4);
+  const lines = head.split("\r\n");
+  const status = Number((lines[0] || "").split(" ")[1]);
+  const headers = {};
+  for (const line of lines.slice(1)) {
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    headers[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
+  }
+  return { status, headers, body, raw: text };
+}
+
+test("N1：Origin: null + sec-fetch-mode: cors 请求 GET / → 403，无 ACAO，body 不含口令", async () => {
+  const response = await rawGet("/", ["Origin: null", "Sec-Fetch-Mode: cors", "Sec-Fetch-Dest: empty"]);
+  assert.equal(response.status, 403);
+  assert.equal(response.headers["access-control-allow-origin"], undefined, "恶意页必须连 body 都读不到");
+  assert.doesNotMatch(response.body, /magpie-term-token/);
+  assert.equal(response.body.includes(token), false, "响应体里绝不能出现真 token");
+  assert.match(response.body, /FORBIDDEN/);
+});
+
+test("N2：导航请求（无 Origin + sec-fetch-mode: navigate）→ 200 且含口令 meta", async () => {
+  const response = await rawGet("/", [
+    "Sec-Fetch-Mode: navigate",
+    "Sec-Fetch-Dest: iframe",
+    "Sec-Fetch-Site: cross-site",
+  ]);
+  assert.equal(response.status, 200);
+  assert.match(response.body, /<meta name="magpie-term-token" content="[0-9a-f]{64}">/);
+  assert.equal(response.body.includes(token), true);
+});
+
+test("N3：无任何 Sec-Fetch / Origin（curl 形态）→ 200 含口令", async () => {
+  const response = await rawGet("/");
+  assert.equal(response.status, 200);
+  assert.match(response.body, /<meta name="magpie-term-token" content="[0-9a-f]{64}">/);
+  assert.equal(response.body.includes(token), true);
+});
+
+test("N3b：无 Origin 但带 sec-fetch-mode: cors（Node fetch / doctor 形态）→ 200", async () => {
+  // Node 24 的全局 fetch 自带 sec-fetch-mode: cors，doctor 与现有测试都依赖这条。
+  const response = await fetch(`${base()}/`);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /<meta name="magpie-term-token" content="[0-9a-f]{64}">/);
+});
+
+test("N4：GET /index.html + Origin: null + sec-fetch-mode: cors → 403", async () => {
+  const response = await rawGet("/index.html", ["Origin: null", "Sec-Fetch-Mode: cors"]);
+  assert.equal(response.status, 403);
+  assert.equal(response.headers["access-control-allow-origin"], undefined);
+  assert.equal(response.body.includes(token), false);
+});
+
+test("N5：GET / + Origin: http://evil.example.com → 403（沿用 checkHttpGate）", async () => {
+  const response = await rawGet("/", ["Origin: http://evil.example.com"]);
+  assert.equal(response.status, 403);
+  assert.equal(response.body.includes(token), false);
+});
+
+test("N5b：GET / + Origin: null 但没有 sec-fetch-mode → 403（没 Sec-Fetch 也不放行）", async () => {
+  const response = await rawGet("/", ["Origin: null"]);
+  assert.equal(response.status, 403);
+  assert.equal(response.body.includes(token), false);
+});
+
+test("N5c：GET / + sec-fetch-mode: no-cors + Origin: null → 403", async () => {
+  const response = await rawGet("/", ["Origin: null", "Sec-Fetch-Mode: no-cors"]);
+  assert.equal(response.status, 403);
+});
+
+test("N6：GET /app.js + Origin: null → 200 + access-control-allow-origin: null（不回归）", async () => {
+  const response = await rawGet("/app.js", ["Origin: null", "Sec-Fetch-Mode: cors", "Sec-Fetch-Dest: empty"]);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers["access-control-allow-origin"], "null");
+});
+
+test("N6b：/api 的 Origin: null 行为不变（沙箱 iframe 依赖它）", async () => {
+  const response = await fetch(`${base()}/api/health?token=${token}`, { headers: { origin: "null" } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("access-control-allow-origin"), "null");
+});
+
+test("N7：拿偷来的 token 也无法在没有导航判定的情况下读 _根 HTML_", async () => {
+  // 就算攻击者已经有 token（例如从前一次泄漏），根 HTML 这道门仍然拦住他 —— 这道门
+  // 不依赖 token，只看「是不是导航」。
+  const response = await rawGet("/", ["Origin: null", "Sec-Fetch-Mode: cors", `X-Magpie-Term-Token: ${token}`]);
+  assert.equal(response.status, 403);
+  assert.equal(response.body.includes(token), false);
+});
