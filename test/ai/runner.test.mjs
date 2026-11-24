@@ -17,11 +17,17 @@ import {
   USER_TEXT_TIMEOUT,
   USER_TEXT_UNSUPPORTED,
   buildPayload,
+  buildPowerShellPayload,
+  buildPowerShellProbePayload,
   buildProbePayload,
+  cleanPowerShellOutput,
   createCommandRunner,
   makeMarks,
+  probeMarkerSeen,
+  shellFamilyOf,
   splitBuffer,
   stripAnsi,
+  stripTerminalNoise,
   truncateOutput,
 } from "../../src/ai/runner.mjs";
 
@@ -79,10 +85,14 @@ function makeRunner(opts = {}) {
   return { registry, runner };
 }
 
-/** 起一个「自动应答 probe」的监听器，把 probe 当成已支持。 */
+/** 起一个「自动应答 probe」的监听器，把 probe 当成已支持。
+ *
+ * 两种形态都要认：bash 分支是 `printf '__MT_PROBE_<nonce>__%s\n' "ok"`，
+ * PowerShell 分支是 `Write-Output '__MT_PROBE_<nonce>__ok'`（TASK-FIX-PS-SHELL §6.3）。
+ */
 function autoProbe(registry, { supported = true } = {}) {
   const onWrite = ({ id, data }) => {
-    const probeMatch = /__MT_PROBE_([0-9a-f]+)__%s/.exec(data);
+    const probeMatch = /__MT_PROBE_([0-9a-f]+)__(?:%s|ok)/.exec(data);
     if (!probeMatch) return;
     const nonce = probeMatch[1];
     setTimeout(() => {
@@ -162,6 +172,235 @@ test("buildPayload 逐字等于协议 §4.1 的包装串", () => {
 test("buildProbePayload 是协议 §4.4 的探测串 + 一个提交用的换行", () => {
   // 协议原文只给了命令本体；写进 PTY 必须补 \n 才会被执行（否则停在提示行上）。
   assert.equal(buildProbePayload("ab12"), "printf '__MT_PROBE_ab12__%s\\n' \"ok\"\n");
+});
+
+// ------------------------------------------- PowerShell 分支（TASK-FIX-PS-SHELL）
+// 这些断言测的是 §6.1–§6.3：bash 分支的字符串一个字节都不许变，PS 分支必须
+// 用 CR 提交、用 $? + $Error.Count + $LASTEXITCODE 组合判退出码。
+
+test("PS：shellFamilyOf 只认 bash / powershell 两个家族（§6.1 六条映射）", () => {
+  assert.equal(shellFamilyOf("PowerShell 7"), "powershell");
+  assert.equal(shellFamilyOf("PowerShell 5"), "powershell");
+  assert.equal(shellFamilyOf("pwsh"), "powershell");
+  assert.equal(shellFamilyOf("bash"), "bash");
+  // 远程会话的 shell.name 是 `ssh <user>@<host>`，远端是 Linux bash。
+  assert.equal(shellFamilyOf("ssh u@h"), "bash");
+  assert.equal(shellFamilyOf(null), "bash");
+  // 其它不该被认成 PowerShell 的名字。
+  assert.equal(shellFamilyOf(undefined), "bash");
+  assert.equal(shellFamilyOf(""), "bash");
+});
+
+test("PS：buildPowerShellPayload 逐字等于 §6.2 的模板", () => {
+  const payload = buildPowerShellPayload("ls", "__MT_S_a__", "__MT_E_a__");
+  assert.equal(
+    payload,
+    "Write-Output '__MT_S_a__'\r" +
+      "$__mtErr0 = $Error.Count; $__mtLx0 = $LASTEXITCODE\r" +
+      "ls 2>&1\r" +
+      "$__mtBad = (-not $?) -or ($Error.Count -gt $__mtErr0) -or ($LASTEXITCODE -ne $__mtLx0 -and $LASTEXITCODE -ne 0)\r" +
+      "Write-Output ('__MT_E_a__' + $(if ($__mtBad) { 1 } else { 0 }))\r",
+  );
+  // 行尾必须是 CR：用 \n 会被 PSReadLine 当续行，永远停在 `>>` 上。
+  assert.ok(payload.endsWith("\r"), "必须用 CR 结尾");
+  assert.equal(payload.includes("\n"), false, "不得含裸 \\n");
+  assert.ok(payload.includes("Write-Output '__MT_S_a__'"), "起点标记必须是 Write-Output");
+  assert.ok(payload.includes("$__mtBad"), "必须有 $__mtBad 判定行");
+  assert.equal(
+    payload.split("\r")[4],
+    "Write-Output ('__MT_E_a__' + $(if ($__mtBad) { 1 } else { 0 }))",
+    "结束行逐字",
+  );
+});
+
+test("PS：多行命令经 buildPowerShellPayload 后不含裸 \\n（逐行 CR 提交）", () => {
+  const payload = buildPowerShellPayload("if ($true) {\n  Write-Output 'x'\n}", "__MT_S_a__", "__MT_E_a__");
+  assert.equal(payload.includes("\n"), false, "不得含裸 \\n");
+  assert.ok(payload.includes("if ($true) {\r  Write-Output 'x'\r} 2>&1\r"), "块语句逐行换成 CR");
+  // CRLF 输入也要归一（不能留下 \r\r）。
+  const crlf = buildPowerShellPayload("a\r\nb", "__MT_S_a__", "__MT_E_a__");
+  assert.ok(crlf.includes("a\rb 2>&1"), "CRLF 先归一再换 CR");
+  assert.equal(crlf.includes("\r\r"), false, "不得出现双 CR");
+});
+
+test("PS：buildPowerShellProbePayload 逐字等于 §6.3 的探测串", () => {
+  assert.equal(buildPowerShellProbePayload("ab12"), "Write-Output '__MT_PROBE_ab12__ok'\r");
+});
+
+test("PS：cleanPowerShellOutput 剥续行提示符 / 提示符回显 / 标记行，并统一换行", () => {
+  const echoLines = [
+    "Write-Output '__MT_S_a__'",
+    "$__mtErr0 = $Error.Count; $__mtLx0 = $LASTEXITCODE",
+    "if ($true) { 2>&1",
+    "$__mtBad = (-not $?) -or ($__mtErr0)",
+    "Write-Output ('__MT_E_a__' + $(if ($__mtBad) { 1 } else { 0 }))",
+  ];
+  const noisy = [
+    "PS C:\\x> Write-Output '__MT_S_a__'",
+    "__MT_S_a__",
+    ">>   Write-Output 'in-block'",
+    ">> }",
+    "in-block",
+    "$__mtBad = (-not $?) -or ($__mtErr0)",
+    "__MT_E_a__0",
+    "PS C:\\x> ",
+  ].join("\r\n");
+  const clean = cleanPowerShellOutput(noisy, { echoLines });
+  assert.equal(clean, "in-block", `只剩真输出：${JSON.stringify(clean)}`);
+  assert.equal(clean.includes(">> "), false, "不得留续行提示符");
+  assert.equal(clean.includes("__MT_S_"), false, "不得留起点标记");
+  assert.equal(clean.includes("__MT_E_"), false, "不得留结束标记");
+  assert.equal(clean.includes("$__mt"), false, "不得留包装串内部变量");
+  assert.equal(clean.includes("Write-Output"), false, "不得留回显碎片");
+  assert.equal(clean.includes("\r"), false, "CR 必须统一成 LF");
+
+  // 多行真输出（管道/列表）必须原样保留；行中间嵌的提示符只起分隔作用，
+  // 它后面的文本保留（真 PTY 无法区分「回显」与「提示符后面的真输出」，
+  // 宁可多留也不丢）。
+  const multiline = cleanPowerShellOutput("a\tb\r\nPS C:\\x> noise\r\nc\r\nd", { echoLines });
+  assert.equal(multiline, "a\tb\nnoise\nc\nd");
+
+  // 空输入不报错。
+  assert.equal(cleanPowerShellOutput(""), "");
+  assert.equal(cleanPowerShellOutput(null), "");
+});
+
+test("PS：终端变窄时 payload 折行的残片也要丢掉（真 PTY 120 列实测过的 bug）", () => {
+  // 120 列 + 长提示符下 PSReadLine 把 `$__mtBad = …` 折成三段：
+  //   `…$__mtLx0` / `0` / ` -and $LASTEXITCODE -ne 0)`
+  // 孤立的 `0` 既没提示符也不含标记，只能靠「遇到退出码判定行就整体截断」算了。
+  const cmd = "(Get-ChildItem -Force -File).Count";
+  const startMark = "__MT_S_r__";
+  const endMark = "__MT_E_r__";
+  const payload = buildPowerShellPayload(cmd, startMark, endMark);
+  const wrapped = [
+    "PS C:\\x> " + startMark,
+    "PS C:\\x> " + `${cmd} 2>&1`,
+    "56",
+    "PS C:\\x> $__mtBad = (-not $?) -or ($Error.Count -gt $__mtErr0) -or ($LASTEXITCODE -ne $__mtLx0",
+    "0",
+    " -and $LASTEXITCODE -ne 0)",
+    "PS C:\\x> " + `Write-Output ('${endMark}' + $(if ($__mtBad) { 1 } else { 0 }))`,
+  ].join("\r\n");
+  const split = splitBuffer(wrapped, startMark, endMark);
+  const clean = cleanPowerShellOutput(split.output, { echoLines: payload.split("\r") });
+  assert.equal(clean, "56", `折行残片必须全部丢掉：${JSON.stringify(clean)}`);
+
+  // 但真输出不能被误杀（`in-block` 是 `Write-Output 'in-block'` 的子串，不是后缀）。
+  const realOutput = cleanPowerShellOutput("in-block\nafter", { echoLines: payload.split("\r") });
+  assert.equal(realOutput, "in-block\nafter");
+
+  // 不传 echoLines 时退化为「只靠提示符/标记判定」，不能报错。
+  assert.equal(cleanPowerShellOutput("56\r\n", {}), "56");
+});
+
+test("PS：真输出与提示符重绘粘在一行时，只切掉回显、不丢真输出", () => {
+  // 真 PTY 实测（.dispatch/fix-ps/repro3.mjs）：PowerShell 会把真输出和下一次
+  // 提示符重绘拼在同一行（`1027511XPS C:\…> $__mtBad = …`）。整行丢弃就丢真输出。
+  const cmd = "(Get-ChildItem -Force -File).Count";
+  const startMark = "__MT_S_z__";
+  const endMark = "__MT_E_z__";
+  const payload = buildPowerShellPayload(cmd, startMark, endMark);
+  const merged = [
+    "PS C:\\x> " + startMark,
+    "PS C:\\x> " + `${cmd} 2>&1`,
+    "1027511XPS C:\\x> $__mtBad = (-not $?)",
+    "PS C:\\x> " + `Write-Output ('${endMark}' + $(if ($__mtBad) { 1 } else { 0 }))`,
+  ].join("\r\n");
+  const split = splitBuffer(merged, startMark, endMark);
+  const clean = cleanPowerShellOutput(split.output, { echoLines: payload.split("\r") });
+  assert.equal(clean, "1027511X", `真输出必须保留（含被 CSI 吃掉后残留的 X）：${JSON.stringify(clean)}`);
+});
+
+test("PS：stripTerminalNoise 把 OSC / 其它 CSI 都剥干净（bash 分支不用它）", () => {
+  assert.equal(
+    stripTerminalNoise("\u001b]7;file://HOST/C:/Users/x\u0007hello\u001b]0;title\u0007"),
+    "hello",
+    "OSC 7 / 标题要整条剥掉，不留 `ile://` 残渣",
+  );
+  assert.equal(stripTerminalNoise("\u001b]7;file://HOST/C:/x\u001b\\ok"), "ok", "ST 结尾形态也要剥");
+  // stripAnsi 不认 `ESC [57X`（ECH），会留一个 X —— stripTerminalNoise 必须把它吃干净。
+  assert.equal(stripTerminalNoise("a\u001b[57Xb"), "ab");
+  assert.equal(stripTerminalNoise("a\u001b[1;21Hb"), "ab");
+  assert.equal(stripTerminalNoise("plain"), "plain");
+  assert.equal(stripTerminalNoise(undefined), "");
+});
+
+test("PS：stripOsc 把 OSC 7（当前目录）整条剥掉，不留 `ile://` 残渣", () => {
+  const withOsc = "\u001b]7;file://HOST/C:/Users/x\u0007hello\u001b]0;title\u0007";
+  assert.equal(stripTerminalNoise(withOsc), "hello");
+  // ST 结尾的形态（ESC \\）也要剥。
+  assert.equal(stripTerminalNoise("\u001b]7;file://HOST/C:/x\u001b\\ok"), "ok");
+  // 不碰其它内容。
+  assert.equal(stripTerminalNoise("plain"), "plain");
+  assert.equal(stripTerminalNoise(undefined), "");
+});
+
+test("PS：runner 按 shellNameResolver 选分支（powershell 会话回 CR 包装串）", async () => {
+  const { registry, runner } = makeRunner();
+  autoProbe(registry);
+  runner.setShellNameResolver(() => "PowerShell 7");
+  const writes = [];
+  registry.on("write", ({ data }) => writes.push(data));
+  // 不回任何输出：只看写进 PTY 的 payload 形态，不等结束。
+  const pending = runner.run({ sessionId: "s1", command: "Write-Output 'hi'" });
+  await sleep(60);
+  const probeWrite = writes.find((data) => data.includes("__MT_PROBE_"));
+  assert.ok(probeWrite, "必须发过探测串");
+  assert.equal(probeWrite, `Write-Output '__MT_PROBE_${/__MT_PROBE_([0-9a-f]+)__/.exec(probeWrite)[1]}__ok'\r`);
+  const runWrite = writes.find((data) => data.includes("__MT_S_"));
+  assert.ok(runWrite, "必须发过执行串");
+  assert.equal(runWrite.includes("\n"), false, "PS 执行串不得含裸 \\n");
+  assert.ok(runWrite.includes("Write-Output '"), "PS 执行串用 Write-Output 打标记");
+  assert.ok(runWrite.includes("$__mtBad"), "PS 执行串含退出码判定行");
+  runner.dispose("s1");
+  await pending;
+});
+
+test("PS：probeMarkerSeen 不允许被「Write-Output 回显」冒充（只认执行后的输出行）", () => {
+  const marker = "__MT_PROBE_ab12__ok";
+  // bash 分支：回显里不会出现完整标记（只有 `__%s`），保持原来的 includes 语义。
+  assert.equal(probeMarkerSeen(`$ printf '__MT_PROBE_ab12__%s\\n' "ok"`, marker, "bash"), false);
+  assert.equal(probeMarkerSeen(`\r\n${marker}\r\n`, marker, "bash"), true);
+
+  // PowerShell 分支：`Write-Output '__MT_PROBE_…__ok'` 回显里就有完整标记，不能算。
+  assert.equal(probeMarkerSeen(`PS C:\\x> Write-Output '${marker}'`, marker, "powershell"), false);
+  // 真的执行了：输出行里不带 Write-Output。
+  assert.equal(probeMarkerSeen(`PS C:\\x> Write-Output '${marker}'\r\n${marker}\r\n`, marker, "powershell"), true);
+  // 空输入。
+  assert.equal(probeMarkerSeen("", marker, "powershell"), false);
+});
+
+test("PS：未注入 shellNameResolver 时落回 bash 分支（零回归）", async () => {
+  const { registry, runner } = makeRunner();
+  autoProbe(registry);
+  const writes = [];
+  registry.on("write", ({ data }) => writes.push(data));
+  const pending = runner.run({ sessionId: "s1", command: "ls" });
+  await sleep(60);
+  const probeWrite = writes.find((data) => data.includes("__MT_PROBE_"));
+  assert.ok(probeWrite.startsWith("printf '__MT_PROBE_"), `默认必须是 bash 探测串：${JSON.stringify(probeWrite)}`);
+  assert.ok(probeWrite.endsWith("\n"), "bash 探测串仍以 \\n 结尾");
+  const runWrite = writes.find((data) => data.includes("__MT_S_"));
+  assert.ok(runWrite.startsWith("printf '\\n%s\\n' '"), `默认必须是 bash 包装串：${JSON.stringify(runWrite)}`);
+  runner.dispose("s1");
+  await pending;
+});
+
+test("PS：shellNameResolver 自己抛错时退化为 bash，不把执行带崩", async () => {
+  const { registry, runner } = makeRunner();
+  autoProbe(registry);
+  runner.setShellNameResolver(() => {
+    throw new Error("boom");
+  });
+  const writes = [];
+  registry.on("write", ({ data }) => writes.push(data));
+  const pending = runner.run({ sessionId: "s1", command: "ls" });
+  await sleep(60);
+  const runWrite = writes.find((data) => data.includes("__MT_S_"));
+  assert.ok(runWrite && runWrite.startsWith("printf "), "抛错时必须是 bash 包装串");
+  runner.dispose("s1");
+  await pending;
 });
 
 test("makeMarks 生成成对标记，nonce 是 12 位十六进制", () => {

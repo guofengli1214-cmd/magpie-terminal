@@ -119,12 +119,74 @@ export const KNOWN_FIELDS = Object.freeze([
 
 ### 4.1 包装串
 
+**先按 shell 家族分支**（`shellFamilyOf()`，`src/ai/runner.mjs`）：
+
+- `session.shell.name` 匹配 `/powershell|pwsh/i`（`PowerShell 7` / `PowerShell 5` / `pwsh`）→ **PowerShell 分支**（§4.1-PS）
+- 其它一切（`bash`、`ssh user@host`、`null`）→ **bash 分支**（§4.1-bash）。
+  远程 SSH 会话的 `shell.name` 是 `ssh <user>@<host>`，远端跑的是 Linux bash，**必须走 bash 分支**。
+
+runner 通过 `setShellNameResolver(fn)` 拿到 shell 名（`src/server/ws.mjs` 注入，与
+`setSessionResolver` 相互独立）；解析器抛错时退化为 bash 分支。
+
+#### 4.1-bash（**逐字节不得改动**）
+
 ```js
 const nonce = crypto.randomBytes(6).toString("hex");
 const startMark = `__MT_S_${nonce}__`;
 const endMark = `__MT_E_${nonce}__`;
 const payload = `printf '\\n%s\\n' '${startMark}'; ( ${command}\n ) 2>&1; printf '${endMark}%s\\n' "$?"\n`;
 ```
+
+#### 4.1-PS（PowerShell 7 与 Windows PowerShell 5.1）
+
+`buildPowerShellPayload(command, startMark, endMark)`，五个片段**必须用 CR（`\r`）连接**，末尾再补一个 `\r`：
+
+```js
+export function buildPowerShellPayload(command, startMark, endMark) {
+  const body = String(command).replace(/\r\n/g, "\n").replace(/\n/g, "\r");
+  return [
+    `Write-Output '${startMark}'`,
+    `$__mtErr0 = $Error.Count; $__mtLx0 = $LASTEXITCODE`,
+    `${body} 2>&1`,
+    `$__mtBad = (-not $?) -or ($Error.Count -gt $__mtErr0) -or ($LASTEXITCODE -ne $__mtLx0 -and $LASTEXITCODE -ne 0)`,
+    `Write-Output ('${endMark}' + $(if ($__mtBad) { 1 } else { 0 }))`,
+  ].join("\r") + "\r";
+}
+```
+
+为什么与 bash 不同（全部来自真 PTY 实测，不是设计偏好）：
+
+| 点 | bash | PowerShell |
+|---|---|---|
+| 行尾提交 | `\n` | **`\r`**。用 `\n` 会被 PSReadLine 当续行，永远停在 `>> ` 上不执行 |
+| 多行命令 | `( cmd\n )` 包起来 | 逐行 `\r` 提交，块语句靠 `>> ` 续行自己闭合；**不要**用 `( … )` 包 |
+| 退出码 | `"$?"` 就是数字 | `$?` 是**布尔**（True/False）。靠 `$?` + `$Error.Count` 增量 + `$LASTEXITCODE` 变化组合判定，输出 0/1 |
+
+`$__mtBad` 那一行**必须紧跟在命令本体之后**：`$?` 只反映紧邻的上一条语句。结束标记格式与 bash 分支一致（`<endMark><数字>`），所以 §4.2 的 `splitBuffer()` 不用改。
+
+`2>&1` 加在命令本体的**最后一小段**后面（`git status 2>&1`；块语句是 `} 2>&1`，PowerShell 合法）。
+
+#### 4.1-PS 输出清洗（`stripTerminalNoise()` + `cleanPowerShellOutput()`，只对 PowerShell 分支）
+
+逐行 CR 提交时 PowerShell 会把提示符、命令回显、续行提示符 `>> ` 和控制序列一起吐回来。
+`stripAnsi()` **之前**先过 `stripTerminalNoise()`（`stripAnsi()` 的正则由 §4.2 逐字冻结，
+它吃 OSC 7 只吃一半、也不认 `ESC [57X` 这类 CSI）；之后再 `cleanPowerShellOutput()`，
+最后 `truncateOutput()`。
+
+`cleanPowerShellOutput(text, { echoLines })` 的规则（`echoLines` = 本次写进 PTY 的 payload 按 `\r` 拆开）：
+
+1. `\r\n` / `\r` 统一成 `\n`；
+2. 把**嵌在行中的**提示符（`PS C:\…> `）换成换行：它前面是真输出，后面是回显；
+   不整行丢弃 —— 真 PTY 实测见过 `1027511XPS C:\Users\…> $__mtBad = …` 这种真输出粘上提示符重绘，整行丢就丢数据；
+3. 丢掉以 `>> `（续行提示符）开头的整行；
+4. 在每行第一个 `__MT_S_` / `__MT_E_` / `$__mt` 处截断，保留前缀；
+5. 丢掉「payload 回显的折行残片」：终端比 payload 窄时 PSReadLine 会折断一行，
+   残片既没提示符也不含标记 → 判据是「整行是某个 `echoLines` 元素的**前缀/后缀/全等**且长度 ≥ 8」；
+6. 兜底剥掉行首残留的 `>> `（TASK 卡 §6.4 原文的 `/^>> /gm`），去首尾空白。
+
+第 5 条不是可选项：真 PTY 实测在 **120 列**下把 `$__mtBad = …` 折断，残片 `CODE -ne 0)` 会混进最终输出（`.dispatch/fix-ps/live.txt` 里真见过）。
+
+**bash 分支绝不走这两步**，输出一个字节都不许变。
 
 写入：`registry.write(sessionId, payload)`（本地是 `sessions.write`，远程是 `remote.write`）。
 
@@ -150,14 +212,33 @@ const payload = `printf '\\n%s\\n' '${startMark}'; ( ${command}\n ) 2>&1; printf
 
 ### 4.4 能力探测（每个会话一次，缓存在 Map 里，按 sessionId）
 
-第一次执行前先跑：
+第一次执行前先跑，**按 shell 家族分支**：
+
+**bash 分支**（`buildProbePayload()`）：
 
 ```
 printf '__MT_PROBE_<nonce>__%s\n' "ok"
 ```
 
+**PowerShell 分支**（`buildPowerShellProbePayload()`，行尾必须是 **CR**）：
+
+```js
+export function buildPowerShellProbePayload(nonce) {
+  return `Write-Output '__MT_PROBE_${nonce}__ok'\r`;
+}
+```
+
+用 `\n` 结尾会停在 `>> ` 上不执行，探测永远等不到标记 → `probe()` 返回 `false` → 所有自动执行都变成 `EXEC_UNSUPPORTED`（这正是 TASK-FIX-PS-SHELL 修的缺陷）。
+
 能读到 `__MT_PROBE_<nonce>__ok` → 支持；否则标记 `unsupported`，之后所有自动执行请求直接返回
 `{ ok: false, code: "EXEC_UNSUPPORTED", userText: "这个终端不支持自动执行（可能是 Windows 的 cmd.exe），我把命令列给你，你复制到终端里运行。" }`。
+
+**判定必须用 `probeMarkerSeen()`，不能只 `includes(marker)`**：
+
+- bash 分支：回显里只有 `__MT_PROBE_<nonce>__%s`（不是 `__ok`），所以 `includes` 就够；
+- PowerShell 分支：探测串回显本身就是 `Write-Output '__MT_PROBE_<nonce>__ok'`，**含完整标记**。
+  所以要求标记出现在**不带 `Write-Output` 的行**上（即真被执行后打出来的那一行），
+  否则「终端能回显」就会被当成「终端能执行」。
 
 发送 `EXEC_UNSUPPORTED` 时，模型应改为只用文字回答并给出命令列表，不再调 `run_command`。
 
@@ -166,6 +247,25 @@ printf '__MT_PROBE_<nonce>__%s\n' "ok"
 - **绝不**在日志里打印完整命令（只打 `commandLength` 和前 40 字符）
 - **绝不**把 PTY 原始字节直接塞给模型（必须先 stripAnsi 再截断）
 - 执行期间不改用户的终端尺寸、不发 `pty.resize`
+- bash 分支的包装串/探测串**逐字节冻结**（`test/ai/runner.test.mjs` 有逐字断言）；改 PowerShell 分支不得顺手改 bash
+
+### 4.6 已知限制（PowerShell）
+
+真 PTY 实测（`.dispatch/fix-ps/matrix*.mjs`、`probe.mjs`）的结论：
+
+- **cmdlet 的非终止错误能判出来**（`Get-Item` 找不到路径 → 退出码 1，与 pwsh 一致）。
+  卡 §9 预测「PS5 判不出」在本机的 5.1.22621 上**未复现**；判出来的机制是 `$Error.Count` 增量。
+- **PS5 的真差异在 native 命令写 stderr 且成功退出**：`2>&1` 重定向后 PowerShell 5.1 会把
+  stderr 当成一条 `NativeCommandError` 记进 `$Error`，`$?` 变 False、`$Error.Count` 涨，于是
+  `git status`（成功但往 stderr 打进度）、`npm --version`（`npm.ps1` 被执行策略拦）这类命令会被
+  判成**失败**（exitCode 1）。pwsh 7 不会（`$?` 仍 True）。
+  因此 **AI 要自己看输出判断**：exitCode 1 时若输出里是「警告 / 进度 / 执行策略提示」而不是错误，
+  应读文本再下结论。
+- **命令退出码被归一到 0/1**：PowerShell 分支只报成功/失败（<endMark>0 或 <endMark>1），
+  bash 分支的原始退出码（如 3、7）在 PowerShell 下看不到。
+- **输出清洗会误杀个别真输出**：若命令自己的输出恰好是 payload 某个片段的**前缀/后缀/全等**
+  （长度 ≥ 8，如 `Write-Output ('`），或行首是 `>> ` / `PS C:\…> `，那些行会被当回显丢掉。
+  宁可少露一点回显，也不能把回显当命令结果交给模型。
 
 ---
 

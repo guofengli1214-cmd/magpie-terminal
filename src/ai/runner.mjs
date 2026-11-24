@@ -120,6 +120,158 @@ export function buildPayload(command, startMark, endMark) {
 }
 
 /**
+ * 这个会话该用哪种包装串（TASK-FIX-PS-SHELL §6.1）。
+ *
+ * 只认两个家族：
+ *   - `PowerShell 7` / `PowerShell 5` / `pwsh` 这类展示名 → `"powershell"`
+ *   - 其它一切（`bash`、`ssh user@host`、`null`、`undefined`）→ `"bash"`
+ *
+ * 为什么 SSH 远端必须落回 bash：远程会话的 `session.shell.name` 是
+ * `ssh <user>@<host>`（src/ssh/registry.mjs），远端跑的是 Linux bash，
+ * 绝不是 PowerShell。别往这里加第三个分支。
+ *
+ * @param {string|null|undefined} shellName
+ * @returns {"bash"|"powershell"}
+ */
+export function shellFamilyOf(shellName) {
+  if (typeof shellName === "string" && /powershell|pwsh/i.test(shellName)) return "powershell";
+  return "bash";
+}
+
+/**
+ * PowerShell 分支的包装串（PROTOCOL §4.1，TASK-FIX-PS-SHELL §6.2）。
+ *
+ * 三处与 bash 根本不同，全是真 PTY 实测出来的：
+ *   1. 片段之间用 **CR**（`\r`）提交。用 `\n` 会被 PSReadLine 当成续行，
+ *      永远停在 `>> ` 提示符上不执行。
+ *   2. 命令本体的换行先归一成 `\n` 再全换成 `\r`（逐行提交；块语句靠在
+ *      `>> ` 续行里自己闭合）。
+ *   3. 退出码不能靠 `$?`——它是**布尔**。这里用 `$?` + `$Error.Count` 增量
+ *      + `$LASTEXITCODE` 变化三条一起判定，判完立刻输出 `<endMark>0/1`，
+ *      格式与 bash 分支一致，`splitBuffer()` 不用改。
+ *
+ * `$__mtBad` 那一行必须紧跟在命令本体之后：`$?` 只反映紧邻的上一条语句。
+ *
+ * @param {string} command
+ * @param {string} startMark
+ * @param {string} endMark
+ * @returns {string}
+ */
+export function buildPowerShellPayload(command, startMark, endMark) {
+  const body = String(command).replace(/\r\n/g, "\n").replace(/\n/g, "\r");
+  return [
+    `Write-Output '${startMark}'`,
+    `$__mtErr0 = $Error.Count; $__mtLx0 = $LASTEXITCODE`,
+    `${body} 2>&1`,
+    `$__mtBad = (-not $?) -or ($Error.Count -gt $__mtErr0) -or ($LASTEXITCODE -ne $__mtLx0 -and $LASTEXITCODE -ne 0)`,
+    `Write-Output ('${endMark}' + $(if ($__mtBad) { 1 } else { 0 }))`,
+  ].join("\r") + "\r";
+}
+
+/** 退出码判定行的特征（`-not $?` 只在 `$__mtBad = …` 那一行出现）。 */
+const EXIT_ECHO_RE = /\$__mtBad = \(-not \$\?\)/;
+
+/**
+ * PowerShell 分支的输出清洗（PROTOCOL §4.1-PS，TASK-FIX-PS-SHELL §6.4）。
+ *
+ * 逐行 CR 提交时 PowerShell 会把提示符、命令回显和续行提示符 `>> ` 一起吐回来。
+ * 这些是 shell 噪音，不是命令输出；不清掉会把 4000 字符预算全花在回显上。
+ *
+ * 关键在于**只切掉回显那一段，不丢掉整行**：真 PTY 实测里见过
+ * `1027511XPS C:\Users\…> $__mtBad = …` 这种「真输出 + 提示符重绘」粘在一行，
+ * 整行丢弃就把真输出（`1027511`）丢了。所以规则是：
+ *
+ *   1. CR / CRLF 统一成 LF；
+ *   2. 把**嵌在行中的**提示符（`PS C:\…> `）换成换行：它之前是真输出，之后是回显；
+ *   3. 丢掉换行后以 `>> `（续行提示符）开头的行：那整行都是我们写进去的续行回显；
+ *   4. 在每行的第一个标记（`__MT_S_` / `__MT_E_`）或 `$__mt` 处截断：前缀是真输出，
+ *      后缀是回显或竞态残留；
+ *   5. **遇到退出码判定行的回显（含 `-not $?` 的那一行）就整体截断**：命令已经跑完，
+ *      它后面的全部是包装串回显。这一条是折行残片的根治手段——终端宽度窄时
+ *      PSReadLine 会把那一行折成好几段（真 PTY 实测：120 列 + 长提示符下会折出
+ *      单独一行 `0` 和 ` -and $LASTEXITCODE -ne 0)`），靠逐行识别永远有漏网的；
+ *   6. 丢掉「payload 回显的折行残片」：第 5 条没盖住的（命令回显那一行的折行），
+ *      用「整行是某个 `echoLines` 元素的前缀/后缀/全等且长度 ≥ 8」做兑底。
+ *
+ * 为什么不用「子串」判据：`in-block` 是 `Write-Output 'in-block'` 的子串，但它是
+ * 真输出（真 PTY 实测过的误杀）。
+ *
+ * 第 5 条为什么必须有：真 PTY 实测（`.dispatch/fix-ps/repro8.mjs`）在 **120 列**
+ * + 长提示符下把 `$__mtBad = …` 那一行折成 `…$__mtLx0` / `0` / ` -and … -ne 0)`
+ * 三段，孤立的 `0` 会混进最终输出（live.txt 里真见过）。靠逐行识别永远有漏网的，
+ * 直接截断到这一行最干净。代价：命令的**异步**后置输出（后台作业往终端打东西）
+ * 会丢——但 runner 本来就以 endMark 为结束依据，那部分输出原本也领不到。
+ *
+ * 代价：若命令自己的输出恰好是 payload 某个片段的**前缀或后缀**或全等（长度 ≥ 8），
+ * 会被当作回显丢掉。已写入 PROTOCOL §4.6。
+ *
+ * **只对 PowerShell 分支调用**，bash 分支的输出一个字节都不许变。
+ *
+ * @param {string} text
+ * @param {{echoLines?: string[]}} [opts] echoLines：本次写进 PTY 的 payload 按 CR 拆开
+ * @returns {string}
+ */
+export function cleanPowerShellOutput(text, opts = {}) {
+  if (typeof text !== "string" || text.length === 0) return "";
+  const echoLines = Array.isArray(opts && opts.echoLines)
+    ? opts.echoLines.map((line) => String(line).trim()).filter((line) => line.length >= 8)
+    : [];
+
+  // 2. 行中夹的提示符 = 换行（它后面的都是回显）。
+  const normalized = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/PS [A-Za-z]:[^>\n]*> ?/g, "\n");
+
+  const kept = [];
+  for (const rawLine of normalized.split("\n")) {
+    // 5. 退出码判定行的回显 = 命令已经跑完，后面全是包装串回显 → 整体截断。
+    if (EXIT_ECHO_RE.test(rawLine)) break;
+    // 3. 整行都是续行回显。
+    if (/^>> /.test(rawLine)) continue;
+    // 4. 在第一个标记 / 包装串变量处截断，保留前缀（真输出可能在前面）。
+    let line = rawLine;
+    const cutAt = line.search(/__MT_[SE]_|\$__mt/);
+    if (cutAt >= 0) line = line.slice(0, cutAt);
+    line = line.replace(/^>> /, "").replace(/\s+$/, "");
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    // 6. 回显的折行残片 / 整行回显 / 截断后剩下的回显前缀。
+    //    一般的折行残片至少 8 字符；但 ` 2>&1` 这种尾巴可能折出 `&1` 这类 2 字符
+    //    短残片，它们一定含重定向/管道字符，这类也当回显丢。
+    const isFragmentOf = (echo) => echo === trimmed || echo.startsWith(trimmed) || echo.endsWith(trimmed);
+    const fragment =
+      (trimmed.length >= 8 && echoLines.some(isFragmentOf)) ||
+      (trimmed.length >= 2 && /[&|>]/.test(trimmed) && echoLines.some(isFragmentOf));
+    if (fragment) continue;
+    kept.push(line);
+  }
+  return kept.join("\n").trim();
+}
+
+/**
+ * 剥掉 OSC 序列（`ESC ] … BEL` / `ESC ] … ESC \\`）与 stripAnsi 漏掉的其余 CSI。
+ *
+ * 为什么必须单独剥：
+ *   1. 本仓库给每个会话注入了 OSC 7（当前目录），它夹在命令输出里。`stripAnsi()`
+ *      的正则（PROTOCOL §4.2 逐字规定，不能改）吃 OSC 时只吃掉前半截，会留下
+ *      `ile://NING/C:/…` 这种残渣（真 PTY 实测）。
+ *   2. 同一个正则不认 `ESC [57X` 这类以 `X` / `@` 结尾的 CSI，PSReadLine 重绘
+ *      经常发，不剥会在输出里留随机字母。
+ * **只对 PowerShell 分支用**：bash 分支的输出必须逐字节不变（那是既有测试锁定的
+ * 行为，与本卡无关）。
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripTerminalNoise(text) {
+  if (typeof text !== "string" || text.length === 0) return "";
+  return text
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+/**
  * PROTOCOL §4.4 的能力探测串。
  *
  * 协议原文只给了这一行命令、没写行尾；写进 PTY 时必须补一个 `\n` 才会被 shell
@@ -128,6 +280,43 @@ export function buildPayload(command, startMark, endMark) {
  */
 export function buildProbePayload(nonce) {
   return `printf '__MT_PROBE_${nonce}__%s\\n' "ok"\n`;
+}
+
+/**
+ * PowerShell 分支的探测串（PROTOCOL §4.4，TASK-FIX-PS-SHELL §6.3）。
+ *
+ * 与 bash 分支的唯一差别是行尾：必须用 **CR** 提交，用 `\n` 会停在 `>> ` 上
+ * 不执行（探测永远等不到标记）。`_ok` 直接拼在标记后面，回显与真输出同形。
+ *
+ * @param {string} nonce
+ * @returns {string}
+ */
+export function buildPowerShellProbePayload(nonce) {
+  return `Write-Output '__MT_PROBE_${nonce}__ok'\r`;
+}
+
+/**
+ * 探测标记是否真的被「执行」过（PROTOCOL §4.4）。
+ *
+ * bash 分支的探测串是 `printf '__MT_PROBE_<nonce>__%s\n' "ok"`，回显里只出现
+ * `__MT_PROBE_<nonce>__%s`，所以 `includes(marker)` 不会被回显骗过。
+ *
+ * PowerShell 分支不同：探测串是 `Write-Output '__MT_PROBE_<nonce>__ok'`，**回显本身**
+ * 就含完整标记（真 PTY 实测）。所以不能只 `includes`，要排掉 `Write-Output` 的回显行，
+ * 否则「终端能回显」就会被当成「终端能执行」。
+ *
+ * @param {string} text 已 stripAnsi 的累积输出
+ * @param {string} marker `__MT_PROBE_<nonce>__ok`
+ * @param {"bash"|"powershell"} family
+ * @returns {boolean}
+ */
+export function probeMarkerSeen(text, marker, family) {
+  if (typeof text !== "string" || text.length === 0) return false;
+  if (typeof marker !== "string" || marker.length === 0) return false;
+  if (family !== "powershell") return text.includes(marker);
+  return text
+    .split(/\r\n|\r|\n/)
+    .some((line) => line.includes(marker) && !line.includes("Write-Output"));
 }
 
 /**
@@ -203,6 +392,12 @@ export function createCommandRunner(opts = {}) {
   /** sessionId -> "local" | "remote" | null（由 ws.mjs 注入） */
   let sessionResolver = () => null;
 
+  /**
+   * sessionId -> shell 展示名（如 `PowerShell 7` / `bash` / `ssh u@h`），由 ws.mjs 注入。
+   * 独立于 sessionResolver：现有测试依赖后者的返回值形状（"local" | "remote" | null）。
+   */
+  let shellNameResolver = () => null;
+
   /** sessionId -> "ok" | "unsupported"（能力探测缓存，PROTOCOL §4.4） */
   const capabilities = new Map();
 
@@ -211,6 +406,23 @@ export function createCommandRunner(opts = {}) {
 
   function setSessionResolver(fn) {
     sessionResolver = typeof fn === "function" ? fn : () => null;
+  }
+
+  /** 注入「这个会话用的是哪个 shell」（TASK-FIX-PS-SHELL §6.5）。 */
+  function setShellNameResolver(fn) {
+    shellNameResolver = typeof fn === "function" ? fn : () => null;
+  }
+
+  /** 这个会话该走哪个 payload 分支（`"bash" | "powershell"`）。 */
+  function familyOf(sessionId) {
+    let name = null;
+    try {
+      name = shellNameResolver(sessionId);
+    } catch {
+      // 解析器自己抛错也不能把命令执行带崩：退化为 bash 分支。
+      name = null;
+    }
+    return shellFamilyOf(name);
   }
 
   function registryFor(sessionId) {
@@ -252,7 +464,8 @@ export function createCommandRunner(opts = {}) {
 
     const nonce = crypto.randomBytes(6).toString("hex");
     const marker = `__MT_PROBE_${nonce}__ok`;
-    const payload = buildProbePayload(nonce);
+    const family = familyOf(sessionId);
+    const payload = family === "powershell" ? buildPowerShellProbePayload(nonce) : buildProbePayload(nonce);
 
     const supported = await new Promise((resolve) => {
       let buffer = "";
@@ -267,7 +480,7 @@ export function createCommandRunner(opts = {}) {
       const onOutput = (info) => {
         if (!info || info.id !== sessionId) return;
         buffer += typeof info.data === "string" ? info.data : "";
-        if (stripAnsi(buffer).includes(marker)) finish(true);
+        if (probeMarkerSeen(stripAnsi(buffer), marker, family)) finish(true);
       };
       const detach = attach(sessionId, onOutput);
       const timer = setTimeout(() => finish(false), defaultTimeoutMs > 5000 ? 5000 : defaultTimeoutMs);
@@ -349,14 +562,19 @@ export function createCommandRunner(opts = {}) {
     const limit = Number.isFinite(timeoutMs) ? timeoutMs : defaultTimeoutMs;
     const minWait = Number.isFinite(minWaitMs) ? minWaitMs : defaultMinWaitMs;
 
+    const family = familyOf(sessionId);
     const { startMark, endMark } = makeMarks();
-    const payload = buildPayload(command, startMark, endMark);
+    const payload =
+      family === "powershell"
+        ? buildPowerShellPayload(command, startMark, endMark)
+        : buildPayload(command, startMark, endMark);
     // 日志里绝不出现完整命令（PROTOCOL §4.5）。
     log({
       level: "info",
       code: "COMMAND_RUN_START",
       msg: "running command in pty",
       sessionId,
+      family,
       commandLength: command.length,
       commandHead: command.slice(0, 40),
     });
@@ -385,8 +603,13 @@ export function createCommandRunner(opts = {}) {
       const settle = (rawOutput, exitCode, extra) => {
         if (finished) return;
         cleanup();
-        const stripped = stripAnsi(rawOutput);
-        const { output, truncated } = truncateOutput(stripped);
+        const stripped = stripAnsi(family === "powershell" ? stripTerminalNoise(rawOutput) : rawOutput);
+        // PowerShell 分支多一步清洗（§6.4）：bash 分支的输出一个字节都不许变。
+        const cleaned =
+          family === "powershell"
+            ? cleanPowerShellOutput(stripped, { echoLines: payload.split("\r") })
+            : stripped;
+        const { output, truncated } = truncateOutput(cleaned);
         const durationMs = Date.now() - startedAt;
         log({
           level: "info",
@@ -493,5 +716,5 @@ export function createCommandRunner(opts = {}) {
     active.clear();
   }
 
-  return { setSessionResolver, run, probe, dispose, reset };
+  return { setSessionResolver, setShellNameResolver, run, probe, dispose, reset };
 }

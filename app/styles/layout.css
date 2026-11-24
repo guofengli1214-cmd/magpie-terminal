@@ -153,7 +153,10 @@ html, body {
 [data-role="ai-handle"] {
   position: absolute;
   right: 0;
-  top: 50%;
+  /* TASK-FIX-UI-REST §6.1：把手挂在 .main 里，而 .main 高度 = 视口 - 状态栏。
+     要让把手落在「视口」中心，需要补回状态栏高度的一半
+     （F09：1440×900 下 437 → 450）。 */
+  top: calc(50% + var(--term-statusbar-height) / 2);
   transform: translateY(-50%);
   z-index: 32;
   display: flex;

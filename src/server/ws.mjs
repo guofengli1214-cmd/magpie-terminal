@@ -168,6 +168,14 @@ export function attachWebSocket(opts) {
     const hit = lookup(id);
     return hit ? hit.kind : null;
   });
+  // TASK-FIX-PS-SHELL §6.5：再注入「这个会话用的是哪个 shell」，runner 据此选
+  // bash / PowerShell 的包装串。远程会话的 shell.name 是 `ssh u@h` → 自动落回 bash。
+  runner.setShellNameResolver((id) => {
+    const hit = lookup(id);
+    if (!hit || !hit.session || !hit.session.shell) return null;
+    const name = hit.session.shell.name;
+    return typeof name === "string" && name.length > 0 ? name : null;
+  });
   const agent = createAgentRunner({ log, runner, sessions: aiSessions });
 
   // `sessions.create()` 是同步 emit `session.created` 的，早于我们能 setOwner。

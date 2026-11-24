@@ -2390,8 +2390,10 @@ button[disabled] {
   margin-top: -3px;
 }
 
-/* L1-03：文件条目的「更多」入口常显（⋯），悬浮/选中时提亮；
-   具体动作仍收在 .file-panel-fmore 里，点 ⋯ 或 hover/selected 才展开。 */
+/* L1-03：文件条目的「更多」入口常显（⋯），悬浮/选中时提亮。
+   TASK-FIX-UI-REST：点它不再在格子里展开一条 5 个文字按钮的横条（156px 宽，
+   比 110px 的格子还宽，左侧溢出 50px 盖住图标），而是弹面板级菜单
+   `.file-panel-action-menu`（见下方 .file-panel-action-menu 段）。 */
 .file-panel-more-toggle {
   position: absolute;
   top: 0;
@@ -2414,49 +2416,67 @@ button[disabled] {
 
 .file-panel-entry:hover .file-panel-more-toggle,
 .file-panel-entry[data-selected="true"] .file-panel-more-toggle,
-.file-panel-entry[data-more-open="true"] .file-panel-more-toggle {
+.file-panel-entry .file-panel-more-toggle[aria-expanded="true"] {
   opacity: 1;
   color: var(--term-fg);
   background: var(--term-raise);
 }
 
-.file-panel-entry[data-more-open="true"] .file-panel-fmore {
-  display: flex;
-  /* 展开时把动作条让开「⋯」，再点一次即可收起。 */
-  right: 30px;
-}
-
-.file-panel-fmore {
+/* TASK-FIX-UI-REST §6.3：文件条目的动作菜单。
+   挂在 `.file-panel` 根（不是 card、不是 grid）→ 不被 grid 的 overflow-y:auto
+   裁剪，也不会被虚拟滚动重渲染丢掉；坐标由 file-panel.js 的 clampMenuPosition
+   钳在面板 rect 内（宽度固定 120px，高度 = 项数 × 26 + 4，不依赖测量）。 */
+.file-panel-action-menu {
   position: absolute;
-  top: 3px;
-  right: 3px;
-  display: none;
-  gap: 1px;
-  background: var(--term-panel-2);
-  border-radius: 4px;
+  z-index: 12;
+  min-width: 120px;
+  box-sizing: border-box;
   padding: 1px;
-  z-index: 1;
-}
-
-.file-panel-entry:hover .file-panel-fmore,
-.file-panel-entry[data-selected="true"] .file-panel-fmore {
   display: flex;
+  flex-direction: column;
+  border: 1px solid var(--term-line-2);
+  border-radius: 6px;
+  background: var(--term-panel-2);
+  box-shadow: 0 12px 30px var(--term-shadow);
 }
 
-.file-panel-action {
+.file-panel-action-menu[hidden] {
+  display: none;
+}
+
+.file-panel-action-menu[data-placement="above"] {
+  box-shadow: 0 -12px 30px var(--term-shadow);
+}
+
+.file-panel-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 0 9px;
   border: none;
+  border-radius: 4px;
   background: transparent;
-  color: var(--term-muted);
-  font-size: 10px;
-  padding: 2px 4px;
-  border-radius: 3px;
-  cursor: pointer;
+  color: var(--term-fg);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
   white-space: nowrap;
+  cursor: pointer;
 }
 
-.file-panel-action:hover {
+.file-panel-menu-item:hover,
+.file-panel-menu-item:focus-visible {
+  outline: none;
   background: var(--term-raise);
-  color: var(--term-fg);
+  color: var(--term-fg-2);
+}
+
+.file-panel-menu-item[data-action="delete"]:hover,
+.file-panel-menu-item[data-action="delete"]:focus-visible {
+  background: var(--term-danger-soft);
+  color: var(--term-danger);
 }
 
 .file-panel-status {

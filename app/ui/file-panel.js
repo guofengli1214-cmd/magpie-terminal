@@ -97,6 +97,141 @@ export function computeWindow({
   };
 }
 
+/* ------------------ 条目动作清单与菜单定位（TASK-FIX-UI-REST §6.2/§6.3） ------------------
+ *
+ * 以前每条目里都塞一条横排的 `.file-panel-fmore`（5 个文字按钮 ≈150px），
+ * 而格子只有 110–117px → 左侧溢出 42–50px、盖住图标。现在改成「点 ⋯ 在面板级
+ * 弹一个竖排菜单」：文字放得下、零横向溢出，每行 DOM 从 6 个 button 降到 1 个。
+ *
+ * 下面三样都是纯函数/常量，方便单测，也避免开菜单时先测量再定位造成的闪烁。
+ */
+
+/** 菜单项高度（px）。必须与 components.css 的 `.file-panel-menu-item` 对齐。 */
+export const MENU_ITEM_HEIGHT = 26;
+/** 菜单除菜单项外的固定开销（1px 边框×2 + 1px 内边距×2）。 */
+export const MENU_CHROME = 4;
+/** 菜单宽度（px）：CSS 里 `min-width: 120px`，文案最长「重命名」放得下。 */
+export const MENU_WIDTH = 120;
+/** 菜单与按钮之间的垂直间隙（px）。 */
+export const MENU_GAP = 2;
+/** 菜单与面板四边的最小留白（px）。 */
+export const MENU_MARGIN = 4;
+
+/**
+ * 条目可执行的动作清单（顺序即菜单顺序）。
+ * @param {{type?: string}} entry
+ * @returns {Array<{label: string, action: string}>}
+ */
+export function actionsForEntry(entry) {
+  if (entry && entry.type === "dir") {
+    return [
+      { label: "打开", action: "open" },
+      { label: "重命名", action: "rename" },
+      { label: "删除", action: "delete" },
+    ];
+  }
+  return [
+    { label: "查看", action: "view" },
+    { label: "编辑", action: "edit" },
+    { label: "重命名", action: "rename" },
+    { label: "下载", action: "download" },
+    { label: "删除", action: "delete" },
+  ];
+}
+
+/** 菜单尺寸：按条目数算（不读 DOM）。 */
+export function menuSizeFor(count) {
+  const items = Math.max(0, Math.floor(Number(count) || 0));
+  return { width: MENU_WIDTH, height: items > 0 ? items * MENU_ITEM_HEIGHT + MENU_CHROME : 0 };
+}
+
+/** DOMRect / {left,top,width,height} / {left,top,right,bottom} → 统一矩形；非法返回 null。 */
+function numericRect(value) {
+  if (!value) return null;
+  const left = Number(value.left);
+  const top = Number(value.top);
+  const width = Number(value.width !== undefined ? value.width : value.w);
+  const height = Number(value.height !== undefined ? value.height : value.h);
+  let right = Number(value.right);
+  let bottom = Number(value.bottom);
+  if (!Number.isFinite(right)) right = Number.isFinite(width) ? left + width : NaN;
+  if (!Number.isFinite(bottom)) bottom = Number.isFinite(height) ? top + height : NaN;
+  if (![left, top, right, bottom].every((n) => Number.isFinite(n))) return null;
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+/**
+ * 菜单尺寸：接受 `{width, height}` / `{w, h}`（也容忍带 left/top 的矩形）。
+ * 拿不到就按「最长的文件菜单」（5 项）算，宁可多留白也不越界。
+ */
+function menuSize(menu) {
+  const fallback = menuSizeFor(5);
+  if (!menu || typeof menu !== "object") return fallback;
+  const width = Number(menu.width !== undefined ? menu.width : menu.w);
+  const height = Number(menu.height !== undefined ? menu.height : menu.h);
+  return {
+    width: Number.isFinite(width) && width > 0 ? width : fallback.width,
+    height: Number.isFinite(height) && height > 0 ? height : fallback.height,
+  };
+}
+
+/**
+ * 菜单定位（视口坐标，纯函数）：优先贴在「锚点」下方，放不下翻到上方，
+ * 左右按面板内缩 4px 钳制；面板比菜单还窄/矮时取左上边界，绝不出负数。
+ *
+ * 水平按 `btn`（⋯ 按钮）对齐；垂直按 `anchor`（整张条目卡片）对齐 ——
+ * 这样菜单落在整张卡片的下方/上方，不会压住「这一行自己的文件名与图标」。
+ * 不传 `anchor` 时退回 `btn`（与 TASK §6.3 的原始公式一致）。
+ *
+ * @param {{btn?: object, anchor?: object, menu?: object, panel?: object}} input
+ *   `btn` / `anchor` / `panel` 接受 DOMRect 或 `{left, top, right, bottom}` /
+ *   `{left, top, width, height}`；`menu` 只要 `{width, height}`（用 menuSizeFor() 算）。
+ * @returns {{left: number, top: number, placement: "above"|"below"|"side"|"fit"}}
+ *   视口坐标（写 CSS 前要减去面板原点）。`placement` 是真实几何关系：菜单整块
+ *   在锚点上方 → "above"，整块在下方 → "below"，上下都放不下、改到卡片旁边
+ *   → "side"，连旁边也放不下（面板比菜单还窄）→ "fit"（硬塞在面板内）。
+ */
+export function clampMenuPosition({ btn, anchor, menu, panel } = {}) {
+  const button = numericRect(btn);
+  const frame = numericRect(panel);
+  // 参数不完整（如面板还未布局）：不抛异常，返回一个「什么都不能用」的结果。
+  if (!button || !frame) return { left: 0, top: 0, placement: "fit" };
+  const ref = numericRect(anchor) || button;
+  const { width, height } = menuSize(menu);
+
+  const minLeft = frame.left + MENU_MARGIN;
+  const maxLeft = frame.right - width - MENU_MARGIN;
+  // 先按「按钮左缘」贴齐，再钳进面板；面板太窄时 minLeft 胜出（不产生负数）。
+  const left = Math.max(minLeft, Math.min(button.left, maxLeft));
+
+  const minTop = frame.top + MENU_MARGIN;
+  const maxTop = frame.bottom - height - MENU_MARGIN;
+  const below = ref.bottom + MENU_GAP;
+  const above = ref.top - height - MENU_GAP;
+
+  if (below <= maxTop) return { left, top: below, placement: "below" };
+  if (above >= minTop && above <= maxTop) return { left, top: above, placement: "above" };
+
+  // 上/下都放不下（面板只有两三行高）：改到卡片右侧（放不下则左侧），
+  // 让菜单「不遮住你正在操作的那一行」——比直接压在它上面好理解得多。
+  const sideTop = Math.max(minTop, Math.min(ref.top, maxTop));
+  const rightSide = ref.right + MENU_GAP;
+  if (rightSide + width <= frame.right - MENU_MARGIN) {
+    return { left: rightSide, top: sideTop, placement: "side" };
+  }
+  const leftSide = ref.left - width - MENU_GAP;
+  if (leftSide >= minLeft) {
+    return { left: leftSide, top: sideTop, placement: "side" };
+  }
+
+  // 面板比菜单还窄：只能硬塞进面板左上角（不越界优先）。
+  return {
+    left,
+    top: Math.max(minTop, Math.min(above, maxTop)),
+    placement: "fit",
+  };
+}
+
 function el(tag, attrs = {}, text) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -198,6 +333,8 @@ export default function createFilePanel(elements) {
   let modal = null;
   let unsubscribe = null;
   let lastActiveId = null;
+  // TASK-FIX-UI-REST：面板级动作菜单（挂在 .file-panel 根上，不进 grid）。
+  let actionMenu = null;
 
   // TASK-FIX-ACCEPT4：虚拟窗口状态。
   let topSpacer = null;
@@ -272,6 +409,8 @@ export default function createFilePanel(elements) {
   function applyOpen() {
     if (!root) return;
     root.hidden = !state.open;
+    // 面板收起时浮层菜单不能留在屏幕上。
+    if (!state.open) closeActionMenu({ restoreFocus: false });
     document.documentElement.setAttribute("data-files-open", state.open ? "true" : "false");
     const railButton = document.querySelector('[data-role="rail-files"]');
     if (railButton) {
@@ -347,6 +486,8 @@ export default function createFilePanel(elements) {
 
   function renderGridMessage(text, isError) {
     if (!grid) return;
+    // 重渲染一律关菜单：剩一个指向旧条目的悬空菜单比消失更难理解。
+    closeActionMenu({ restoreFocus: false });
     rendered = { startIndex: 0, endIndex: 0, columns: 0 };
     grid.textContent = "";
     const note = el("p", { className: "file-panel-empty" }, text);
@@ -357,6 +498,8 @@ export default function createFilePanel(elements) {
   function render() {
     renderPathBar();
     renderFollowButton();
+    // 切目录 / 刷新：菜单指向的条目即将被重建，先收掉。
+    closeActionMenu({ restoreFocus: false });
     if (!grid) return;
     rendered = { startIndex: 0, endIndex: 0, columns: 0 };
     if (state.entries.length === 0) {
@@ -475,7 +618,7 @@ export default function createFilePanel(elements) {
     }
 
     // 按 data-path 复用已有节点：滚动一格只换掉进出窗口的那几个，
-    // 不重建整个窗口（hover / data-more-open / 焦点都留在原地）。
+    // 不重建整个窗口（hover / 选中 / 焦点都留在原地）。
     const existing = new Map();
     for (const node of grid.querySelectorAll('[data-role="file-entry"]')) {
       existing.set(node.getAttribute("data-path"), node);
@@ -541,6 +684,8 @@ export default function createFilePanel(elements) {
         grid.setAttribute("data-focus-path", keepFocusPath);
       }
     }
+    // 重铺可能把菜单的锚点行卸载了 → 菜单跟着关掉（不留悬空浮层）。
+    syncActionMenuToDom();
   }
 
   /** CSS.escape 兜底：Windows 路径里有反斜杠、空格与中文。 */
@@ -550,11 +695,14 @@ export default function createFilePanel(elements) {
     return text.replace(/["\\]/g, "\\$&");
   }
   function onGridScroll() {
+    // 滚动时窗内条目会重铺，菜单一律关掉（§6.3：不留悬空菜单）。
+    closeActionMenu({ restoreFocus: false });
     paintWindow();
   }
 
   function onGridResize() {
     // 列数 / 可视高度变了：窗口要重算。paintWindow 自己会比较，没变就不动 DOM。
+    closeActionMenu({ restoreFocus: false });
     paintWindow();
   }
 
@@ -588,55 +736,29 @@ export default function createFilePanel(elements) {
     );
     card.appendChild(meta);
 
-    // 悬浮操作：查看 / 编辑 / 重命名 / 下载 / 删除（目录只有重命名/删除）。
-    const more = el("span", { className: "file-panel-fmore", "aria-hidden": "false" });
-    const actions = entry.type === "dir"
-      ? [["打开", "open"], ["重命名", "rename"], ["删除", "delete"]]
-      : [["查看", "view"], ["编辑", "edit"], ["重命名", "rename"], ["下载", "download"], ["删除", "delete"]];
-    for (const [label, action] of actions) {
-      const button = el("button", {
-        type: "button",
-        className: "file-panel-action",
-        "data-action": action,
-        title: `${label}：${entry.name}`,
-      }, label);
-      button.addEventListener("click", (event) => {
-        event.stopPropagation();
-        void runAction(action, entry);
-      });
-      more.appendChild(button);
-    }
-    // L1-03：每行常显一个「⋯」入口（弱化配色），点开才露出具体动作；
-    // hover / 选中仍可直接展开，保持原有快捷路径。
+    // TASK-FIX-UI-REST §6.2：行内只留一个「⋯」入口。具体动作改为点开
+    // 面板级弹出菜单（见 §6.3），不再往格子里塞 5 个文字按钮。
     const moreToggle = el("button", {
       type: "button",
       className: "file-panel-more-toggle",
       "data-role": "file-more-toggle",
       title: `更多操作：${entry.name}`,
       "aria-label": `更多操作：${entry.name}`,
+      "aria-haspopup": "menu",
       "aria-expanded": "false",
     }, "⋯");
     moreToggle.addEventListener("click", (event) => {
       event.stopPropagation();
-      const open = card.getAttribute("data-more-open") === "true";
-      // 同时只展开一行：再点自己关闭，点别的行先收起旧行。
-      for (const other of grid.querySelectorAll('[data-more-open="true"]')) {
-        if (other !== card) other.removeAttribute("data-more-open");
-      }
-      if (open) card.removeAttribute("data-more-open");
-      else card.setAttribute("data-more-open", "true");
-      moreToggle.setAttribute("aria-expanded", open ? "false" : "true");
+      // 再点同一个 ⋯ → 关闭（切换）；点别的行 → 关掉旧的、在新位置重开。
+      if (openMenuEntry && openMenuEntry.path === entry.path) closeActionMenu({ restoreFocus: false });
+      else openActionMenu(entry, moreToggle);
     });
     card.appendChild(moreToggle);
-    card.appendChild(more);
 
     card.addEventListener("click", (event) => {
-      if (event.target && event.target.closest && event.target.closest(".file-panel-action")) return;
       if (event.target && event.target.closest && event.target.closest(".file-panel-more-toggle")) return;
       state.selected.clear();
       state.selected.add(entry.path);
-      card.removeAttribute("data-more-open");
-      moreToggle.setAttribute("aria-expanded", "false");
       for (const node of grid.querySelectorAll('[data-role="file-entry"]')) {
         node.setAttribute("data-selected", node.getAttribute("data-path") === entry.path ? "true" : "false");
       }
@@ -658,6 +780,186 @@ export default function createFilePanel(elements) {
     const selectedCount = state.selected.size;
     const suffix = selectedCount > 0 ? ` · 已选 ${selectedCount} 项` : "";
     statusLine.textContent = `${state.kind === "remote" ? "远程" : "本地"} · ${count} 项${suffix}`;
+  }
+
+  /* ------------------ 面板级动作菜单（TASK-FIX-UI-REST §6.3） ------------------
+   *
+   * 菜单挂在 `.file-panel` 根上（不在 card、不在 grid）：
+   * - 不会被 grid 的 `overflow-y:auto` 裁掉；
+   * - 虚拟滚动重渲染只动 card，菜单不会随之丢失（但重渲染/滚动本身会关掉它，
+   *   避免留一个指向已卸载行的悬空菜单）。
+   * 定位用纯函数 clampMenuPosition（按条目数算高度，不先测量再摆，免闪）。
+   */
+
+  /** 当前菜单指向的条目（null = 没开）。 */
+  let openMenuEntry = null;
+  /** 当前开菜单的那个 ⋯ 按钮（Esc 后要把焦点还回去）。 */
+  let openMenuButton = null;
+
+  function ensureActionMenu() {
+    if (actionMenu && actionMenu.parentNode === root) return actionMenu;
+    actionMenu = el("div", {
+      className: "file-panel-action-menu",
+      "data-role": "file-action-menu",
+      role: "menu",
+      hidden: true,
+    });
+    if (root) root.appendChild(actionMenu);
+    return actionMenu;
+  }
+
+  /** 关闭菜单；`restoreFocus` 为真时把焦点还给打开它的 ⋯。 */
+  function closeActionMenu({ restoreFocus = false } = {}) {
+    const button = openMenuButton;
+    openMenuEntry = null;
+    openMenuButton = null;
+    if (actionMenu) {
+      actionMenu.hidden = true;
+      actionMenu.textContent = "";
+      actionMenu.removeAttribute("data-open-path");
+      actionMenu.removeAttribute("data-placement");
+    }
+    if (button) {
+      button.setAttribute("aria-expanded", "false");
+      if (restoreFocus && button.isConnected && typeof button.focus === "function") {
+        button.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  /** 按当前面板/按钮位置把菜单摆好（视口坐标 → 面板内绝对坐标）。 */
+  function positionActionMenu(button) {
+    if (!actionMenu || !root) return;
+    const items = actionMenu.querySelectorAll('[data-role="file-action-item"]').length;
+    const size = menuSizeFor(items);
+    const panelRect = root.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    // 垂直按「整张卡片」对齐：菜单落在卡片下方/上方，绝不遮住这一行自己的
+    // 文件名与图标（TASK §2 目标 2「不遮文件名、不遮图标」）。
+    const card = button.closest('[data-role="file-entry"]');
+    const cardRect = card ? card.getBoundingClientRect() : buttonRect;
+    const placed = clampMenuPosition({
+      btn: buttonRect,
+      anchor: cardRect,
+      menu: { width: size.width, height: size.height },
+      panel: panelRect,
+    });
+    // 绝对定位的包含块是面板的「padding box」；面板顶边有 1px 边框，
+    // 要减掉 border 宽，菜单才能精准落在算好的视口坐标上（否则整体偏 1px）。
+    const offsetX = panelRect.left + (root.clientLeft || 0);
+    const offsetY = panelRect.top + (root.clientTop || 0);
+    actionMenu.style.left = `${Math.round(placed.left - offsetX)}px`;
+    actionMenu.style.top = `${Math.round(placed.top - offsetY)}px`;
+    // placement 由定位函数给出（翻到上方时阴影也要反过来）。
+    actionMenu.setAttribute("data-placement", placed.placement);
+  }
+
+  function menuItems() {
+    if (!actionMenu) return [];
+    return Array.from(actionMenu.querySelectorAll('[data-role="file-action-item"]'));
+  }
+
+  function focusMenuItem(index) {
+    const items = menuItems();
+    if (items.length === 0) return;
+    const n = ((Number(index) || 0) + items.length) % items.length;
+    items[n].focus({ preventScroll: true });
+  }
+
+  /** 打开菜单：构建条目 → 定位 → 显示 → 聚焦第一项。 */
+  function openActionMenu(entry, button) {
+    if (!root || !button || !button.isConnected) return;
+    // 先收起旧的（不在新旧之间留残影），再在同一位置重建。
+    closeActionMenu({ restoreFocus: false });
+    ensureActionMenu();
+    const actions = actionsForEntry(entry);
+    actionMenu.textContent = "";
+    for (const { label, action } of actions) {
+      const item = el("button", {
+        type: "button",
+        className: "file-panel-menu-item",
+        "data-role": "file-action-item",
+        "data-action": action,
+        role: "menuitem",
+        tabindex: "-1",
+        title: `${label}：${entry.name}`,
+      }, label);
+      item.addEventListener("click", (event) => {
+        event.stopPropagation();
+        closeActionMenu({ restoreFocus: false });
+        void runAction(action, entry);
+      });
+      actionMenu.appendChild(item);
+    }
+    actionMenu.setAttribute("data-open-path", entry.path);
+    openMenuEntry = entry;
+    openMenuButton = button;
+    button.setAttribute("aria-expanded", "true");
+    actionMenu.hidden = false;
+    positionActionMenu(button);
+    focusMenuItem(0);
+  }
+
+  /** 菜单内的键盘：↑/↓ 移动（循环）、Home/End、Esc 关闭并还焦点、Tab 关闭。 */
+  function onMenuKeydown(event) {
+    if (!actionMenu || actionMenu.hidden) return;
+    const items = menuItems();
+    const index = items.indexOf(document.activeElement);
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        focusMenuItem(index + 1);
+        return;
+      case "ArrowUp":
+        event.preventDefault();
+        focusMenuItem(index - 1);
+        return;
+      case "Home":
+        event.preventDefault();
+        focusMenuItem(0);
+        return;
+      case "End":
+        event.preventDefault();
+        focusMenuItem(items.length - 1);
+        return;
+      case "Escape":
+        event.preventDefault();
+        event.stopPropagation();
+        closeActionMenu({ restoreFocus: true });
+        return;
+      case "Tab":
+        // 菜单是浮层：Tab 不当成菜单内导航，直接关掉把焦点交回页面。
+        closeActionMenu({ restoreFocus: false });
+        return;
+      default:
+    }
+  }
+
+  /** 点菜单外任意处关闭（捕获阶段，先于 card 的 click）。 */
+  function onDocumentPointerDown(event) {
+    if (!actionMenu || actionMenu.hidden) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (actionMenu.contains(target)) return;
+    // 点自己的 ⋯ 交给它的 click 处理（切换），这里不重复关。
+    if (openMenuButton && openMenuButton.contains(target)) return;
+    closeActionMenu({ restoreFocus: false });
+  }
+
+  /** 菜单外部的 Esc（焦点不在菜单里时也要能关）。 */
+  function onDocumentKeydown(event) {
+    if (event.key !== "Escape") return;
+    if (!actionMenu || actionMenu.hidden) return;
+    event.preventDefault();
+    closeActionMenu({ restoreFocus: true });
+  }
+
+  /** 重渲染/滚动/切目录后：指向的条目还在 DOM 里就留着，否则关掉。 */
+  function syncActionMenuToDom() {
+    if (!actionMenu || actionMenu.hidden || !openMenuEntry) return;
+    if (!openMenuButton || !openMenuButton.isConnected) {
+      closeActionMenu({ restoreFocus: false });
+    }
   }
 
   async function enterDirectory(pathValue) {
@@ -1282,6 +1584,12 @@ export default function createFilePanel(elements) {
     statusLine = el("div", { className: "file-panel-status", "data-role": "file-panel-status" });
     root.appendChild(statusLine);
 
+    // TASK-FIX-UI-REST §6.3：动作菜单（面板级浮层，挂在 .file-panel 根上）。
+    ensureActionMenu();
+    actionMenu.addEventListener("keydown", onMenuKeydown);
+    document.addEventListener("pointerdown", onDocumentPointerDown, true);
+    document.addEventListener("keydown", onDocumentKeydown, true);
+
     // 拖拽调高。
     let dragging = false;
     let startY = 0;
@@ -1464,6 +1772,10 @@ export default function createFilePanel(elements) {
       if (gridObserver) gridObserver.disconnect();
       gridObserver = null;
       window.removeEventListener("resize", onGridResize);
+      document.removeEventListener("pointerdown", onDocumentPointerDown, true);
+      document.removeEventListener("keydown", onDocumentKeydown, true);
+      closeActionMenu({ restoreFocus: false });
+      actionMenu = null;
     },
   };
 }
