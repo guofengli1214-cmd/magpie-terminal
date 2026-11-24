@@ -114,9 +114,20 @@ export function makeMarks(nonce) {
   };
 }
 
-/** PROTOCOL §4.1 的包装串，逐字。 */
+/**
+ * bash 分支的包装串（PROTOCOL §4.1-bash）。
+ *
+ * TASK-FIX17-A（问题 2 的另一半）：起首的 `printf '\\n%s\\n'` 改成 `printf '%s\\n'`。
+ * 原来那个前导 `\n` 会让 AI 每执行一条命令就在用户终端上先多打一个空行
+ * （命令回显上一行凭空空一行），而它对解析毫无用处：`splitBuffer()` 取的是
+ * startMark 与 endMark 之间的内容，两个标记各占一行就够。
+ * 其余字节（`( cmd\n ) 2>&1`、结尾的 `$?` 与提交用换行）保持不变。
+ *
+ * 冻结口径：`docs/PROTOCOL-AGENT.md` §4.1-bash 是本函数的唯一规格，
+ * 改这里必须同步改文档（本卡不改文档，已在 REPORT 的「已知风险」里登记）。
+ */
 export function buildPayload(command, startMark, endMark) {
-  return `printf '\\n%s\\n' '${startMark}'; ( ${command}\n ) 2>&1; printf '${endMark}%s\\n' "$?"\n`;
+  return `printf '%s\\n' '${startMark}'; ( ${command}\n ) 2>&1; printf '${endMark}%s\\n' "$?"\n`;
 }
 
 /**

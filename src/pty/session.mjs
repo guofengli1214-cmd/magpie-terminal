@@ -1,5 +1,9 @@
 // 会话注册表：id -> { pty, cwd, shell, cols, rows, state }。
 // 负责 resize 暖场排队、onExit 无条件 kill、进程退出时的同步清理。
+//
+// TASK-FIX17-A（问题 2）：resize 之后**不再向 pty 注入任何可见字节**。
+// 暖场窗口（WARMUP_MS）保留，语义从「发垃圾回车 + 等它吃掉」变成纯输入延迟窗口：
+// 窗口内的真实按键先入 inputQueue，窗口结束按序冲刷，一个字节都不丢。
 
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
@@ -12,7 +16,20 @@ import { createSentinelSession } from "./sentinel.mjs";
 import { createOsc7Scanner, decodeOsc7 } from "./osc7.mjs";
 import { withOsc7Injection } from "./osc7-inject.mjs";
 
+/**
+ * 暖场窗口（毫秒）：resize 之后「输入先排队、稍后按序冲刷」的时长。
+ *
+ * **必须与前端 `app/core/constants.js` 的 `INPUT_LOCK_MS` 保持一致**（两边同为 350）：
+ * 前端在 resize 后按同一时长封锁 onData，服务端再把窗口内到达的字节排队。
+ * 只改一边会让「排队 — 冲刷」错位：前端比这里短 → 服务端仍在排队（无副作用）；
+ * 前端比这里长 → 前端多封一段（只是延迟）。**改任何一边都要同步另一边并在此注清。**
+ *
+ * 历史：TASK-V4-F 时这个窗口是为了等 resize 后那个裸 `\r` 被 ConPTY 吃掉；
+ * TASK-FIX17-A 删了那个 `\r`（它会在用户终端上多出一个空行），实测不再需要，
+ * 但窗口本身仍然是「resize 后立刻输入不丢字符」的保险（见 scripts/probe-resize-blank.mjs）。
+ */
 export const WARMUP_MS = 350;
+
 export const MIN_COLS = 20;
 export const MIN_ROWS = 5;
 export const MAX_COLS = 500;
@@ -444,7 +461,6 @@ export class SessionManager extends EventEmitter {
     session.rows = rows;
     try {
       session.handle.resize(cols, rows);
-      session.handle.write("\r");
     } catch {
       return;
     }
@@ -487,11 +503,22 @@ export class SessionManager extends EventEmitter {
     session.rows = nextRows;
     try {
       session.handle.resize(nextCols, nextRows);
-      // 坑 1：resize 后立即写一个垃圾回车，并进入暖场窗口。
-      session.handle.write("\r");
     } catch {
       return false;
     }
+    // TASK-FIX17-A（问题 2）：resize 之后**不再往 pty 写任何可见字节**。
+    // 旧实现（V4-F，坑 1 的 canonical 对策）在这里写一个裸 `\r` 来吸收
+    // Windows ConPTY「resize 后第一个输入字节被吞」的缺陷，代价是每次 resize
+    // 都在用户终端上凭空多一个空行/多一个提示符（开合文件面板、拖窗口、AI 执行
+    // 命令都会触发）。实测（scripts/probe-resize-blank.mjs）本机 resize 后立刻输入
+    // 都不丢字符（正对照 6/6 通过，负对照 10 次 resize 多出 10 条提示符行），
+    // 所以改成「只排队、不写字节」：
+    // 暖场窗口退化为纯输入延迟窗口，语义与前端 INPUT_LOCK_MS 完全一致。
+    // **绝对不要把 write("\r") 加回来**。
+    // 注意：`.trellis/spec/backend/pty-lifecycle.md` §3 与
+    // `.trellis/spec/frontend/terminal-rendering.md` §4 仍写着旧对策（「发一个垃圾
+    // `'\r'`」）—— 那两份 spec 不在本卡的文件范围内，未修改，已在 REPORT 的
+    // 「已知风险 / 未做项」里登记，需由主控同步。
     this.armWarmup(session);
     return true;
   }

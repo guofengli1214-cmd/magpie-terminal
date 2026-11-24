@@ -128,14 +128,16 @@ export const KNOWN_FIELDS = Object.freeze([
 runner 通过 `setShellNameResolver(fn)` 拿到 shell 名（`src/server/ws.mjs` 注入，与
 `setSessionResolver` 相互独立）；解析器抛错时退化为 bash 分支。
 
-#### 4.1-bash（**逐字节不得改动**）
+#### 4.1-bash（**以本段为规格，改代码必须同步改这里**）
 
 ```js
 const nonce = crypto.randomBytes(6).toString("hex");
 const startMark = `__MT_S_${nonce}__`;
 const endMark = `__MT_E_${nonce}__`;
-const payload = `printf '\\n%s\\n' '${startMark}'; ( ${command}\n ) 2>&1; printf '${endMark}%s\\n' "$?"\n`;
+const payload = `printf '%s\\n' '${startMark}'; ( ${command}\n ) 2>&1; printf '${endMark}%s\\n' "$?"\n`;
 ```
+
+2026-11-25 A 批去掉前导 `\n`（旧串是 `printf '\\n%s\\n'`），原因是它会让 AI 执行命令前多打一个空行；两个标记各占一行就够，`splitBuffer` 不受影响。
 
 #### 4.1-PS（PowerShell 7 与 Windows PowerShell 5.1）
 

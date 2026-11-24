@@ -48,7 +48,9 @@ const InputFrame = z.union([
     // TASK-V4-F：本机会话可以指定 shell（bash / pwsh / powershell）。
     // 刻意不用 z.enum：非法值要回 session.failed + PTY_UNKNOWN_SHELL，
     // 而不是被 zod 打成 BAD_FRAME（卡片 §5.2 / AC4）。合法性在 resolveShellForRequest 里判。
-    shellId: z.string().max(32).optional(),
+    // TASK-FIX17-A：max(32) → max(64)，让 `wsl:Ubuntu-24.04` 与 WT profile 派生的
+    // `profile:<短名>` 都能过帧校验（id 长度上限与 shells.mjs 的 SHELL_ID_MAX 一致）。
+    shellId: z.string().max(64).optional(),
   }),
   z.object({ type: z.literal("pty.close"), id: z.string() }),
   z.object({ type: z.literal("pty.attach"), id: z.string() }),

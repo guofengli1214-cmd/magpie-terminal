@@ -302,6 +302,33 @@ test("validateConfigPatch：合法值返回 null", () => {
   assert.equal(validateConfigPatch(null), null);
 });
 
+// TASK-FIX17-A R1：defaultShell 从「固定白名单」改成「格式校验」。
+// 固定白名单会把运行时发现出来的 cmd / wsl:* / profile:* 误杀（AC4）。
+test("validateConfigPatch(defaultShell)：格式校验代替白名单——cmd / wsl:* / profile:* 都合法", () => {
+  for (const good of [
+    "cmd",
+    "bash",
+    "pwsh",
+    "powershell",
+    "wsl:Ubuntu-24.04",
+    "profile:git-bash",
+    "wsl:Debian",
+    null,
+  ]) {
+    assert.equal(validateConfigPatch({ defaultShell: good }), null, `应当合法: ${JSON.stringify(good)}`);
+  }
+  // 非法形态：空串 / 空格与感叹号 / 换行 / 65 字符 / 非字符串。
+  for (const bad of ["", "bad shell!", "a\nb", "x".repeat(65), 42, {}, [], true]) {
+    const result = validateConfigPatch({ defaultShell: bad });
+    assert.ok(result, `应当被拒: ${JSON.stringify(bad)}`);
+    assert.equal(result.code, "INVALID_SHELL");
+    assert.equal(typeof result.userText, "string");
+  }
+  // 64 字符正好合法（与 ws.mjs 帧上限、shells.mjs 的 SHELL_ID_MAX 一致）。
+  assert.equal(validateConfigPatch({ defaultShell: "x".repeat(64) }), null);
+  assert.equal(validateConfigPatch({ defaultShell: "x".repeat(65) }).code, "INVALID_SHELL");
+});
+
 test("isValidAllowlistEntry 边界：pattern 1..500、mode 二选一、enabled 布尔", () => {
   assert.equal(isValidAllowlistEntry({ pattern: "a", mode: "prefix", enabled: true }), true);
   assert.equal(isValidAllowlistEntry({ pattern: "a", mode: "prefix", enabled: false }), true);

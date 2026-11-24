@@ -39,6 +39,32 @@ function buildTheme() {
   };
 }
 
+/**
+ * 把「当前 CSS 变量算出来的配色」同步到实例上（只在真的变了才写）。
+ *
+ * TASK-FIX17-A R4：xterm 的 theme 是构造时传入的 JS 对象，改 CSS 变量不会自动生效。
+ * 主题切换 / 令牌注入晚到 / 字号变化后都必须重新读一次变量，否则会出现
+ * 「页面变白了、终端还是黑的」。返回是否发生了变更（调用方据此决定要不要重新 fit）。
+ */
+function syncTheme(view) {
+  if (!view || !view.terminal) return false;
+  let theme;
+  try {
+    theme = buildTheme();
+  } catch {
+    return false;
+  }
+  const key = JSON.stringify(theme);
+  if (key === view.themeKey) return false;
+  view.themeKey = key;
+  try {
+    view.terminal.options.theme = theme;
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 export default function createTerminalView(elements) {
   const host = elements.host;
   const onInput = typeof elements.onInput === "function" ? elements.onInput : () => {};
@@ -86,7 +112,12 @@ export default function createTerminalView(elements) {
       locked: false,
       observer: null,
       disposers: [],
+      // 上一次写进 terminal.options.theme 的序列化值（syncTheme 用来判「真的变了」）。
+      themeKey: null,
     };
+
+    // 构造时已经传了一份 theme；记下它的指纹，避免 attach/首次 fit 时再写一遍。
+    syncTheme(view);
 
     const dataDisposable = terminal.onData((data) => {
       if (view.locked) {
@@ -127,10 +158,33 @@ export default function createTerminalView(elements) {
     }, constants.RESIZE_DEBOUNCE_MS);
   }
 
+  /**
+   * 字号变了但容器还来不及重排时的补一次 fit。
+   * 只在「配色发生变化」的路径上用：换主题意味着字体族/字号也可能变了，
+   * 而 xterm 只会在下次 fit 时把行列数按新字体重算。
+   */
+  function scheduleResizeThemeRetry(id) {
+    const view = views.get(id);
+    if (!view) return;
+    if (view.lockTimer) return;
+    try {
+      view.fit.fit();
+    } catch {
+      return;
+    }
+    view.lastCols = view.terminal.cols;
+    view.lastRows = view.terminal.rows;
+    onResize(id, view.lastCols, view.lastRows);
+  }
+
   function fitNow(id) {
     const view = views.get(id);
     if (!view) return;
     if (!view.pane.isConnected || view.pane.offsetWidth <= 0 || view.pane.offsetHeight <= 0) return;
+    // TASK-FIX17-A R4：fit 之前先把 CSS 变量里的配色同步到实例。
+    // 令牌可能是服务端 <style> 注入后才到位的（注入在 <head> 最前，但 xterm 实例
+    // 可能在令牌解析完之前就建好了），不同步就会出现「页面浅色、终端整块黑」。
+    const themeChanged = syncTheme(view);
     let cols;
     let rows;
     try {
@@ -140,7 +194,11 @@ export default function createTerminalView(elements) {
       return;
     }
     if (!Number.isFinite(cols) || !Number.isFinite(rows)) return;
-    if (cols === view.lastCols && rows === view.lastRows) return;
+    if (cols === view.lastCols && rows === view.lastRows) {
+      // 尺寸没变，但配色变了：xterm 会自己重绘，这里不用再 fit。
+      if (themeChanged) scheduleResizeThemeRetry(id);
+      return;
+    }
     try {
       view.fit.fit();
     } catch {
@@ -279,8 +337,11 @@ export default function createTerminalView(elements) {
       for (const id of views.keys()) scheduleFit(id);
     },
     refreshTheme() {
+      // TASK-FIX17-A R4：这个函数原本从未被调用（终端配色永远停在构造时那一次）。
+      // 现在改主题 / 字号 / 令牌晚到时都会走它（见 app.js 的 applyTheme 与 fit）。
+      // 实现改成「先同步配色、再重新 fit」：只改 theme 不重新 fit，字宽变了会裁右边。
       for (const view of views.values()) {
-        view.terminal.options.theme = buildTheme();
+        syncTheme(view);
         scheduleFit(view.id);
       }
     },

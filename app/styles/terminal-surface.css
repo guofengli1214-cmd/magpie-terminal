@@ -1,0 +1,40 @@
+/* 终端底板（TASK-FIX17-A R4，问题 3「终端四周黑边」）。
+ *
+ * 为什么需要这个文件：
+ *   `app/vendor/xterm/xterm.css` 里 `.xterm .xterm-viewport { background-color: #000 }`
+ *   （`:95`）与 `.xterm .composition-view { background: #000 }`（`:81`）是上游写死的
+ *   纯黑。项目的约定是**不改 app/vendor/xterm/ 下的任何文件**，所以在它之后加载
+ *   本文件、用 `!important` 覆盖成主题底色。
+ *
+ * 黑边其实是三处叠加的，只改一处不会消失：
+ *   1) xterm.css 的 `#000`（本文件覆盖）
+ *   2) layout.css `.xterm { padding: 2px }`（已在本批删掉）
+ *   3) tokens.css 的 `--term-bg: Canvas`（浏览器关键字，xterm 的 canvas 拿不到
+ *      具体色 → 回落黑；已改成真实色值兜底）
+ *
+ * 加载顺序（app/index.html）：
+ *   vendor/xterm/xterm.css → styles/terminal-surface.css → styles/tokens.css
+ *   → styles/layout.css → styles/components.css
+ * 本文件只用 CSS 变量（运行时解析），所以放在 tokens.css 之前也成立；
+ * 放在 xterm.css 紧跟其后是为了让「覆盖上游默认值」这件事在文件顺序上一眼可见。
+ */
+
+/* viewport：滚动容器，xterm 在它上面画屏幕外区域与滚动条通道。
+   这是黑边最直接的来源（浅色主题下取像素是 rgb(0,0,0)）。 */
+.xterm .xterm-viewport {
+  background-color: var(--term-bg, #1a1a1e) !important;
+}
+
+/* 输入法候选框的底板，xterm.css 同样写死 #000。 */
+.xterm .composition-view {
+  background: var(--term-bg, #1a1a1e) !important;
+  color: var(--term-fg, #e5e7eb) !important;
+}
+
+/* 屏幕画布本身没有 CSS 背景（颜色由 xterm 用 theme.background 画），
+   这里给容器兜一层同色底，避免「canvas 尺寸因取整小于容器」时露出别色。 */
+.xterm,
+.xterm .xterm-screen,
+[data-role="terminal-host"] .terminal-pane {
+  background-color: var(--term-bg, #1a1a1e);
+}

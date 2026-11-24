@@ -161,12 +161,19 @@ test("常量与协议一致", () => {
   assert.equal(USER_TEXT_TIMEOUT, "命令超过 90 秒还没结束，已放弃等待。");
 });
 
-test("buildPayload 逐字等于协议 §4.1 的包装串", () => {
+test("buildPayload 逐字等于协议 §4.1-bash 的包装串（TASK-FIX17-A 去掉前导空行）", () => {
   const payload = buildPayload("ls", "__MT_S_ab12__", "__MT_E_ab12__");
   assert.equal(
     payload,
-    "printf '\\n%s\\n' '__MT_S_ab12__'; ( ls\n ) 2>&1; printf '__MT_E_ab12__%s\\n' \"$?\"\n",
+    "printf '%s\\n' '__MT_S_ab12__'; ( ls\n ) 2>&1; printf '__MT_E_ab12__%s\\n' \"$?\"\n",
   );
+  // TASK-FIX17-A（问题 2 的另一半）：不许再打前导空行。
+  // `printf '\n%s\n'` 会让 AI 每执行一条命令就在终端上先多一个空行。
+  assert.equal(payload.includes("printf '\\n%s\\n'"), false, "不得再有前导 \\n 的 printf");
+  assert.ok(payload.startsWith("printf '%s\\n'"), payload.slice(0, 30));
+  // 其余字节必须原样：子 shell 包裹、2>&1、退出码、末尾提交用换行。
+  assert.ok(payload.includes("; ( ls\n ) 2>&1; "), "子 shell 包裹与末尾换行不许变");
+  assert.ok(payload.endsWith("printf '__MT_E_ab12__%s\\n' \"$?\"\n"), "出口码行不许变");
 });
 
 test("buildProbePayload 是协议 §4.4 的探测串 + 一个提交用的换行", () => {
@@ -382,7 +389,9 @@ test("PS：未注入 shellNameResolver 时落回 bash 分支（零回归）", as
   assert.ok(probeWrite.startsWith("printf '__MT_PROBE_"), `默认必须是 bash 探测串：${JSON.stringify(probeWrite)}`);
   assert.ok(probeWrite.endsWith("\n"), "bash 探测串仍以 \\n 结尾");
   const runWrite = writes.find((data) => data.includes("__MT_S_"));
-  assert.ok(runWrite.startsWith("printf '\\n%s\\n' '"), `默认必须是 bash 包装串：${JSON.stringify(runWrite)}`);
+  // TASK-FIX17-A：bash 包装串不再打前导空行（startMark 行不再以 \n 开头）。
+  assert.ok(runWrite.startsWith("printf '%s\\n' '"), `默认必须是 bash 包装串：${JSON.stringify(runWrite)}`);
+  assert.equal(runWrite.includes("printf '\\n%s\\n'"), false, "不得再有前导空行");
   runner.dispose("s1");
   await pending;
 });

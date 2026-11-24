@@ -13,6 +13,10 @@
      不要删掉这行注释，服务端靠它定位注入点。 -->
 <!-- 服务端在此处注入 <style>:root{…tokens}</style> -->
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
+<!-- TASK-FIX17-A R4：在 xterm.css 之后覆盖它写死的 `#000` viewport / composition-view 底色。
+     顺序：xterm.css → terminal-surface.css → tokens.css → layout.css → components.css。
+     放在 tokens.css 之前也成立（只用 CSS 变量，运行时才解析）。 -->
+<link rel="stylesheet" href="/styles/terminal-surface.css">
 <link rel="stylesheet" href="/styles/tokens.css">
 <link rel="stylesheet" href="/styles/layout.css">
 <link rel="stylesheet" href="/styles/components.css">

@@ -416,6 +416,9 @@ function attachActive() {
   const snapshot = store.getSnapshot();
   if (!snapshot.activeId) return;
   lastAttachedId = snapshot.activeId;
+  // TASK-FIX17-A R4：attach 之前先把配色与 CSS 变量对齐。
+  // 首帧渲染与令牌注入都在 attach 之前，不在这里同步就会「页面浅色、终端一片黑」。
+  if (terminalView) terminalView.refreshTheme();
   // 只做 attach：fit 由 terminal-view 在下一帧按容器真实尺寸算，
   // 这里绝不能在 fit 之前用终端初始 80×24 去 sendResize（那会多一次 SIGWINCH 重画提示符）。
   terminalView.attach(snapshot.activeId);
@@ -1017,6 +1020,23 @@ function init() {
       showBanner("连不上本地终端服务。确认服务在运行，然后点状态栏「重连」。");
     }
   }, constants.CONNECT_TIMEOUT_MS);
+
+  // TASK-FIX17-A R4：跟随系统主题变化重新给终端上色。
+  // magpie 不推送主题变更（theme-tokens.md §4 待定项），但用户在系统里切深浅色时
+  // 我们自己的 prefers-color-scheme 变量会变 → 终端必须跟着变，否则就成「一半白一半黑」。
+  // `?theme=dark|light` 显式指定时不跟随（magpie 的窗口主题是唯一权威）。
+  if (!options.theme && typeof window.matchMedia === "function") {
+    try {
+      const media = window.matchMedia("(prefers-color-scheme: dark)");
+      const onSchemeChange = () => {
+        if (terminalView) terminalView.refreshTheme();
+      };
+      if (typeof media.addEventListener === "function") media.addEventListener("change", onSchemeChange);
+      else if (typeof media.addListener === "function") media.addListener(onSchemeChange);
+    } catch {
+      // 老 WebView2 没有 matchMedia：忽略，用首帧的配色。
+    }
+  }
 
   // 调试出口：只读快照 + 假帧注入，仅 loopback。避免被打包/污染。
   // __termDebugFrame 的用途：验收探针在内核（TASK-V3-D）尚未合入时注入 agent.* 帧，

@@ -279,10 +279,14 @@ html, body {
   }
 }
 
-/* 终端内部：xterm 的容器必须撑满。 */
+/* 终端内部：xterm 的容器必须撑满。
+   不设 padding（TASK-FIX17-A R4）：原来是 `padding: 2px`，那 2px 环露出的是
+   .terminal-pane 的底色；只要 viewport / canvas 的背景与它不同，就成了一圈黑边。
+   终端自己会用 fit 算出行列数把内容铺满，不需要内衬。 */
 .xterm {
   height: 100%;
-  padding: 2px;
+  padding: 0;
+  margin: 0;
 }
 
 .xterm-viewport {

@@ -5,10 +5,16 @@
 :root {
   color-scheme: light dark;
 
-  /* 来自 magpie 的兜底（服务端注入的会覆盖这里） */
-  --magpie-bg: Canvas;
-  --magpie-fg: CanvasText;
-  --magpie-muted: GrayText;
+  /* 来自 magpie 的兜底（服务端注入的会覆盖这里）。
+     TASK-FIX17-A R4：这里不能再写 `Canvas` / `CanvasText` 这类**系统色关键字**。
+     它们是浏览器关键字，`getComputedStyle(...).getPropertyValue('--term-bg')`
+     读到的是字符串 `Canvas` 而不是色值 —— 把它交给 xterm 的 theme.background
+     等于放弃上色，xterm 只能回落成黑色（浅色主题下终端整块黑、四边黑边）。
+     因此改成真实色值，浅色/深色各一套（下面 @media 里再覆盖一次深色）。
+     B 批会接管完整主题系统，本批只保证「不黑」。 */
+  --magpie-bg: #f4f4f6;
+  --magpie-fg: #1f2328;
+  --magpie-muted: #6b7280;
   --magpie-font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 
   /* 项目级语义变量（明色一套值） */
@@ -103,8 +109,34 @@
   --term-accent-soft: rgba(90, 120, 180, 0.16);
 }
 
+/* 显式主题（`?theme=dark|light` → app.js 给 <html> 加的类）的**兜底**底色。
+   只用兜底、不改上游链路：必须能被服务端注入的 `html:root{…}` 盖过。
+   特异性算一下：
+     `html:root`（注入）        = 0,1,1
+     `:root:where(.theme-dark)` = 0,1,0   ← `:where()` 贡献 0 特异性
+     `:root.theme-dark`         = 0,2,0   ✗ 会盖掉用户主题（D7-2b 真浏览器实测失败）
+   所以这里必须用 `:where()` 包住类名，否则 magpie 下发的主题令牌失效。
+   作用：`?theme=dark` 与系统亮色并存时，至少终端不会是纯黑（问题 3）。
+   完整的明暗两套语义色仍由 B 批接管。 */
+:root:where(.theme-dark) {
+  --magpie-bg: #1a1a1e;
+  --magpie-fg: #e5e7eb;
+  --magpie-muted: #9aa4b0;
+}
+
+:root:where(.theme-light) {
+  --magpie-bg: #f4f4f6;
+  --magpie-fg: #1f2328;
+  --magpie-muted: #6b7280;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
+    /* TASK-FIX17-A R4：深色下的底色兜底。取值对齐 magpie 的暗色 `--bg`（#1a1a1e）
+       与 `--fg`（#e5e7eb），不用 Canvas 关键字（理由见文件顶部）。 */
+    --magpie-bg: #1a1a1e;
+    --magpie-fg: #e5e7eb;
+    --magpie-muted: #9aa4b0;
     --term-danger: #ff8a80;
     --term-danger-fg: #2a0f0d;
     --term-warn: #ffcc80;

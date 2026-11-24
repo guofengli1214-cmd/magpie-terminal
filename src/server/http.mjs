@@ -894,8 +894,11 @@ export async function startServer(options = {}) {
         return;
       }
 
-      // GET /api/shells：本机可用 shell 清单（TASK-V4-F §5.3）。
+      // GET /api/shells：本机可用 shell 清单（TASK-V4-F §5.3，TASK-FIX17-A 扩成动态发现）。
       // 与 /api/models 同级：走同一道 token 门，不做例外。
+      //
+      // 字段契约（AC10）：id / name / version / path / available 一个都不许改名或删除，
+      // 只允许新增。TASK-FIX17-A 新增 group（local|wsl|profile）与 detail（发行版/WT profile 名）。
       if (req.method === "GET" && pathname === "/api/shells") {
         const { config } = await readConfig();
         const view = publicConfig(config);
@@ -905,6 +908,9 @@ export async function startServer(options = {}) {
           version: item.version,
           path: item.path,
           available: Boolean(item.available),
+          // ---- TASK-FIX17-A 新增（只增不改）----
+          group: item.group || "local",
+          ...(item.detail ? { detail: item.detail } : {}),
         }));
         const fallbackDefault = resolveShellForRequest({ defaultShell: null });
         writeJson(

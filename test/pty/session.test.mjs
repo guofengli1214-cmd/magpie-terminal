@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { detectShell, loadNodePty } from "../../src/pty/bridge.mjs";
-import { SessionManager } from "../../src/pty/session.mjs";
+import { SessionManager, WARMUP_MS } from "../../src/pty/session.mjs";
 import { checkOrphans, sleep } from "../../scripts/check-orphans.mjs";
 import { classify } from "../../src/policy/classify.mjs";
 import { askGateway, probeGateway } from "../../src/ai/gateway.mjs";
@@ -143,6 +143,58 @@ test("pty 集成组", ptyTestOptions, async (t) => {
     const result = await checkOrphans({ pids: [pid], names: { [pid]: "bash.exe" }, waitMs: 2500 });
     assert.deepEqual(result.orphans, []);
   });
+});
+
+test("resize 不再向 pty 写任何字节（TASK-FIX17-A 问题 2 的核心回归）", async () => {
+  // 用假 handle：只记录 write / resize 调用，不起真 shell。
+  // 旧实现（V4-F）在这里会多一次 write("\r")，那就是用户看到的幽灵空行。
+  const writes = [];
+  const resizes = [];
+  const fakeHandle = {
+    pid: 0,
+    _isReady: true,
+    onData() {},
+    onExit() {},
+    kill() {},
+    write(data) {
+      writes.push(data);
+    },
+    resize(cols, rows) {
+      resizes.push([cols, rows]);
+    },
+  };
+  const manager = new SessionManager({
+    shell: detectShell({}),
+    ptyLoad: { ok: true, module: { spawn: () => fakeHandle } },
+  });
+  const session = manager.create({ cols: 80, rows: 24 });
+  assert.ok(session);
+
+  // 会话未 ready 时 resize 只排队；先把它推成 ready（等同第一次收到输出）。
+  manager.handleOutput(session, "prompt$ ");
+  assert.equal(session.ready, true);
+  writes.length = 0;
+  resizes.length = 0;
+
+  // 连续 resize 10 次（模拟开合文件面板 / 拖动窗口）。
+  // 从 index=1 开始：index=0 是 80×24，与 create 时相同，会被正确当成 no-op。
+  for (let index = 1; index <= 10; index += 1) {
+    assert.equal(manager.resize(session.id, 80 + index * 2, 24 + index), true);
+  }
+  assert.equal(resizes.length, 10, "resize 必须真的传给 node-pty");
+  assert.deepEqual(writes, [], `resize 期间不得写任何字节，实际写了：${JSON.stringify(writes)}`);
+
+  // 暖场窗口内的真实按键必须**排队而不是丢弃**（保留 armWarmup 的语义）。
+  assert.equal(manager.write(session.id, "echo K"), true);
+  assert.deepEqual(writes, [], "暖场窗口内的输入必须排队，不能直接写");
+  assert.equal(session.inputQueue.length, 1);
+
+  // 窗口结束后按序冲刷（不丢字符、顺序不变）。
+  await new Promise((resolve) => setTimeout(resolve, WARMUP_MS + 200));
+  assert.deepEqual(writes, ["echo K"], `暖场窗口结束必须把排队的输入原样写出去，实际：${JSON.stringify(writes)}`);
+  assert.equal(session.inputQueue.length, 0);
+
+  manager.close(session.id);
 });
 
 test("close() 只 kill 一次：onExit 不再重复关 pseudoconsole", async () => {

@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { SHELL_IDS } from "../pty/shells.mjs";
+import { BUILTIN_SHELL_IDS, isValidShellId } from "../pty/shells.mjs";
 
 /** 环境变量覆盖路径：只给测试用，生产不设。 */
 export const CONFIG_PATH_ENV = "MAGPIE_TERMINAL_CONFIG_PATH";
@@ -29,7 +29,7 @@ export const CONFIG_PATH_ENV = "MAGPIE_TERMINAL_CONFIG_PATH";
  * 读-改-写整份配置（未知字段本来就是原样保留的，所以两者不会互相踩）。
  *
  * TASK-V4-F §5.3 又加了 `defaultShell`（本机默认 shell 的 id，取值见
- * `src/pty/shells.mjs` 的 `SHELL_IDS`）。
+ * `src/pty/shells.mjs` 的 `isValidShellId`：格式校验，不是固定白名单）。
  */
 export const KNOWN_FIELDS = Object.freeze([
   "model",
@@ -253,13 +253,18 @@ export function validateConfigPatch(patch) {
     }
   }
 
-  // TASK-V4-F §5.3：只接受 SHELL_IDS 里的值或 null（null = 回到自动探测）。
+  // TASK-V4-F §5.3 / TASK-FIX17-A：defaultShell 用**格式校验**（字符串、≤64、
+  // `[A-Za-z0-9:._-]`）而不是固定白名单。固定白名单会把 `cmd` / `wsl:Ubuntu-24.04` /
+  // `profile:<短名>` 这些运行时发现出来的 id 误杀。null = 回到自动探测。
+  // 存在但本机没装的 id 仍然收：换机器后配置应跟着走，不可用时由
+  // resolveShellForRequest 静默回落到自动探测（不报错）。
+  // 可选的 BUILTIN_SHELL_IDS 只是展示用的提示；校验本身不看它。
   if (has("defaultShell")) {
     const value = patch.defaultShell;
-    if (value !== null && !SHELL_IDS.includes(value)) {
+    if (value !== null && !isValidShellId(value)) {
       return {
         code: "INVALID_SHELL",
-        userText: `defaultShell 必须是 ${SHELL_IDS.join(" / ")} 之一或 null。`,
+        userText: `defaultShell 必须是合法的 shell id（字符串、≤64 字符、只含字母数字与 : . _ -，例如 ${BUILTIN_SHELL_IDS.slice(0, 2).join(" / ")} / wsl:<发行版>）或 null。`,
       };
     }
   }
@@ -297,7 +302,8 @@ function normalize(config) {
   }
 
   // defaultShell：非法值一律回落 null（不抛错，下次再选就好）。
-  if (!SHELL_IDS.includes(next.defaultShell)) next.defaultShell = null;
+  // 与 validateConfigPatch 同一套格式校验（TASK-FIX17-A）：白名单已取消。
+  if (!isValidShellId(next.defaultShell)) next.defaultShell = null;
 
   // showApprovalEffect：非 boolean 一律回落 false（默认关）。
   if (typeof next.showApprovalEffect !== "boolean") next.showApprovalEffect = false;
