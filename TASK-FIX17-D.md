@@ -42,3 +42,49 @@ Active task: `.trellis/tasks/11-25-task-d-ai-drawer/`
 - magpie 主题设置：`~/.config/magpie/settings.json`（`theme`: system|light|dark、`accent`、`textSize`、`lang`）。
 - 真浏览器探针已有：`scripts/browser-probe.mjs`（自带极简 CDP 客户端，Chrome/Edge 路径内置）。核验用它或扩展它。
 - magpie CSS 变量真名：`--bg --fg --line --accent --accent-fg --card --sub --muted --surface --surface-2 --edge --warn --bad --ok --ring`。
+
+## 前序批次已合入 — 开工前必读
+
+- A 批（问题1/2/3）已 commit `a2dfa3c`，B 批（问题4/17 主题）已 commit。**开工前先跑 `git log --oneline -6` 和 `git status --porcelain` 确认工作区干净**；不干净就报告 blocked，不许 stash / clean / checkout 掩盖。
+- 主题现状（B 批之后）：`app/tokens.css` 里颜色全部由 `--magpie-*` 派生（`color-mix`），`--term-panel-2` 等面板底色已是不透明实色；`<html>` 上有 `is-dark` / `is-light` 类；根字号由 magpie `textSize` 映射。**你写 CSS 不许再引入写死的 `#000` / `#fff` / `rgba(120,120,120,...)`**，一律用现有变量或 `color-mix` 派生。
+- A 批新增 `app/styles/terminal-surface.css`（修终端黑边，用 `!important` 覆盖 vendor xterm 的 `#000`）。**不许删或削弱它**；`app/index.html` 的引入顺序是 `vendor/xterm/xterm.css → styles/terminal-surface.css → styles/tokens.css → styles/layout.css → styles/components.css`，要动顺序必须复跑 `node scripts/probe-terminal-edges.mjs`（A 批 10/10，不许回退）。
+- 基线：`node --test` 全绿（A 批结束时 763 tests）；`node scripts/doctor.mjs` 用隔离配置可达 33/33。
+
+## 本机已知坑（A 批踩过，别再踩）
+
+- `node --test` 的 pty 集成测试或 doctor 若报 `STEP_TIMEOUT`、或直接 spawn bash 报 `bash.exe: *** fatal error - console device allocation failure - too many consoles in use`，是本机残留的旧 `bash.exe` 孤儿耗尽 ConPTY 名额，**不是你的改动**。先跑 `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='bash.exe'\" | Select-Object ProcessId,CreationDate"` 看启动时间，只结束 **11/24 及更早** 的残留（当天启动的会话别杀），再重跑。不许改 `scripts/doctor.mjs`，不许放宽断言。
+- doctor 隔离跑法：`MAGPIE_TERMINAL_CONFIG_PATH=<临时目录>/config.json`（内容 `{"version":1,"defaultShell":null}`）+ `DOCTOR_PORT=3499`，避免和真实配置、插件占用的 3480 端口打架。
+- 原生程序不认 `/c/...` 和 `/tmp` 路径（会报 `Cannot find module 'C:\tmp\...'`）；临时脚本放仓库 `tmp/`（已被 .gitignore 忽略）或 `$TMPDIR`。
+
+## 涉及文件（白名单，只许改这些）
+
+- `app/ui/ai-drawer.js`（抽屉抖动、composer 结构、单按钮双形态、markdown 渲染接线）
+- `app/styles/components.css`（**只改 220-842 抽屉段与 843-1126 composer 段**，并可在文件末尾新增 markdown 渲染样式段；不许碰 1541 之后的文件面板/主机面板/会话段）
+- `app/styles/layout.css`（仅 `.main` 的 `overflow: clip` 与抽屉相关定位）
+- `app/index.html`（引入 vendor markdown 脚本）
+- 新增 `app/vendor/markdown/{marked.umd.js,purify.min.js,markdown.js,VERSION.md}`（离线文件，已由主控下好，见下）
+- 新增 `scripts/probe-drawer.mjs`（真浏览器抖动与按钮形态验收脚本）
+- `test/app/**`（新增单测，如 markdown 渲染的三例 XSS）
+- `.dispatch/fix17-d/**`
+
+**不许改**：`app/vendor/xterm/**`、`app/tokens.css`、`app/ui/file-panel.js`、`app/ui/tab-bar.js`、`app/ui/hosts-panel.js`、`src/**`（本批纯前端）、`scripts/doctor.mjs`、`package.json`。
+
+## 离线 markdown 库已备好（不用联网，别再找 CDN）
+
+主控已在 `.dispatch/fix17-d/vendor/` 下好两个 npm 包并核对过内部路径：
+
+- `marked-12.0.2.tgz`（166.1 KB，sha256 `6cfd2d09c6bce2541558a1547e5f3b9895ed743f0d287536ff2280e318e8a074`）内含 `package/lib/marked.umd.js`（UMD，挂 `window.marked`）
+- `dompurify-3.5.0.tgz`（330.0 KB，sha256 `faa5f2bfe2814384b83d6edb4ed66812fbfdb2a654b4d59edd4b12304058ec20`）内含 `package/dist/purify.min.js`（UMD，挂 `window.DOMPurify`）
+
+解包（bash 可用）：
+
+```
+cd .dispatch/fix17-d/vendor
+tar -xzf marked-12.0.2.tgz package/lib/marked.umd.js
+tar -xzf dompurify-3.5.0.tgz package/dist/purify.min.js
+mkdir -p ../../../app/vendor/markdown
+cp package/lib/marked.umd.js ../../../app/vendor/markdown/marked.umd.js
+cp package/dist/purify.min.js ../../../app/vendor/markdown/purify.min.js
+```
+
+`VERSION.md` 要写：`marked 12.0.2 (MIT)`、`DOMPurify 3.5.0 (Apache-2.0 OR MPL-2.0)`、来源 npm registry、两个 tgz 的 sha256。`/vendor/` 已在 `src/server/static.mjs` 的 `STATIC_PREFIXES` 里，静态服务不用改。

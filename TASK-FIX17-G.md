@@ -40,3 +40,37 @@ Active task: `.trellis/tasks/11-25-task-g-update/`
 - magpie 主题设置：`~/.config/magpie/settings.json`（`theme`: system|light|dark、`accent`、`textSize`、`lang`）。
 - 真浏览器探针已有：`scripts/browser-probe.mjs`（自带极简 CDP 客户端，Chrome/Edge 路径内置）。核验用它或扩展它。
 - magpie CSS 变量真名：`--bg --fg --line --accent --accent-fg --card --sub --muted --surface --surface-2 --edge --warn --bad --ok --ring`。
+
+## 前序批次已合入 — 开工前必读
+
+- A 批（问题1/2/3）已 commit `a2dfa3c`，B 批（问题4/17 主题）已 commit。**开工前先跑 `git log --oneline -6` 和 `git status --porcelain` 确认工作区干净**；不干净就报告 blocked，不许 stash / clean / checkout 掩盖。
+- 主题现状（B 批之后）：`app/tokens.css` 里颜色全部由 `--magpie-*` 派生（`color-mix`），`--term-panel-2` 等面板底色已是不透明实色；`<html>` 上有 `is-dark` / `is-light` 类；根字号由 magpie `textSize` 映射。**你写 CSS 不许再引入写死的 `#000` / `#fff` / `rgba(120,120,120,...)`**，一律用现有变量或 `color-mix` 派生。
+- A 批新增 `app/styles/terminal-surface.css`（修终端黑边，用 `!important` 覆盖 vendor xterm 的 `#000`）。**不许删或削弱它**；`app/index.html` 的引入顺序是 `vendor/xterm/xterm.css → styles/terminal-surface.css → styles/tokens.css → styles/layout.css → styles/components.css`，要动顺序必须复跑 `node scripts/probe-terminal-edges.mjs`（A 批 10/10，不许回退）。
+- 基线：`node --test` 全绿（A 批结束时 763 tests）；`node scripts/doctor.mjs` 用隔离配置可达 33/33。
+
+## 本机已知坑（A 批踩过，别再踩）
+
+- `node --test` 的 pty 集成测试或 doctor 若报 `STEP_TIMEOUT`、或直接 spawn bash 报 `bash.exe: *** fatal error - console device allocation failure - too many consoles in use`，是本机残留的旧 `bash.exe` 孤儿耗尽 ConPTY 名额，**不是你的改动**。先跑 `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='bash.exe'\" | Select-Object ProcessId,CreationDate"` 看启动时间，只结束 **11/24 及更早** 的残留（当天启动的会话别杀），再重跑。不许改 `scripts/doctor.mjs`，不许放宽断言。
+- doctor 隔离跑法：`MAGPIE_TERMINAL_CONFIG_PATH=<临时目录>/config.json`（内容 `{"version":1,"defaultShell":null}`）+ `DOCTOR_PORT=3499`，避免和真实配置、插件占用的 3480 端口打架。
+- 原生程序不认 `/c/...` 和 `/tmp` 路径（会报 `Cannot find module 'C:\tmp\...'`）；临时脚本放仓库 `tmp/`（已被 .gitignore 忽略）或 `$TMPDIR`。
+
+## 涉及文件（白名单，只许改这些）
+
+- `src/server/http.mjs`（新增 `GET /api/version`、`GET /api/update/check`）
+- 新增 `src/config/install-kind.mjs`（读 `~/.config/magpie/plugins.json` 判定 local-path / registry / unknown）
+- `app/ui/settings-panel.js`（第 8 个 block：关于/更新）
+- `app/core/api.js`（两个接口调用）
+- `app/styles/components.css`（仅新增该 block 需要的样式）
+- `test/server/**`、`test/config/**`（单测）
+- `.dispatch/fix17-g/**`
+
+**不许改**：`package.json` 的 `version`（保持 0.1.0，本卡不发布）、`~/.config/magpie/plugins.json`（只读）、`scripts/doctor.mjs`。
+
+**不许做**：自动下载 / 自动安装更新（magpie 无此 API）、加 npm 依赖、伪装"已是最新"。
+
+## 关键判定（照做，别猜）
+
+- `GET /api/version` 返回 `{version, name, repository, installKind, updateSupported}`。`repository` 读 `package.json` 的 `repository` 字段（可能是 string，也可能是 `{type,url}`，两种都要处理）；没有就返回 `null`。`installKind` 判定：spec 是裸路径（盘符开头、`/` 开头、或 `\\\\` 开头）→ `local-path`；带 `@` 版本范围 → `registry`；读不到 plugins.json → `unknown`。
+- `GET /api/update/check`：只有 `repository` 是 GitHub 且 `installKind === "registry"` 才真去请求 `https://api.github.com/repos/<owner>/<repo>/releases/latest`，用 `AbortSignal.timeout(5000)`，结果在模块级缓存 5 分钟。任何失败（网络 / 404 / 限流）都返回 `{hasUpdate:false, error:"<人话>"}`，`error` 里不许塞 stack。
+- 设置面板文案按 `installKind` 给不同"如何更新"说明：`local-path` → "这个插件是本地目录安装，`git pull` 后重启 magpie 即可"；`registry` → "在 magpie 插件页点更新，或运行 `magpie plugin update <name>`"；`unknown` → "无法判断安装方式"。
+- AC3 用**临时桩**验证：临时给 `package.json` 加 `repository` 字段 → 打接口 → 验完 `git checkout -- package.json` 并 `git diff` 确认为空。**不许把 repository 字段留在提交里**（本卡不决定发布地址）。
