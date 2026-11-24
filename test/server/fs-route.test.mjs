@@ -362,6 +362,27 @@ test("错误码组", async () => {
   });
 });
 
+// TASK-FIX-ACCEPT A：客户端 del() 现在接受任何 2xx；这条锁住服务端契约
+// —— DELETE /api/fs 成功时是 200 + JSON（不是 204 空 body）。
+test("DELETE 契约组", async (t) => {
+  await t.test("DELETE 成功 → 200 + {path,type} JSON，磁盘文件消失", async () => {
+    await withServer(async ({ base, headers, workDir }) => {
+      const target = path.join(workDir, "delete-contract.txt");
+      await writeFile(target, "bye");
+      const response = await fetch(`${base}/api/fs?path=${encodeURIComponent(target)}`, {
+        method: "DELETE",
+        headers: headers(),
+      });
+      assert.equal(response.status, 200);
+      assert.match(response.headers.get("content-type") || "", /application\/json/);
+      const body = await response.json();
+      assert.equal(body.path, target);
+      assert.equal(body.type, "file");
+      await assert.rejects(stat(target), (err) => err.code === "ENOENT");
+    });
+  });
+});
+
 test("远程路由组（不建真连，只验守卫）", async (t) => {
   await t.test("未知主机 → 404 HOST_NOT_FOUND", async () => {
     await withServer(async ({ base, headers }) => {

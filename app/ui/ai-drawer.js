@@ -133,7 +133,7 @@ export default function createAiDrawer(elements) {
   function buildShell() {
     host.textContent = "";
 
-    // 头部：会话选择（点开下拉）+ 新建。没有「收起」，模型选择在输入区底栏。
+    // 头部：会话选择（点开下拉）+ 新建。没有「收起」，模型选择在输入框左侧。
     headEl = el("div", { "data-role": "ai-drawer-head", className: "drawer-head ai-head" });
 
     sessionsButton = el("button", {
@@ -218,9 +218,10 @@ export default function createAiDrawer(elements) {
       { "data-role": "composer-hint", className: "composer-hint" },
       "Enter 发送 · Shift+Enter 换行",
     );
-    composerBox.append(grow, input, hint);
 
-    const bar = el("div", { className: "composer-bar" });
+    // TASK-FIX-ACCEPT3：模型名 / 正文 / 发送三个块都在 composer-box 内。
+    // 模型名在左（纯文本按钮），正文居中，发送在右；Enter 提示在框内第二行，
+    // 不再用绝对定位压在正文右下角。
     modelSelect = el("button", {
       type: "button",
       "data-role": "model-select",
@@ -244,8 +245,10 @@ export default function createAiDrawer(elements) {
       { type: "button", "data-role": "agent-send", className: "agent-send", "aria-label": "发送" },
       "↑",
     );
-    bar.append(modelSelect, stopButton, sendButton, modelMenu);
-    composerEl.append(composerBox, bar);
+    const actions = el("div", { className: "composer-actions" });
+    actions.append(stopButton, sendButton);
+    composerBox.append(grow, modelSelect, input, hint, actions, modelMenu);
+    composerEl.append(composerBox);
     host.appendChild(composerEl);
   }
 
@@ -455,7 +458,9 @@ export default function createAiDrawer(elements) {
         });
         row.appendChild(el("span", { className: "si-mark", "aria-hidden": "true" }, isCurrent ? "✓" : "·"));
         const main = el("span", { className: "mi-main" });
-        main.appendChild(el("b", {}, item.title || "新会话"));
+        const titleText = item.title || "新会话";
+        // L1-08：长标题最多两行（CSS line-clamp），并用 title 提供全文。
+        main.appendChild(el("b", { title: titleText }, titleText));
         const count = Number(item.messageCount) || 0;
         main.appendChild(el("small", {}, `${count} 条消息${isCurrent ? " · 当前" : ""}`));
         row.append(main, sourceBadge(item));
@@ -572,14 +577,17 @@ export default function createAiDrawer(elements) {
     if (!reachable || models.length === 0) {
       modelSelect.appendChild(document.createTextNode("网关不可用，点重试"));
       modelSelect.setAttribute("data-gateway", "down");
+      modelSelect.title = "网关不可用，点重试";
       return;
     }
     const model = currentModel() || models[0] || null;
     selectedModelId = model ? model.id : null;
-    modelSelect.appendChild(
-      document.createTextNode(model ? model.label || model.id : "选择模型"),
-    );
+    const full = model ? model.label || model.id : "选择模型";
+    // 尾部省略交给 .model-label（flex 子项里 text-overflow 才生效）；
+    // title 保留完整模型名，截断时仍可悬停看全名。
+    modelSelect.appendChild(el("span", { className: "model-label" }, full));
     modelSelect.appendChild(el("span", { className: "model-caret", "aria-hidden": "true" }, "▾"));
+    modelSelect.title = full;
     modelSelect.removeAttribute("data-gateway");
   }
 
@@ -620,6 +628,14 @@ export default function createAiDrawer(elements) {
     const nextOpen = modelMenu.hidden;
     if (nextOpen) {
       renderModelMenu();
+      // L1-06：按输入区顶边限制菜单高度，窗口再矮也不会顶出抽屉。
+      if (host) {
+        const box = host.querySelector('[data-role="composer-box"]');
+        if (box) {
+          const available = Math.floor(box.getBoundingClientRect().top - host.getBoundingClientRect().top - 12);
+          modelMenu.style.maxHeight = `${Math.max(80, Math.min(240, available))}px`;
+        }
+      }
       modelMenu.hidden = false;
       modelSelect.setAttribute("aria-expanded", "true");
     } else {
@@ -1196,8 +1212,10 @@ export default function createAiDrawer(elements) {
   function applyManualHeight(height) {
     if (!input) return;
     const cap = savedHeightCap();
-    const next = Math.max(COMPOSER_LINE_HEIGHT, Math.min(cap, Number(height) || COMPOSER_LINE_HEIGHT));
-    input.style.height = `${Math.round(next)}px`;
+    const clamped = Math.max(COMPOSER_LINE_HEIGHT, Math.min(cap, Number(height) || COMPOSER_LINE_HEIGHT));
+    // 19.375px 是单行基准：保留小数，避免 min 被四舍五入成 19px。
+    const next = clamped === COMPOSER_LINE_HEIGHT ? clamped : Math.round(clamped);
+    input.style.height = `${next}px`;
     input.dataset.manual = "true";
     return next;
   }
@@ -1254,7 +1272,8 @@ export default function createAiDrawer(elements) {
       if (composerEl) composerEl.setAttribute("data-resizing", "true");
 
       const onMove = (moveEvent) => {
-        applyManualHeight(startHeight + (moveEvent.clientY - startY));
+        // TASK-FIX-ACCEPT G：向上拖（clientY 变小）变高、向下拖变矮。
+        applyManualHeight(startHeight + (startY - moveEvent.clientY));
       };
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);

@@ -318,12 +318,37 @@ export default function createFilePanel(elements) {
       });
       more.appendChild(button);
     }
+    // L1-03：每行常显一个「⋯」入口（弱化配色），点开才露出具体动作；
+    // hover / 选中仍可直接展开，保持原有快捷路径。
+    const moreToggle = el("button", {
+      type: "button",
+      className: "file-panel-more-toggle",
+      "data-role": "file-more-toggle",
+      title: `更多操作：${entry.name}`,
+      "aria-label": `更多操作：${entry.name}`,
+      "aria-expanded": "false",
+    }, "⋯");
+    moreToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const open = card.getAttribute("data-more-open") === "true";
+      // 同时只展开一行：再点自己关闭，点别的行先收起旧行。
+      for (const other of grid.querySelectorAll('[data-more-open="true"]')) {
+        if (other !== card) other.removeAttribute("data-more-open");
+      }
+      if (open) card.removeAttribute("data-more-open");
+      else card.setAttribute("data-more-open", "true");
+      moreToggle.setAttribute("aria-expanded", open ? "false" : "true");
+    });
+    card.appendChild(moreToggle);
     card.appendChild(more);
 
     card.addEventListener("click", (event) => {
       if (event.target && event.target.closest && event.target.closest(".file-panel-action")) return;
+      if (event.target && event.target.closest && event.target.closest(".file-panel-more-toggle")) return;
       state.selected.clear();
       state.selected.add(entry.path);
+      card.removeAttribute("data-more-open");
+      moreToggle.setAttribute("aria-expanded", "false");
       for (const node of grid.querySelectorAll('[data-role="file-entry"]')) {
         node.setAttribute("data-selected", node.getAttribute("data-path") === entry.path ? "true" : "false");
       }
@@ -331,6 +356,7 @@ export default function createFilePanel(elements) {
     });
     card.addEventListener("dblclick", (event) => {
       event.preventDefault();
+      if (event.target && event.target.closest && event.target.closest(".file-panel-more-toggle")) return;
       if (entry.type === "dir") void enterDirectory(entry.path);
       else void openViewer(entry);
     });

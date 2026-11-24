@@ -21,6 +21,9 @@
   --term-danger: #b3261e;
   --term-danger-fg: #ffffff;
   --term-warn: #7a4a00;
+  /* 确认卡边框/底色（L1-05）：新增 token，避免在组件里散写 rgba。 */
+  --term-warn-border: rgba(122, 74, 0, 0.38);
+  --term-warn-bg: rgba(122, 74, 0, 0.07);
   --term-ok: #116329;
   --term-focus: var(--magpie-fg);
   --term-selection: rgba(90, 120, 180, 0.35);
@@ -76,11 +79,11 @@
   /* V4-E：抽屉改成覆盖式，宽度只影响抽屉自身，不再参与主网格。 */
   --term-drawer-width: 0px;
   --term-drawer-open-width: 384px;
-  --term-handle-width: 22px;
+  --term-handle-width: 24px;
   --term-handle-height: 78px;
   /* V4-E：标签条 / 状态栏 / 抽屉边线 / 悬浮层用色。 */
-  --term-tabbar-height: 34px;
-  --term-statusbar-height: 33px;
+  --term-tabbar-height: 40px;
+  --term-statusbar-height: 26px;
   --term-panel-2: rgba(120, 120, 120, 0.12);
   --term-raise: rgba(120, 120, 120, 0.2);
   --term-line: var(--term-border);
@@ -90,8 +93,8 @@
   --term-dim: var(--term-muted);
   --term-accent-line: rgba(90, 120, 180, 0.46);
   --term-radius-lg: 8px;
-  /* 把手的点击热区：48px（视觉仍是 22px 竖条，用 padding 补宽）。 */
-  --term-handle-hit: 48px;
+  /* 把手的点击热区：与视觉同宽 24px（取消隐形外扩，避免盖住终端最右一列）。 */
+  --term-handle-hit: 24px;
   --term-toast-width: 340px;
   --term-backdrop: rgba(0, 0, 0, 0.42);
   --term-ok-soft: rgba(17, 99, 41, 0.16);
@@ -105,6 +108,12 @@
     --term-danger: #ff8a80;
     --term-danger-fg: #2a0f0d;
     --term-warn: #ffcc80;
+    /* L1-01：暗色 muted 不能再用 GrayText（#808080），确认卡/主机地址/设置档位
+       说明都会掉到 2.39–2.94:1；与 v4.css 的 --v4-muted 对齐。 */
+    --term-muted: #9aa4b0;
+    /* L1-05：mockup 的确认卡边框/底色（v4.css:874-880）。 */
+    --term-warn-border: rgba(227, 179, 65, 0.38);
+    --term-warn-bg: rgba(227, 179, 65, 0.07);
     --term-ok: #a5d6a7;
     --term-border: #3a3f46;
     --term-panel-bg: #14171c;

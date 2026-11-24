@@ -87,7 +87,8 @@ async function sendJson(path, method, payload) {
   return { ok: true, data: body };
 }
 
-/** DELETE 没有响应体，单独走一条。 */async function del(path) {
+/** DELETE 的响应体不固定：/api/fs 回 200 + JSON，主机/会话删除回 204。 */
+async function del(path) {
   let response;
   try {
     response = await fetch(path, {
@@ -98,7 +99,19 @@ async function sendJson(path, method, payload) {
   } catch (err) {
     return apiError("NETWORK", `连不上本地服务：${err && err.message ? err.message : "网络错误"}`);
   }
-  if (response.status === 204) return { ok: true, data: null };
+  // 任何 2xx 都是成功：204 没有响应体（主机/会话删除），200 带 JSON
+  // （文件面板的 DELETE /api/fs，返回 {path,type}）。只看 204 会把已经删掉
+  // 的文件报成「HTTP 200，请重试」并保留旧条目（TASK-FIX-ACCEPT A）。
+  if (response.ok) {
+    if (response.status === 204) return { ok: true, data: null };
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+    return { ok: true, data: body };
+  }
   let body = null;
   try {
     body = await response.json();

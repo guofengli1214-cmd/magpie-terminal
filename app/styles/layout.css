@@ -147,7 +147,7 @@ html, body {
 
 /* ------------------------------------------------------------------ *
  * 把手：收起 / 展开都在，贴 main 右缘垂直居中；抽屉展开时跟到抽屉左缘。
- * 尺寸按设计稿 22×78，圆角只在左侧。
+ * 尺寸 24×78（含 1px 边框），圆角只在左侧。
  * ------------------------------------------------------------------ */
 
 [data-role="ai-handle"] {
@@ -179,6 +179,11 @@ html, body {
     background 0.12s ease,
     color 0.12s ease;
 }
+
+/* TASK-FIX-ACCEPT3：把手命中区 = 元素本体（24px，含 1px 边框）。
+   以前用透明 ::before 把热区扩到 48px，收起态向左多占 26px，盖住终端
+   最右侧一列文字、从该带起拖选不中字（VERIFY-ACCEPT V04 FAIL）。现在
+   不再有超出元素本体的热区，elementFromPoint 在左边缘外 2px 命中终端。 */
 
 [data-role="app"][data-ai-open="true"] [data-role="ai-handle"] {
   right: min(var(--term-drawer-open-width), calc(100% - var(--term-handle-width)));
@@ -237,7 +242,8 @@ html, body {
 [data-role="toast-stack"] {
   position: fixed;
   right: var(--term-gap);
-  bottom: calc(var(--term-gap) * 2);
+  /* L1-04：让开状态栏（26px）+ 8px 间距，toast 与状态栏不相交。 */
+  bottom: calc(var(--term-statusbar-height) + var(--term-gap));
   z-index: 30;
   display: flex;
   flex-direction: column;

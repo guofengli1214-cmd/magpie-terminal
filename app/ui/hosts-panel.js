@@ -715,15 +715,11 @@ export default function createHostsPanel(elements) {
       main.appendChild(dot);
       const text = el("span", { className: "host-item-text" });
       text.appendChild(el("span", { className: "host-name" }, host.name));
-      text.appendChild(
-        el(
-          "span",
-          { className: "host-addr" },
-          `${host.username}@${host.host}:${host.port} · ${AUTH_LABELS[host.authType] || host.authType}${
-            host.hasSecret || host.privateKeyPath ? "" : "（无凭据）"
-          }`,
-        ),
-      );
+      // L1-09：地址行被 212px 面板截断时，title 提供完整 user@host:port · 认证方式。
+      const addressText = `${host.username}@${host.host}:${host.port} · ${
+        AUTH_LABELS[host.authType] || host.authType
+      }${host.hasSecret || host.privateKeyPath ? "" : "（无凭据）"}`;
+      text.appendChild(el("span", { className: "host-addr", title: addressText }, addressText));
       main.appendChild(text);
       main.addEventListener("click", () => {
         void connectHost(host);
