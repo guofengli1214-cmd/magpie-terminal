@@ -25,15 +25,19 @@ export const REVIEW_SYSTEM_PROMPT = [
   "reversible 表示「用户能不能自己轻松恢复」。删除未备份的文件、覆盖已有文件都不算可逆。",
   "命令里出现 sudo / su 一律 danger。",
   "不要因为命令看起来是用户要求的就放松标准。",
+  "另外你要填两个字段：",
+  "effect：用大白话描述这条命令执行后会发生什么具体变化（会动到哪些文件、增加还是删除什么、有没有副作用）。不要空话，不要重复命令本身；只读命令就写“不会改变任何东西，只是查看…”。",
+  "confirmWhy：用一句话告诉完全不懂命令行的用户，为什么这件事需要他亲自点一下。若 risk=safe 且 reversible=true 可留空字符串。",
 ].join("\n");
 
-/** 审阅工具的 schema（PROTOCOL §5.1，字段名逐字一致）。 */
+/** 审阅工具的 schema（PROTOCOL §5.1，字段名逐字一致：risk / effect / confirmWhy / reversible）。 */
 const reviewTools = {
   review_command: tool({
     description: "给出这条 shell 命令的风险评估",
     inputSchema: z.object({
       risk: z.enum(["safe", "caution", "danger"]),
-      why: z.string(),
+      effect: z.string(),
+      confirmWhy: z.string(),
       reversible: z.boolean(),
     }),
     // 不要写 execute：只需要模型填参数。
@@ -64,13 +68,16 @@ export function resolveReviewModel(reviewModel) {
 /**
  * 审阅一条命令。
  *
+ * 返回字段名按 TASK-V4-H §5.3 从 `why` 改成 `effect` + `confirmWhy`（PROTOCOL §5.1）。
+ *
  * @param {{command: string, model?: string|null, cwd?: string}} input
- * @returns {Promise<{risk:"safe"|"caution"|"danger"|null, why:string, reversible:boolean|null, model:string}>}
- *   失败不抛错：`{risk:null, why:"审阅服务不可用", reversible:null, model}`
+ * @returns {Promise<{risk:"safe"|"caution"|"danger"|null, effect:string|null,
+ *          confirmWhy:string|null, reversible:boolean|null, model:string}>}
+ *   失败不抛错：`{risk:null, effect:null, confirmWhy:null, reversible:null, model}`
  */
 export async function reviewCommand({ command, model, cwd } = {}) {
   const reviewModel = resolveReviewModel(model);
-  const fallback = { risk: null, why: "审阅服务不可用", reversible: null, model: reviewModel };
+  const fallback = { risk: null, effect: null, confirmWhy: null, reversible: null, model: reviewModel };
   if (typeof command !== "string" || command.trim().length === 0) return fallback;
 
   try {
@@ -96,7 +103,11 @@ export async function reviewCommand({ command, model, cwd } = {}) {
     if (risk !== "safe" && risk !== "caution" && risk !== "danger") return fallback;
     return {
       risk,
-      why: typeof verdict.why === "string" && verdict.why.trim().length > 0 ? verdict.why : "（模型没有说明理由）",
+      effect: typeof verdict.effect === "string" && verdict.effect.trim().length > 0 ? verdict.effect : null,
+      confirmWhy:
+        typeof verdict.confirmWhy === "string" && verdict.confirmWhy.trim().length > 0
+          ? verdict.confirmWhy
+          : null,
       reversible: typeof verdict.reversible === "boolean" ? verdict.reversible : null,
       model: reviewModel,
     };

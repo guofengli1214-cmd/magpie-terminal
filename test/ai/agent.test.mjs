@@ -496,3 +496,382 @@ test("basePrompt 是空串 / 非字符串时回落默认", () => {
   assert.ok(buildAgentSystemPrompt({ basePrompt: 123 }).startsWith(DEFAULT_BASE_PROMPT));
   assert.ok(buildAgentSystemPrompt(undefined).startsWith(DEFAULT_BASE_PROMPT));
 });
+
+// ===========================================================================
+// TASK-V4-H §5.2：多轮会话（AC1）
+// ===========================================================================
+
+const { createSessionStore } = await import("../../src/ai/sessions.mjs");
+const { buildHistoryMessages, summarizeStepForHistory, HISTORY_STEP_OUTPUT_MAX, extractReasoning } =
+  await import("../../src/ai/agent.mjs");
+const os = await import("node:os");
+const pathMod = await import("node:path");
+const { mkdtemp } = await import("node:fs/promises");
+
+async function tempStore() {
+  const dir = await mkdtemp(pathMod.join(os.tmpdir(), "mt-agent-sessions-"));
+  return createSessionStore({ dir, log: () => {} });
+}
+
+/** 等某个帧出现（全量并行跑时固定 sleep 不可靠）。 */
+async function waitForFrame(send, type, count = 1, timeoutMs = 8000) {
+  const started = Date.now();
+  for (;;) {
+    const frames = send.ofType(type);
+    if (frames.length >= count) return frames;
+    if (Date.now() - started > timeoutMs) return frames;
+    await sleep(10);
+  }
+}
+
+/** 等条件成立。 */
+async function waitUntil(fn, timeoutMs = 3000) {
+  const started = Date.now();
+  for (;;) {
+    if (await fn()) return true;
+    if (Date.now() - started > timeoutMs) return false;
+    await sleep(20);
+  }
+}
+
+/** 记下每次调用收到的 messages，按剧本调工具。 */
+function recordingGenerateText(plans, texts) {
+  const calls = [];
+  const fn = async (args) => {
+    calls.push({ messages: args.messages });
+    const plan = plans[calls.length - 1] || [];
+    for (const item of plan) {
+      await args.tools.run_command.execute(
+        { command: item.command, why: item.why || "测试用理由" },
+        { toolCallId: `call_${calls.length}_${item.command}` },
+      );
+    }
+    return { text: (texts && texts[calls.length - 1]) || "做完了。", steps: [] };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+function localTerminal(id) {
+  return { id, kind: "local", shell: "bash 5.2.37" };
+}
+
+test("AC1：同一会话连续两问，第二问的模型输入里有上一轮的真实输出", async () => {
+  const store = await tempStore();
+  const send = makeSend();
+  const fn = recordingGenerateText(
+    [[{ command: "ls -S", why: "按大小排" }], [{ command: "ls -lh a.txt", why: "看最大的那个" }]],
+    ["最大的文件是 a.txt（12MB）。", "a.txt 12MB，是目录里最大的。"],
+  );
+  const runner = fakeRunner({
+    ok: true,
+    exitCode: 0,
+    output: "12M a.txt\n4.0M b.log\n",
+    truncated: false,
+    durationMs: 3,
+  });
+  const agent = createAgentRunner({
+    log: () => {},
+    runner,
+    sessions: store,
+    generateText: fn,
+    judgeFn: autoJudge,
+  });
+
+  agent.start({
+    requestId: "r1",
+    question: "这个目录里最大的文件是哪个？",
+    sessionId: "pty-1",
+    terminal: localTerminal("pty-1"),
+    socket: SOCKET,
+    send,
+    config: {},
+  });
+  await waitForFrame(send, "agent.start");
+  const startFrame = send.first("agent.start");
+  assert.equal(typeof startFrame.sessionId, "string", "agent.start 必须带 sessionId");
+  assert.equal(startFrame.round, 1);
+  const aiSessionId = startFrame.sessionId;
+
+  // 真实用户是看到第一轮的总结后才追问的：这里等 agent.done 再开第二轮
+  // （并行跑全量时固定 sleep 会让第二轮赶在第一轮落盘之前，那是在测一个不存在的场景）。
+  await waitForFrame(send, "agent.done", 1);
+  await store.flush();
+
+  agent.start({
+    requestId: "r2",
+    question: "那最大的那个呢？给我具体大小。",
+    sessionId: "pty-1",
+    aiSessionId,
+    terminal: localTerminal("pty-1"),
+    socket: SOCKET,
+    send,
+    config: {},
+  });
+  await waitForFrame(send, "agent.done", 2);
+  // 第二轮可能还在收尾（落盘走串行链）：等第二轮自己的 agent.start 与 done 都齐了。
+  await waitForFrame(send, "agent.start", 2);
+  await waitUntil(() => send.ofType("agent.done").length >= 2, 8000);
+  await sleep(30);
+  await store.flush();
+
+  assert.equal(fn.calls.length, 2, `应该跑了两轮，实际 ${fn.calls.length}（start=${send.ofType("agent.start").length} done=${send.ofType("agent.done").length}）`);
+  const joined = fn.calls[1].messages.map((message) => message.content).join("\n---\n");
+  assert.ok(joined.includes("这个目录里最大的文件是哪个？"), "第二轮必须看到第一轮的问题");
+  assert.ok(joined.includes("12M a.txt"), "第二轮必须看到第一轮的真实命令输出");
+  assert.ok(joined.includes("a.txt（12MB）"), "第二轮必须看到第一轮的助手结论");
+  assert.ok(joined.includes("那最大的那个呢？"), "第二轮自己的问题也要在");
+
+  const startFrames = send.ofType("agent.start");
+  assert.equal(startFrames.length, 2);
+  assert.equal(startFrames[1].sessionId, aiSessionId, "第二问必须复用同一会话");
+  assert.equal(startFrames[1].round, 2);
+
+  await store.flush();
+  const stored = await store.getSession(aiSessionId);
+  assert.equal(stored.messages.filter((item) => item.role === "user").length, 2);
+  assert.equal(stored.messages.filter((item) => item.role === "assistant").length, 2);
+  assert.equal(stored.steps.length, 2);
+  assert.equal(stored.steps[0].command, "ls -S");
+});
+
+test("§5.2：不带 aiSessionId 也能按终端找回最近会话（服务端兜底）", async () => {
+  const store = await tempStore();
+  const send = makeSend();
+  const fn = recordingGenerateText([[], []]);
+  const agent = createAgentRunner({
+    log: () => {},
+    runner: fakeRunner(),
+    sessions: store,
+    generateText: fn,
+    judgeFn: autoJudge,
+  });
+
+  agent.start({
+    requestId: "r1",
+    question: "第一问",
+    sessionId: "pty-9",
+    terminal: localTerminal("pty-9"),
+    socket: SOCKET,
+    send,
+    config: {},
+  });
+  await waitForFrame(send, "agent.done", 1);
+  const firstId = send.first("agent.start").sessionId;
+  agent.start({
+    requestId: "r2",
+    question: "第二问",
+    sessionId: "pty-9",
+    terminal: localTerminal("pty-9"),
+    socket: SOCKET,
+    send,
+    config: {},
+  });
+  await waitForFrame(send, "agent.done", 2);
+  assert.equal(send.ofType("agent.start")[1].sessionId, firstId, "同一终端第二轮要接回原会话");
+});
+
+test("§5.2：不同终端各自一个会话，互不串味", async () => {
+  const store = await tempStore();
+  const send = makeSend();
+  const fn = recordingGenerateText([[], []]);
+  const agent = createAgentRunner({
+    log: () => {},
+    runner: fakeRunner(),
+    sessions: store,
+    generateText: fn,
+    judgeFn: autoJudge,
+  });
+
+  agent.start({
+    requestId: "r1",
+    question: "终端 A 的问题",
+    sessionId: "pty-a",
+    terminal: localTerminal("pty-a"),
+    socket: { id: "A" },
+    send,
+    config: {},
+  });
+  await waitForFrame(send, "agent.done", 1);
+  agent.start({
+    requestId: "r2",
+    question: "终端 B 的问题",
+    sessionId: "pty-b",
+    terminal: { id: "pty-b", kind: "remote", shell: "ssh x@y", hostName: "prod", hostAddr: "10.0.0.9" },
+    socket: { id: "B" },
+    send,
+    config: {},
+  });
+  await waitForFrame(send, "agent.done", 2);
+  const starts = send.ofType("agent.start");
+  assert.notEqual(starts[0].sessionId, starts[1].sessionId);
+  const joined = fn.calls[1].messages.map((message) => message.content).join("\n");
+  assert.equal(joined.includes("终端 A 的问题"), false, "B 终端的新会话不该看到 A 的问题");
+  const remote = await store.getSession(starts[1].sessionId);
+  assert.equal(remote.terminalKind, "remote");
+  assert.equal(remote.hostName, "prod");
+  assert.equal(remote.hostAddr, "10.0.0.9");
+});
+
+test("AC12：停止后会话标「已停止」，已跑完的输出保留", async () => {
+  const store = await tempStore();
+  const send = makeSend();
+  const fn = async (args) => {
+    await args.tools.run_command.execute({ command: "ls", why: "看目录" }, { toolCallId: "c1" });
+    await sleep(300);
+    return { text: "late" };
+  };
+  const agent = createAgentRunner({
+    log: () => {},
+    runner: fakeRunner(),
+    sessions: store,
+    generateText: fn,
+    judgeFn: autoJudge,
+  });
+  const task = agent.start({
+    requestId: "r1",
+    question: "跑一下",
+    sessionId: "pty-1",
+    terminal: localTerminal("pty-1"),
+    socket: SOCKET,
+    send,
+    config: {},
+  });
+  await waitForFrame(send, "agent.start");
+  await waitForFrame(send, "agent.step");
+  task.stop({ reason: "user" });
+  await waitForFrame(send, "agent.done");
+  const aiSessionId = send.first("agent.start").sessionId;
+  // 停止后的落盘走串行链（不阻塞 done 帧），所以这里等它落地而不是死等一次。
+  const settled = await waitUntil(async () => {
+    await store.flush();
+    const current = await store.getSession(aiSessionId);
+    return current && current.status === "stopped";
+  }, 3000);
+  await store.flush();
+  const stored = await store.getSession(aiSessionId);
+  assert.equal(settled, true, `会话应在 3s 内标成 stopped，实际 status=${stored && stored.status}`);
+  assert.equal(stored.status, "stopped");
+  assert.equal(stored.steps.length, 1, "已跑完的那一步要留着");
+  assert.equal(stored.steps[0].status, "done");
+  assert.equal(stored.steps[0].output, "a.txt b.txt");
+});
+
+test("§5.2：buildHistoryMessages 把历史转成 user/assistant，工具结果压成 ≤800 字符摘要", () => {
+  const long = "x".repeat(2000);
+  const summary = summarizeStepForHistory({ command: "ls", status: "done", output: long });
+  assert.ok(summary.includes("输出已截断"));
+  assert.ok(summary.length <= HISTORY_STEP_OUTPUT_MAX + 200);
+  assert.equal(summarizeStepForHistory({ command: "", output: "x" }), "", "没命令的步骤不进历史");
+
+  const messages = buildHistoryMessages({
+    messages: [
+      { role: "user", text: "第一问", round: 1, at: 1, reasoning: null },
+      { role: "assistant", text: "第一答", round: 1, at: 2, reasoning: null },
+      { role: "user", text: "第二问", round: 2, at: 3, reasoning: null },
+    ],
+    steps: [
+      { stepId: "a", command: "ls", status: "done", output: "a.txt", round: 1 },
+      { stepId: "b", command: "pwd", status: "done", output: "/tmp", round: 1 },
+    ],
+  });
+  assert.deepEqual(
+    messages.map((item) => item.role),
+    ["user", "assistant", "user"],
+    "工具摘要贴在本轮用户问题后面（相邻同角色合并成一条），然后是助手结论",
+  );
+  assert.ok(messages[0].content.includes("第一问"));
+  assert.ok(messages[0].content.includes("$ ls"), "工具摘要必须进历史");
+  assert.ok(messages[0].content.includes("$ pwd"));
+  assert.equal(messages[1].content, "第一答");
+  assert.equal(messages[2].content, "第二问");
+});
+
+test("§5.2：会话落盘失败不影响本轮执行（记 AI_SESSION_*_FAILED 日志）", async () => {
+  const broken = {
+    getSession: async () => null,
+    findByTerminal: async () => null,
+    createSession: async () => ({ id: "s-broken", title: "" }),
+    appendMessage: async () => {
+      throw new Error("disk full");
+    },
+    upsertStep: async () => {
+      throw new Error("disk full");
+    },
+    setStatus: async () => {
+      throw new Error("disk full");
+    },
+    markBusy: () => {},
+    flush: async () => {},
+  };
+  const send = makeSend();
+  const logs = [];
+  const agent = createAgentRunner({
+    log: (line) => logs.push(line),
+    runner: fakeRunner(),
+    sessions: broken,
+    generateText: scriptedGenerateText([{ command: "ls" }]),
+    judgeFn: autoJudge,
+  });
+  agent.start({
+    requestId: "r1",
+    question: "看目录",
+    sessionId: "pty-1",
+    terminal: localTerminal("pty-1"),
+    socket: SOCKET,
+    send,
+    config: {},
+  });
+  await waitForFrame(send, "agent.done");
+  assert.equal(send.ofType("agent.done").length, 1, "落盘失败也不能让任务崩");
+  assert.ok(logs.some((line) => line.code === "AI_SESSION_APPEND_FAILED"));
+});
+
+test("AC13：extractReasoning 从 steps 里捞 reasoningText（供思考块）", () => {
+  assert.equal(extractReasoning(null), "");
+  assert.equal(
+    extractReasoning({ steps: [{ reasoningText: "先 ls 看看" }, { reasoningText: "再 df -h" }] }),
+    "先 ls 看看\n\n再 df -h",
+  );
+  assert.equal(extractReasoning({ steps: [{ reasoning: [{ text: "A" }, { text: "B" }] }] }), "A\nB");
+});
+
+test("§5.2：agent.* 出站帧都带 sessionId（前端靠它区分）", async () => {
+  const store = await tempStore();
+  const send = makeSend();
+  const agent = createAgentRunner({
+    log: () => {},
+    runner: fakeRunner(),
+    sessions: store,
+    generateText: scriptedGenerateText([{ command: "mkdir testdir" }]),
+    judgeFn: (input) =>
+      realJudge({
+        ...input,
+        review: async () => ({ risk: "caution", effect: "x", confirmWhy: "y", reversible: false, model: "m" }),
+      }),
+  });
+  agent.start({
+    requestId: "r1",
+    question: "看看",
+    sessionId: "pty-1",
+    terminal: localTerminal("pty-1"),
+    socket: SOCKET,
+    send,
+    config: { autonomy: "balanced" },
+  });
+  await waitForFrame(send, "agent.approval");
+  const approval = send.first("agent.approval");
+  assert.ok(approval, "需要一个 agent.approval 帧");
+  assert.equal(approval.risk, "caution");
+  assert.equal(approval.effect, "x");
+  assert.equal(approval.confirmWhy, "y");
+  assert.equal(approval.reversible, false);
+  agent.resolveApproval({ approvalId: approval.approvalId, approved: false });
+  await waitForFrame(send, "agent.done");
+  const aiSessionId = send.first("agent.start").sessionId;
+  for (const type of ["agent.start", "agent.step", "agent.approval", "agent.done"]) {
+    const frame = send.first(type);
+    assert.ok(frame, `缺少 ${type} 帧`);
+    assert.equal(frame.sessionId, aiSessionId, `${type} 必须带 sessionId`);
+  }
+});

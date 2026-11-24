@@ -5,6 +5,33 @@
 // 菜单项点击也只回调 app.js（onCreate({shellId}) / onConnectHost(host)），
 // 这里不复制任何建会话逻辑。
 
+/**
+ * 标签短名（TASK-V4-F 遗留小修，V4-H §8 附带修）：
+ *
+ * 以前用 `String(session.shell).split(" ")[0]`，于是「PowerShell 5」与「PowerShell 7」
+ * 都变成 `PowerShell`，两个标签都显示 `PowerShell: 41807`，用户分不清是哪一个。
+ * 现在按名字里的版本区分：bash → `bash`，PowerShell 5 → `PS5`，PowerShell 7 → `PS7`，
+ * 其余带版本的 `名称 N` → `名称 N`（保留全名，不猜缩写）。只改展示，不改会话字段。
+ */
+export function shellShortName(shell) {
+  const raw = String(shell || "shell").trim();
+  if (!raw) return "shell";
+  // 本机 bash（含 git bash 的 "bash 5.2.37"）→ 统一叫 bash。
+  if (/^bash\b/i.test(raw)) return "bash";
+  const pwsh = /^powershell\s*(\d+(?:\.\d+)?)?/i.exec(raw);
+  if (pwsh) {
+    const major = pwsh[1] ? pwsh[1].split(".")[0] : "";
+    if (major === "5") return "PS5";
+    if (major === "7") return "PS7";
+    return "PowerShell";
+  }
+  if (/^pwsh\b/i.test(raw)) return "pwsh";
+  // 「名称 版本号」→ 保留全名（去掉后面的点号版本尾巴，避免标题过长）。
+  const withVersion = /^(.+?)\s+v?\d+(?:\.\d+)*$/.exec(raw);
+  if (withVersion) return withVersion[1].trim();
+  return raw;
+}
+
 export default function createTabBar(elements) {
   const host = elements.host;
   const onCreate = typeof elements.onCreate === "function" ? elements.onCreate : () => {};
@@ -26,7 +53,8 @@ export default function createTabBar(elements) {
     if (session && session.kind === "remote") {
       return session.hostName || session.hostId || "远程主机";
     }
-    const shell = String(session.shell || "shell").split(" ")[0];
+    // V4-H §8 附带修：PowerShell 5 / 7 必须能区分（以前都是 PowerShell）。
+    const shell = shellShortName(session.shell);
     const cwd = String(session.cwd || "");
     let tail = cwd;
     if (!tail) tail = "";

@@ -19,24 +19,25 @@ const AUTONOMY_OPTIONS = [
   {
     value: "strict",
     title: "严格",
-    desc: "只有只读命令和你白名单里的会自动跑，其余都要你点确认。",
+    desc: "只自动放行内置只读命令，其余全部要你确认（审阅照跑，只用于展示）。",
   },
   {
     value: "balanced",
     title: "平衡（默认）",
-    desc: "只读命令 + 第二个 AI 判为安全的，自动跑；其余要你确认。",
+    desc: "审阅判定安全且可撤销的命令自动跑；其余要你确认。",
   },
   {
     value: "loose",
     title: "宽松",
-    desc: "连可撤销的写操作（比如新建目录、复制到新路径）也自动跑；删除、覆盖、提权仍然问你。",
+    desc: "连可撤销的写操作（比如新建目录、复制到新路径）也自动跑；danger 仍然问你。",
   },
 ];
 
 const DEFAULT_BASE_PROMPT_HINT =
   "你是一个内置在终端里的 AI 助手。你的服务对象是不太懂命令行的普通用户。你的工作是理解他想达成什么，然后自己动手在终端里把这件事做完，最后用他自己的语言告诉他结果。";
 
-const REVIEW_OFF = "__off__";
+// TASK-V4-H §5.3：审阅是全档位强制执行的一步，设置页不再提供「关闭审阅」。
+// 保留这个常量只为兼容老配置（reviewModel === "" 仍然能让 judge 一律确认）。
 const REVIEW_SAME = "__same__";
 
 function el(tag, attrs = {}, text) {
@@ -74,6 +75,20 @@ export default function createSettingsPanel(elements) {
   let gatewayInfo = null;
   let statusLine = null;
   let saveButton = null;
+  let effectToggle = null;
+  let showApprovalEffect = false;
+
+  /** 开关的可视/可读状态唯一同步点（默认关）。 */
+  function setShowEffect(value) {
+    showApprovalEffect = value === true;
+    if (!effectToggle) return showApprovalEffect;
+    effectToggle.setAttribute("aria-checked", showApprovalEffect ? "true" : "false");
+    effectToggle.setAttribute("data-on", showApprovalEffect ? "true" : "false");
+    // 立刻反映到确认卡（不必等保存）。
+    const cb = typeof elements.onShowEffectChange === "function" ? elements.onShowEffectChange : null;
+    if (cb) cb(showApprovalEffect);
+    return showApprovalEffect;
+  }
 
   /* ---------------- 状态行 ---------------- */
 
@@ -198,15 +213,14 @@ export default function createSettingsPanel(elements) {
 
   function renderReviewModels(current) {
     reviewSelect.textContent = "";
-    reviewSelect.appendChild(el("option", { value: REVIEW_OFF }, "关闭审阅（不推荐）"));
     reviewSelect.appendChild(el("option", { value: REVIEW_SAME }, "与对话模型相同"));
     for (const model of models) {
       reviewSelect.appendChild(el("option", { value: model.id }, model.label || model.id));
     }
-    // current: null = 与对话模型相同；"" = 关闭；其它 = 具体模型 id
+    // current: null = 与对话模型相同；其它 = 具体模型 id。
+    // （旧配置里的 ""（关闭审阅）不再可选：按「与对话模型相同」显示，保存时写 null。）
     let wanted = REVIEW_SAME;
-    if (current === "") wanted = REVIEW_OFF;
-    else if (typeof current === "string" && current.length > 0) {
+    if (typeof current === "string" && current.length > 0) {
       wanted = models.some((model) => model.id === current) ? current : REVIEW_SAME;
     }
     reviewSelect.value = wanted;
@@ -214,7 +228,6 @@ export default function createSettingsPanel(elements) {
 
   function selectedReviewModel() {
     const value = reviewSelect.value;
-    if (value === REVIEW_OFF) return "";
     if (value === REVIEW_SAME) return null;
     return value;
   }
@@ -311,19 +324,63 @@ export default function createSettingsPanel(elements) {
     blockAllow.appendChild(allowlistList);
     body.appendChild(blockAllow);
 
-    /* 3. 审阅模型 */
+    /* 3. 审阅模型（TASK-V4-H §5.3：没有「关闭审阅」，只有选哪家模型） */
     const blockReview = el("section", { className: "settings-block", "data-block": "review" });
     blockReview.appendChild(el("h3", { className: "settings-block-title" }, "审阅模型"));
     blockReview.appendChild(
       el(
         "p",
         { className: "settings-block-hint" },
-        "第二个 AI 只负责判断「这条命令安不安全」，不执行命令。关掉以后就等于严格档。",
+        "复审每条将被执行的命令，返回 risk / effect / confirmWhy / reversible。任何档位下都会先由它评审，档位只决定评审结果怎么用。",
       ),
     );
     reviewSelect = el("select", { "data-role": "review-model-select", "aria-label": "审阅模型" });
     blockReview.appendChild(reviewSelect);
+    blockReview.appendChild(
+      el(
+        "p",
+        { className: "settings-block-hint" },
+        "审阅模型不可用（超过 8 秒 / 报错）时，所有命令都要求你确认；降级不会跳过审阅，也不会放行任何命令。",
+      ),
+    );
     body.appendChild(blockReview);
+
+    /* 3.5 确认卡（TASK-V4-H §5.6 / §6：setting-show-effect） */
+    const blockEffect = el("section", { className: "settings-block", "data-block": "effect" });
+    blockEffect.appendChild(el("h3", { className: "settings-block-title" }, "确认卡"));
+    const effectRow = el("div", { className: "settings-row" });
+    const effectMain = el("span", { className: "settings-row-main" });
+    effectMain.appendChild(el("b", {}, "在确认卡上常显 AI 的效果评估"));
+    effectMain.appendChild(
+      el(
+        "small",
+        {},
+        "默认关。开启后确认卡在按钮上方多一行「执行后会发生什么：…」，不悬停也能读到影响。",
+      ),
+    );
+    effectToggle = el("button", {
+      type: "button",
+      "data-role": "setting-show-effect",
+      className: "settings-switch",
+      role: "switch",
+      "aria-checked": "false",
+      "aria-label": "在确认卡上常显 AI 的效果评估",
+    });
+    effectToggle.appendChild(el("span", { className: "switch-knob", "aria-hidden": "true" }));
+    effectToggle.addEventListener("click", () => {
+      const next = effectToggle.getAttribute("aria-checked") !== "true";
+      setShowEffect(next);
+    });
+    effectRow.append(effectMain, effectToggle);
+    blockEffect.appendChild(effectRow);
+    blockEffect.appendChild(
+      el(
+        "p",
+        { className: "settings-block-hint" },
+        "角标四态：绿=已审可放行 / 琥珀=需要注意 / 红=危险 / 灰=未审阅（审阅不可用）。鼠标悬停或键盘聚焦可看两段解释。",
+      ),
+    );
+    body.appendChild(blockEffect);
 
     /* 4. 基础提示词 */
     const blockPrompt = el("section", { className: "settings-block", "data-block": "prompt" });
@@ -416,6 +473,7 @@ export default function createSettingsPanel(elements) {
       renderAllowlist();
       renderReviewModels(null);
       basePromptInput.value = "";
+      setShowEffect(false);
       renderGateway();
       return;
     }
@@ -431,6 +489,7 @@ export default function createSettingsPanel(elements) {
     renderAllowlist();
     renderReviewModels(typeof config.reviewModel === "string" ? config.reviewModel : null);
     basePromptInput.value = typeof config.basePrompt === "string" ? config.basePrompt : "";
+    setShowEffect(config.showApprovalEffect === true);
     renderGateway();
     setStatus("", null);
   }
@@ -447,6 +506,7 @@ export default function createSettingsPanel(elements) {
       })),
       reviewModel: selectedReviewModel(),
       basePrompt: basePromptInput.value.trim().length > 0 ? basePromptInput.value : null,
+      showApprovalEffect,
     };
     const result = await api.saveConfig(patch);
     if (saveButton) saveButton.disabled = false;

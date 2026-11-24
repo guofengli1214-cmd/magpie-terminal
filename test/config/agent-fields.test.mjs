@@ -99,15 +99,16 @@ const MODELS = [{ id: "commandcode/deepseek/deepseek-v4.1-flash", magpie_label: 
 
 // ------------------------------------------------------------ store 层：默认值
 
-test("DEFAULT_CONFIG 带上 agent 四字段 + defaultShell 的默认值（PROTOCOL §1 / TASK-V4-F）", () => {
+test("DEFAULT_CONFIG 带上 agent 四字段 + defaultShell + showApprovalEffect 的默认值", () => {
   assert.equal(DEFAULT_CONFIG.autonomy, "balanced");
   assert.deepEqual(DEFAULT_CONFIG.allowlist, []);
   assert.equal(DEFAULT_CONFIG.reviewModel, null);
   assert.equal(DEFAULT_CONFIG.basePrompt, null);
   assert.equal(DEFAULT_CONFIG.defaultShell, null);
+  assert.equal(DEFAULT_CONFIG.showApprovalEffect, false);
 });
 
-test("KNOWN_FIELDS 是 model + 四个 agent 字段 + defaultShell", () => {
+test("KNOWN_FIELDS 是 model + 四个 agent 字段 + defaultShell + showApprovalEffect", () => {
   assert.deepEqual([...KNOWN_FIELDS], [
     "model",
     "autonomy",
@@ -115,6 +116,7 @@ test("KNOWN_FIELDS 是 model + 四个 agent 字段 + defaultShell", () => {
     "reviewModel",
     "basePrompt",
     "defaultShell",
+    "showApprovalEffect",
   ]);
 });
 
@@ -126,6 +128,37 @@ test("publicConfig 把缺失字段补成默认值", () => {
   assert.equal(view.reviewModel, null);
   assert.equal(view.basePrompt, null);
   assert.equal(view.defaultShell, null);
+  assert.equal(view.showApprovalEffect, false);
+});
+
+test("TASK-V4-H §6：showApprovalEffect 默认关，PUT 后 GET 一致，非法类型 400 INVALID_SHOW_EFFECT", async () => {
+  const file = await tempFile();
+  await withPath(file, () =>
+    withServer(async ({ port, handle }) => {
+      const headers = { "x-magpie-term-token": handle.token, "content-type": "application/json" };
+      const before = await (await fetch(`http://127.0.0.1:${port}/api/config`, { headers })).json();
+      assert.equal(before.showApprovalEffect, false, "默认必须是关");
+
+      const put = await fetch(`http://127.0.0.1:${port}/api/config`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ showApprovalEffect: true }),
+      });
+      assert.equal(put.status, 200);
+      assert.equal((await put.json()).showApprovalEffect, true);
+
+      const after = await (await fetch(`http://127.0.0.1:${port}/api/config`, { headers })).json();
+      assert.equal(after.showApprovalEffect, true);
+
+      const bad = await fetch(`http://127.0.0.1:${port}/api/config`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ showApprovalEffect: "yes" }),
+      });
+      assert.equal(bad.status, 400);
+      assert.equal((await bad.json()).code, "INVALID_SHOW_EFFECT");
+    }),
+  );
 });
 
 // ------------------------------------------------------------ store 层：往返

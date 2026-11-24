@@ -39,6 +39,7 @@ import { handleAiPost } from "./routes/ai.mjs";
 import { handleLocalFs, handleRemoteFs } from "./routes/fs.mjs";
 import { isStaticPath, readAppFile, sendStatic } from "./static.mjs";
 import { attachWebSocket } from "./ws.mjs";
+import { TITLE_MAX, createSessionStore } from "../ai/sessions.mjs";
 import { detectShell, loadNodePty, LOCKED_NODE_PTY_VERSION } from "../pty/bridge.mjs";
 import { SessionManager } from "../pty/session.mjs";
 import { detectShells, resolveShellById, resolveShellForRequest } from "../pty/shells.mjs";
@@ -358,6 +359,8 @@ export async function startServer(options = {}) {
 
   const server = http.createServer();
   let wsHandle = null;
+  // TASK-V4-H §5.1：AI 会话存储（REST 与 WS 共用一个实例，写链才能串行）。
+  const aiSessions = options.aiSessions || createSessionStore({ log });
 
   server.on("request", (req, res) => {
     handleRequest(req, res).catch((err) => {
@@ -371,6 +374,88 @@ export async function startServer(options = {}) {
       else res.destroy();
     });
   });
+
+  /**
+   * AI 会活的 REST 路由（TASK-V4-H §5.4）。
+   *
+   *   GET    /api/ai/sessions      → { sessions: 摘要[] }（不返回全文）
+   *   GET    /api/ai/sessions/:id  → 全文（含 messages / steps）
+   *   PATCH  /api/ai/sessions/:id  → { title }（≤80 字）
+   *   DELETE /api/ai/sessions/:id  → 204；正在跑的会话 409 SESSION_BUSY
+   *
+   * token 门在 isApi 分支里已经验过，这里不再鉴权。
+   * 返回 true 表示已处理（与 handleHostsRequest 同一约定）。
+   */
+  async function handleAiSessionsRequest(req, res, url, cors) {
+    const match = /^\/api\/ai\/sessions(?:\/([^/]+))?$/.exec(url.pathname);
+    if (!match) return false;
+    const store = aiSessions;
+
+    // GET /api/ai/sessions?current=<id>
+    if (!match[1] && req.method === "GET") {
+      const currentId = url.searchParams.get("current") || null;
+      writeJson(res, 200, { sessions: await store.listSessions({ currentId }) }, {}, cors);
+      return true;
+    }
+
+    if (!match[1]) {
+      writeJson(res, 405, { code: "METHOD_NOT_ALLOWED", userText: "这个接口只支持 GET。" }, {}, cors);
+      return true;
+    }
+
+    const id = decodeURIComponent(match[1]);
+
+    if (req.method === "GET") {
+      const session = await store.getSession(id);
+      if (!session) {
+        writeJson(res, 404, { code: "SESSION_NOT_FOUND", userText: "没有这个会话。" }, {}, cors);
+        return true;
+      }
+      writeJson(res, 200, session, {}, cors);
+      return true;
+    }
+
+    if (req.method === "PATCH") {
+      const body = await readBody(req, res);
+      if (res.writableEnded) return true;
+      const parsed = parseJsonBody(body);
+      if (!parsed) {
+        writeJson(res, 400, { code: "BAD_BODY", userText: "请求体必须是 JSON 对象。" }, {}, cors);
+        return true;
+      }
+      if (typeof parsed.title !== "string" || parsed.title.trim().length === 0) {
+        writeJson(res, 400, { code: "INVALID_TITLE", userText: "标题必须是非空字符串。" }, {}, cors);
+        return true;
+      }
+      if (parsed.title.trim().length > TITLE_MAX) {
+        writeJson(res, 400, { code: "INVALID_TITLE", userText: `标题最多 ${TITLE_MAX} 个字。` }, {}, cors);
+        return true;
+      }
+      const updated = await store.renameSession(id, parsed.title);
+      if (!updated) {
+        writeJson(res, 404, { code: "SESSION_NOT_FOUND", userText: "没有这个会话。" }, {}, cors);
+        return true;
+      }
+      log({ level: "info", code: "AI_SESSION_RENAMED", msg: "ai session renamed", sessionId: id });
+      writeJson(res, 200, { id: updated.id, title: updated.title, updatedAt: updated.updatedAt }, {}, cors);
+      return true;
+    }
+
+    if (req.method === "DELETE") {
+      const result = await store.deleteSession(id);
+      if (result.ok) {
+        res.writeHead(204, cors);
+        res.end();
+        return true;
+      }
+      const status = result.code === "SESSION_BUSY" ? 409 : result.code === "SESSION_NOT_FOUND" ? 404 : 500;
+      writeJson(res, status, { code: result.code, userText: result.userText }, {}, cors);
+      return true;
+    }
+
+    writeJson(res, 405, { code: "METHOD_NOT_ALLOWED", userText: "这个接口不支持这个方法。" }, {}, cors);
+    return true;
+  }
 
   async function handleHostsRequest(req, res, url, cors, log) {
     const pathname = url.pathname;
@@ -853,6 +938,7 @@ export async function startServer(options = {}) {
             reviewModel: view.reviewModel,
             basePrompt: view.basePrompt,
             defaultShell: view.defaultShell,
+            showApprovalEffect: view.showApprovalEffect === true,
           },
           {},
           cors,
@@ -961,6 +1047,7 @@ export async function startServer(options = {}) {
             reviewModel: view.reviewModel,
             basePrompt: view.basePrompt,
             defaultShell: view.defaultShell,
+            showApprovalEffect: view.showApprovalEffect === true,
           },
           {},
           cors,
@@ -1014,6 +1101,15 @@ export async function startServer(options = {}) {
         return;
       }
 
+      /* --------------------------------------------------------- *
+       * AI 会话（TASK-V4-H §5.4）：列 / 全文 / 重命名 / 删除。
+       * 放在其他 /api 分支之后，不影响已有路由。
+       * --------------------------------------------------------- */
+      if (pathname === "/api/ai/sessions" || pathname.startsWith("/api/ai/sessions/")) {
+        const handled = await handleAiSessionsRequest(req, res, url, cors);
+        if (handled) return;
+      }
+
       writeJson(res, 404, { code: "NOT_FOUND", userText: "没有这个接口。" }, {}, cors);
       return;
     }
@@ -1058,6 +1154,7 @@ export async function startServer(options = {}) {
     sessions,
     remote,
     log,
+    aiSessions,
     // TASK-V4-F §5.2：每次 pty.create 现读 config.defaultShell（不重启就生效）。
     getDefaultShell: async () => {
       try {
@@ -1077,6 +1174,7 @@ export async function startServer(options = {}) {
     server,
     sessions,
     remote,
+    aiSessions,
     shell,
     mode,
     nodePtyVersion,

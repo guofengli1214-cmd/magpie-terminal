@@ -16,6 +16,7 @@ import { classify } from "../policy/classify.mjs";
 import { askGateway } from "../ai/gateway.mjs";
 import { createAgentRunner } from "../ai/agent.mjs";
 import { createCommandRunner } from "../ai/runner.mjs";
+import { createSessionStore } from "../ai/sessions.mjs";
 import { readConfig } from "../config/store.mjs";
 import { resolveShellForRequest } from "../pty/shells.mjs";
 
@@ -71,12 +72,19 @@ const InputFrame = z.union([
     requestId: z.string(),
     question: z.string(),
     model: z.string().max(200).optional(),
+    // TASK-V4-H §5.2：要续的那个 AI 会话（服务端会话 id，不是 PTY id）。
+    sessionId: z.string().max(64).optional(),
     context: z
       .object({
         cwd: z.string().optional(),
         shell: z.unknown().optional(),
         recentOutput: z.string().optional(),
         sessionId: z.string().optional(),
+        // 终端归属（会话列表的分组与徒标靠它）：本机 / 远程。
+        terminalKind: z.enum(["local", "remote"]).optional(),
+        hostId: z.string().max(64).optional(),
+        hostName: z.string().max(200).optional(),
+        hostAddr: z.string().max(200).optional(),
       })
       .optional(),
   }),
@@ -103,6 +111,33 @@ function send(socket, frame) {
 }
 
 /**
+ * 会话徒标用的 shell 短名（TASK-V4-H AC4：本机形如 `bash 5.2.37`）。
+ *
+ * 过滤器：shell.name 是「bash」/「PowerShell 7」这种展示名，
+ * 直接拼上版本（版本未知就不拼）。远程不用 shell（徒标走主机名 + 地址）。
+ */
+export function shellLabel(session, kind) {
+  if (!session || kind === "remote") return kind === "remote" ? "ssh" : "";
+  const name = session.shell && typeof session.shell.name === "string" ? session.shell.name : "";
+  if (!name) return "";
+  const version =
+    session.shell && typeof session.shell.version === "string" && session.shell.version !== "unknown"
+      ? session.shell.version
+      : "";
+  return version ? `${name} ${version}` : name;
+}
+
+/** 远程会话的展示地址：`host:port`（本机不需要）。 */
+export function hostAddrOf(session, kind) {
+  if (!session || kind !== "remote") return null;
+  const host = typeof session.host === "string" && session.host.length > 0 ? session.host : "";
+  if (!host) return null;
+  const portValue = Number(session.port);
+  const port = Number.isFinite(portValue) && portValue > 0 && portValue !== 22 ? portValue : null;
+  return port ? `${host}:${port}` : host;
+}
+
+/**
  * @param {object} opts
  * @param {import("node:http").Server} opts.server
  * @param {number} opts.port
@@ -115,6 +150,8 @@ export function attachWebSocket(opts) {
   const { server, port, token, sessions, remote, log } = opts;
   // TASK-V4-F：config.defaultShell 现取（PUT /api/config 后不重启也生效）。
   const getDefaultShell = typeof opts.getDefaultShell === "function" ? opts.getDefaultShell : () => null;
+  // TASK-V4-H §5.1：AI 会话存储（从外面传进来，REST 路由与 WS 共用同一个实例）。
+  const aiSessions = opts.aiSessions || createSessionStore({ log });
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Set();
 
@@ -131,7 +168,7 @@ export function attachWebSocket(opts) {
     const hit = lookup(id);
     return hit ? hit.kind : null;
   });
-  const agent = createAgentRunner({ log, runner });
+  const agent = createAgentRunner({ log, runner, sessions: aiSessions });
 
   // `sessions.create()` 是同步 emit `session.created` 的，早于我们能 setOwner。
   // 用一个同作用域的临时变量把「正在创建的那个 socket」传给 onCreated。
@@ -472,7 +509,7 @@ export function attachWebSocket(opts) {
 
   async function handleAgentRun(socket, frame) {
     const context = frame.context && typeof frame.context === "object" ? frame.context : {};
-    // 目标会话：context.sessionId 优先，其次这个 socket 当前持有的最新会话。
+    // 目标 PTY 会话：context.sessionId 优先，其次这个 socket 当前持有的最新会话。
     let sessionId = typeof context.sessionId === "string" ? context.sessionId : "";
     if (!sessionId) {
       for (const [id, record] of ownership) {
@@ -498,12 +535,31 @@ export function attachWebSocket(opts) {
       config = {};
     }
 
+    // 终端归属：会话列表按终端分组、徒标按本机/远程区分（卡片 §5.1 / AC4）。
+    const hit = lookup(sessionId);
+    const ptySession = hit ? hit.session : null;
+    const terminalKind =
+      context.terminalKind === "remote" || (hit && hit.kind === "remote") ? "remote" : "local";
+    const terminal = {
+      id: sessionId,
+      kind: terminalKind,
+      shell: shellLabel(ptySession, terminalKind),
+      hostId: context.hostId || (ptySession ? ptySession.hostId : null) || null,
+      hostName: context.hostName || (ptySession ? ptySession.hostName : null) || null,
+      hostAddr: hostAddrOf(ptySession, terminalKind),
+    };
+
+    // TASK-V4-H §5.2：`sessionId` 帧字段是 AI 会话 id；不传就由 agent 按终端兜底。
+    const aiSessionId = typeof frame.sessionId === "string" ? frame.sessionId : "";
+
     agent.start({
       requestId: frame.requestId,
       question: frame.question,
       model: frame.model,
       context: { ...context, sessionId },
       sessionId,
+      aiSessionId,
+      terminal,
       socket,
       send: (outbound) => send(socket, outbound),
       config,
@@ -684,5 +740,5 @@ export function attachWebSocket(opts) {
     wss.close();
   }
 
-  return { close, clients };
+  return { close, clients, agentSessions: aiSessions };
 }

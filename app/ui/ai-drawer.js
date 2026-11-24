@@ -1,14 +1,17 @@
-// 右侧 AI 抽屉（TASK-V4-E）：标题栏（只有标题）/ 时间线 / 输入区。
+// 右侧 AI 抽屉（TASK-V4-E → TASK-V4-H）：会话选择 / 多轮时间线 / 输入区。
 //
 // 数据来源：core/agent-store.js 的订阅（agent.* 帧由 app.js 转进来）。
 // 这里只渲染 + 发帧，不改 store 字段。
 //
-// data-role 名单是验收探针，逐字不许改：
-//   ai-drawer-head / model-select / agent-timeline / agent-question
-//   agent-step(+data-status,+data-index) / agent-step-cmd / agent-step-out
-//   agent-summary / agent-approval / approval-run / approval-rest / approval-skip
-//   agent-input / agent-send / agent-stop
-// V4-E 新增：model-menu / composer-box / composer-hint / agent-grow
+// data-role 名单是验收探针，逐字不许改（TASK-V4-H §6）：
+//   保留：ai-drawer-head / model-select / agent-timeline / agent-question
+//        agent-step(+data-status,+data-index) / agent-step-cmd / agent-step-out
+//        agent-summary / agent-approval / approval-run / approval-rest / approval-skip
+//        agent-input / agent-send / agent-stop / model-menu / composer-box /
+//        composer-hint / agent-grow
+//   新增：agent-sessions / agent-sessions-toggle / agent-sessions-menu /
+//        agent-session-item / agent-new / agent-session-badge / agent-reasoning /
+//        approval-review / approval-review-tip
 //
 // 降级路径：旧的 ai.reply / ai.error 仍然渲染成一条简化块（ai.reply 的 confirm
 // 确认卡也搬进抽屉里，但仍是本地直接 pty.input，不发 ai.confirm）。
@@ -28,11 +31,28 @@ const STEP_LABEL = {
   skipped: "已跳过",
 };
 
-const RISK_LABEL = {
-  safe: "风险：只读，安全",
-  caution: "风险：可撤销的写操作",
-  danger: "风险：不可逆，需要谨慎",
+/** 工具卡左侧状态图标（等/跑/成/败，卡片 §5.6）。 */
+const STEP_GLYPH = {
+  pending: "·",
+  running: "◐",
+  awaiting: "!",
+  done: "✓",
+  failed: "✗",
+  denied: "✗",
+  skipped: "–",
 };
+
+/** 角标四态（TASK-V4-H §5.6 / CHANGES-V4 §1.2）：ok / caution / danger / none。 */
+const REVIEW_STATE = {
+  safe: { state: "ok", label: "已审阅，判定安全", text: "安全，已审可放行" },
+  caution: { state: "caution", label: "需要注意", text: "有改动，需要你判断" },
+  danger: { state: "danger", label: "危险", text: "危险，必须你确认" },
+  none: { state: "none", label: "未审阅", text: "未审阅，按需要确认处理" },
+};
+
+/** tooltip 两段标题（逐字固定，CHANGES-V4 §4 第 4 条）。 */
+const TIP_TITLE_EFFECT = "执行后会发生什么";
+const TIP_TITLE_WHY = "为什么需要你确认";
 
 function el(tag, attrs = {}, text) {
   const node = document.createElement(tag);
@@ -45,6 +65,16 @@ function el(tag, attrs = {}, text) {
   return node;
 }
 
+/** 毫秒 → 人类可读耗时（0.3s / 1.4s / 12s）。 */
+function formatDuration(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value < 0) return "";
+  if (value < 1000) return `${Math.max(1, Math.round(value))}ms`;
+  const seconds = value / 1000;
+  if (seconds < 10) return `${seconds.toFixed(1)}s`;
+  return `${Math.round(seconds)}s`;
+}
+
 export default function createAiDrawer(elements) {
   const host = elements.host;
   const agentStore = elements.agentStore;
@@ -54,34 +84,109 @@ export default function createAiDrawer(elements) {
   const onStop = typeof elements.onStop === "function" ? elements.onStop : () => {};
   const onNotice = typeof elements.onNotice === "function" ? elements.onNotice : () => {};
   const onExecuteLegacy = typeof elements.onExecuteLegacy === "function" ? elements.onExecuteLegacy : () => {};
+  const onNewSession = typeof elements.onNewSession === "function" ? elements.onNewSession : () => false;
+  const onSelectSession = typeof elements.onSelectSession === "function" ? elements.onSelectSession : () => false;
+  const onRenameSession = typeof elements.onRenameSession === "function" ? elements.onRenameSession : () => false;
+  const onDeleteSession = typeof elements.onDeleteSession === "function" ? elements.onDeleteSession : () => false;
+  const getTerminal = typeof elements.getTerminal === "function" ? elements.getTerminal : () => null;
+  const getTerminalById =
+    typeof elements.getTerminalById === "function" ? elements.getTerminalById : () => null;
 
   let models = [];
   let reachable = false;
   let loading = false;
   // 折叠状态与「展开过」记忆：重渲染时间线时不丢。
   const expandedSteps = new Set();
+  const expandedReasoning = new Set();
+  const collapsedGroups = new Set();
+  let sessionsMenuOpen = false;
+  let showApprovalEffect = false;
   // 旧路径（ai.reply / ai.error）的简化块，单独存着，重渲染时一起画。
   const legacyBlocks = [];
   // 内核未就绪的看门狗：发 agent.run 后 N 毫秒内没有任何 agent.* 帧 → 明说。
-  // 时长可配置（TASK-V3-C-FIX1 修复 E）；默认 5 秒，慢网关场景可由调用方调大。
   let readyTimeoutMs =
     Number.isFinite(Number(elements.readyTimeoutMs)) && Number(elements.readyTimeoutMs) > 0
       ? Number(elements.readyTimeoutMs)
       : 5000;
   let readyWatchdog = null;
   let sawAgentFrame = false;
-  // 待确认时点了发送：输入框不清空，时间线尾部给一行提示（修复 B/D6）。
   let blockedHint = false;
+
+  let modelSelect = null;
+  let modelMenu = null;
+  let timeline = null;
+  let input = null;
+  let composerEl = null;
+  let sendButton = null;
+  let stopButton = null;
+  let selectedModelId = null;
+  let headEl = null;
+  let sessionsButton = null;
+  let sessionsMenu = null;
+  let sessionsCount = null;
+  let sessionsSub = null;
+  let ctxBar = null;
+  let newButton = null;
 
   /* ---------------- 结构 ---------------- */
 
   function buildShell() {
     host.textContent = "";
 
-    // 头部只留标题：没有「收起」按钮，模型选择在输入区底栏。
-    const head = el("div", { "data-role": "ai-drawer-head", className: "drawer-head" });
-    head.appendChild(el("span", { className: "drawer-title" }, "AI 助手"));
-    host.appendChild(head);
+    // 头部：会话选择（点开下拉）+ 新建。没有「收起」，模型选择在输入区底栏。
+    headEl = el("div", { "data-role": "ai-drawer-head", className: "drawer-head ai-head" });
+
+    sessionsButton = el("button", {
+      type: "button",
+      "data-role": "agent-sessions-toggle",
+      className: "sess",
+      "aria-expanded": "false",
+      "aria-haspopup": "menu",
+      title: "切换会话",
+    });
+    const mark = el("span", { className: "sess-mark", "aria-hidden": "true" }, "▣");
+    const main = el("span", { className: "sess-main" });
+    const top = el("span", { className: "sess-top" });
+    const titleEl = el("span", { className: "sess-title trunc" }, "还没有会话");
+    const sep = el("span", { className: "sess-sep", "aria-hidden": "true" }, "·");
+    sessionsCount = el("span", { className: "sess-count" }, "0 个会话");
+    top.append(titleEl, sep, sessionsCount);
+    sessionsSub = el("span", { className: "sess-sub trunc" }, "说你想要什么结果，我来动手。");
+    main.append(top, sessionsSub);
+    const caret = el("span", { className: "sess-caret", "aria-hidden": "true" }, "▾");
+    sessionsButton.append(mark, main, caret);
+    // 标题元素单独存一份引用（渲染时直接改 textContent，不重建头）。
+    sessionsButton.__titleEl = titleEl;
+
+    newButton = el("button", {
+      type: "button",
+      "data-role": "agent-new",
+      className: "icon-btn",
+      title: "新建会话",
+      "aria-label": "新建会话",
+    });
+    newButton.textContent = "+";
+
+    sessionsMenu = el("div", {
+      "data-role": "agent-sessions-menu",
+      className: "sess-menu",
+      role: "menu",
+      "aria-label": "会话列表",
+      hidden: "",
+    });
+
+    // agent-sessions 是「会话选择器的外壳」：按钮 + 新建 + 菜单一体（下拉定位相对它）。
+    const sessionsWrap = el("div", {
+      "data-role": "agent-sessions",
+      className: "agent-sessions",
+    });
+    sessionsWrap.append(sessionsButton, newButton, sessionsMenu);
+    headEl.appendChild(sessionsWrap);
+    host.appendChild(headEl);
+
+    // 上下文条：告诉用户 AI 在哪儿执行（本机 / 主机名 + cwd）。
+    ctxBar = el("div", { "data-role": "agent-ctx", className: "ai-ctx" });
+    host.appendChild(ctxBar);
 
     timeline = el("div", {
       "data-role": "agent-timeline",
@@ -103,7 +208,7 @@ export default function createAiDrawer(elements) {
     input = el("textarea", {
       "data-role": "agent-input",
       rows: "1",
-      placeholder: "描述任务，或粘贴报错…",
+      placeholder: "继续追问，或描述下一步…",
       autocomplete: "off",
       spellcheck: "false",
       "aria-label": "告诉 AI 要做什么",
@@ -144,14 +249,310 @@ export default function createAiDrawer(elements) {
     host.appendChild(composerEl);
   }
 
-  let modelSelect = null;
-  let modelMenu = null;
-  let timeline = null;
-  let input = null;
-  let composerEl = null;
-  let sendButton = null;
-  let stopButton = null;
-  let selectedModelId = null;
+  /* ---------------- 上下文条 / 会话头 ---------------- */
+
+  function terminalMeta() {
+    const terminal = getTerminal ? getTerminal() : null;
+    if (terminal && typeof terminal === "object") return terminal;
+    return null;
+  }
+
+  function renderCtx() {
+    if (!ctxBar) return;
+    ctxBar.textContent = "";
+    const terminal = terminalMeta();
+    const snapshot = agentStore.getSnapshot();
+    const current = snapshot.sessions.find((item) => item.id === snapshot.currentSessionId) || null;
+    const kind = current ? current.terminalKind : terminal && terminal.kind === "remote" ? "remote" : "local";
+    ctxBar.appendChild(el("span", { className: "ctx-ico", "aria-hidden": "true" }, kind === "remote" ? "🖧" : "▣"));
+    ctxBar.appendChild(el("b", {}, kind === "remote" ? (current && current.hostName) || (terminal && terminal.hostName) || "远程主机" : "本机"));
+    ctxBar.appendChild(el("span", { "aria-hidden": "true" }, "·"));
+    const shell = (current && current.shell) || (terminal && terminal.shell) || "shell";
+    ctxBar.appendChild(el("span", {}, shell));
+    const cwd = terminal && terminal.cwd ? terminal.cwd : "";
+    if (cwd) {
+      ctxBar.appendChild(el("span", { "aria-hidden": "true" }, "·"));
+      ctxBar.appendChild(el("span", { className: "ctx-path trunc", title: cwd }, cwd));
+    }
+  }
+
+  /* ---------------- 会话下拉（按终端分组） ---------------- */
+
+  /** 把会话列表按终端分组：本机每个终端一组，每台远程主机一组（卡片 §2 第 4 条）。 */
+  function groupSessions(snapshot) {
+    const groups = new Map();
+    const terminal = terminalMeta();
+    const activeTerminalId = terminal && terminal.id ? terminal.id : "";
+    for (const item of snapshot.sessions) {
+      const isRemote = item.terminalKind === "remote";
+      const key = isRemote
+        ? `host:${item.hostId || item.hostName || "remote"}`
+        : `local:${item.terminalId || "local"}`;
+      if (!groups.has(key)) {
+        const isCurrentTerminal = Boolean(item.terminalId) && item.terminalId === activeTerminalId;
+        // 本机组的标题用该标签的真名（`bash: 41807`），两个本机标签不会都叫“本机”。
+        const bound = !isRemote && item.terminalId ? getTerminalById(item.terminalId) : null;
+        groups.set(key, {
+          key,
+          remote: isRemote,
+          title: isRemote
+            ? item.hostName || item.hostId || "远程主机"
+            : (bound && bound.label) || `本机 · ${item.shell || "shell"}`,
+          sub: isRemote ? `${item.hostAddr || "地址未知"} · ssh` : item.shell || "本机终端",
+          terminalId: item.terminalId || "",
+          isCurrentTerminal,
+          items: [],
+        });
+      }
+      groups.get(key).items.push(item);
+    }
+    const list = [...groups.values()];
+    // 当前终端那一组置顶（卡片 §5.5）。
+    list.sort((a, b) => Number(b.isCurrentTerminal) - Number(a.isCurrentTerminal));
+    return list;
+  }
+
+  function sourceBadge(item) {
+    const remote = item.terminalKind === "remote";
+    const badge = el("span", {
+      "data-role": "agent-session-badge",
+      className: remote ? "src-badge k-ssh" : "src-badge k-local",
+      title: remote
+        ? `ssh ${item.hostName || ""} · ${item.hostAddr || ""}`
+        : `本机 · ${item.shell || "shell"}`,
+    });
+    if (remote) {
+      badge.appendChild(el("span", { className: "sb-t" }, item.hostName || item.hostId || "远程"));
+      badge.appendChild(el("span", { className: "addr" }, item.hostAddr || "—"));
+    } else {
+      badge.appendChild(el("span", { className: "sb-t" }, item.shell || "shell"));
+    }
+    return badge;
+  }
+
+  /**
+   * 行内重命名（TASK-V4-H：不靠 window.prompt）。
+   *
+   * 为什么不用 `window.prompt`：在 magpie 的沙箱 iframe / headless WebView 里它会
+   * 阻塞甚至直接不返回（本机 CDP 实测 `Runtime.evaluate` 直接超时）。
+   * 这里把标题就地换成一个输入框，Enter 保存、Esc 取消、失焦保存。
+   */
+  function startRename(row, item) {
+    const main = row.querySelector(".mi-main");
+    if (!main) return;
+    const previous = main.querySelector("b");
+    const input = el("input", {
+      type: "text",
+      "data-role": "agent-session-rename-input",
+      className: "sess-rename-input",
+      maxlength: "80",
+      value: item.title || "",
+      "aria-label": "会话新标题（≤80 字）",
+    });
+    let done = false;
+    const finish = (commit) => {
+      if (done) return;
+      done = true;
+      const title = String(input.value || "").trim();
+      if (commit && title.length > 0 && title !== item.title) {
+        onRenameSession({ sessionId: item.id, title });
+      }
+      closeSessionsMenu();
+      openSessionsMenu();
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(false);
+      }
+    });
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("blur", () => finish(true));
+    if (previous) previous.replaceWith(input);
+    else main.appendChild(input);
+    try {
+      input.focus();
+      input.select();
+    } catch {
+      // 忽略：焦点不是安全边界。
+    }
+  }
+
+  /** 行内二次确认删除（同样不用 window.confirm）。 */
+  function confirmDelete(row, item) {
+    if (row.querySelector('.sess-confirm')) return;
+    const bar = el('div', { className: 'sess-confirm', role: 'group', 'aria-label': '确认删除会话' });
+    bar.appendChild(el('span', { className: 'sess-confirm-text' }, '删掉这个会话？'));
+    const yes = el('button', { type: 'button', 'data-role': 'agent-session-delete-confirm', className: 'sess-action danger' }, '删');
+    const no = el('button', { type: 'button', 'data-role': 'agent-session-delete-cancel', className: 'sess-action' }, '取消');
+    yes.addEventListener('click', (event) => {
+      event.stopPropagation();
+      onDeleteSession({ sessionId: item.id });
+      closeSessionsMenu();
+      openSessionsMenu();
+    });
+    no.addEventListener('click', (event) => {
+      event.stopPropagation();
+      bar.remove();
+    });
+    bar.append(yes, no);
+    row.appendChild(bar);
+  }
+
+  function renderSessionsMenu(snapshot) {
+    if (!sessionsMenu) return;
+    sessionsMenu.textContent = "";
+    sessionsMenu.appendChild(el("div", { className: "menu-label" }, "会话 · 按终端分组"));
+    const groups = groupSessions(snapshot);
+    if (groups.length === 0) {
+      sessionsMenu.appendChild(
+        el("div", { className: "menu-empty" }, "还没有会话。发送第一条消息时创建。"),
+      );
+    }
+    for (const group of groups) {
+      const groupEl = el("div", {
+        className: "sess-group",
+        "data-current": group.isCurrentTerminal ? "true" : "false",
+      });
+      const expanded = !collapsedGroups.has(group.key);
+      const head = el("button", {
+        type: "button",
+        className: "sess-group-head",
+        "aria-expanded": expanded ? "true" : "false",
+        "data-group-key": group.key,
+      });
+      head.append(
+        el("span", { className: "gr-chev", "aria-hidden": "true" }, "▾"),
+        el("span", { className: "gr-ico", "aria-hidden": "true" }, group.remote ? "🖧" : "▣"),
+      );
+      const grMain = el("span", { className: "gr-main" });
+      grMain.append(el("b", {}, group.title), el("small", {}, group.sub));
+      head.append(grMain, el("span", { className: "gr-count" }, String(group.items.length)));
+      head.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (collapsedGroups.has(group.key)) collapsedGroups.delete(group.key);
+        else collapsedGroups.add(group.key);
+        renderSessionsMenu(agentStore.getSnapshot());
+      });
+      groupEl.appendChild(head);
+
+      const items = el("div", { className: "sess-items" });
+      if (!expanded) items.setAttribute("hidden", "");
+      for (const item of group.items) {
+        const isCurrent = item.id === snapshot.currentSessionId;
+        const row = el("div", {
+          "data-role": "agent-session-item",
+          "data-session-id": item.id,
+          "data-current": isCurrent ? "true" : "false",
+          className: "sess-item",
+          role: "menuitem",
+          tabindex: "0",
+        });
+        row.appendChild(el("span", { className: "si-mark", "aria-hidden": "true" }, isCurrent ? "✓" : "·"));
+        const main = el("span", { className: "mi-main" });
+        main.appendChild(el("b", {}, item.title || "新会话"));
+        const count = Number(item.messageCount) || 0;
+        main.appendChild(el("small", {}, `${count} 条消息${isCurrent ? " · 当前" : ""}`));
+        row.append(main, sourceBadge(item));
+
+        const actions = el("div", { className: "sess-actions" });
+        const rename = el("button", {
+          type: "button",
+          "data-role": "agent-session-rename",
+          className: "sess-action",
+          title: "重命名会话",
+        }, "改名");
+        rename.addEventListener("click", (event) => {
+          event.stopPropagation();
+          startRename(row, item);
+        });
+        const remove = el("button", {
+          type: "button",
+          "data-role": "agent-session-delete",
+          className: "sess-action danger",
+          title: "删除会话",
+        }, "删除");
+        remove.addEventListener("click", (event) => {
+          event.stopPropagation();
+          // 删除是不可撤销的操作：先二次确认（就地露一个确认行，不用 window.confirm，
+          // 它在沙箱 iframe / headless WebView 里会阻塞）。
+          confirmDelete(row, item);
+        });
+        actions.append(rename, remove);
+        row.appendChild(actions);
+
+        row.addEventListener("click", (event) => {
+          if (event.target instanceof Element && event.target.closest(".sess-actions")) return;
+          onSelectSession(item.id);
+          closeSessionsMenu();
+        });
+        row.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          onSelectSession(item.id);
+          closeSessionsMenu();
+        });
+        items.appendChild(row);
+      }
+      groupEl.appendChild(items);
+      sessionsMenu.appendChild(groupEl);
+    }
+    sessionsMenu.appendChild(
+      el(
+        "div",
+        { className: "menu-note" },
+        "会话属于终端：切标签时抽屉自动落到该终端最近的会话。",
+      ),
+    );
+  }
+
+  function openSessionsMenu() {
+    if (!sessionsMenu) return;
+    sessionsMenuOpen = true;
+    renderSessionsMenu(agentStore.getSnapshot());
+    sessionsMenu.hidden = false;
+    sessionsButton.setAttribute("aria-expanded", "true");
+  }
+
+  function closeSessionsMenu() {
+    if (!sessionsMenu) return;
+    sessionsMenuOpen = false;
+    sessionsMenu.hidden = true;
+    sessionsButton.setAttribute("aria-expanded", "false");
+  }
+
+  function toggleSessionsMenu() {
+    if (sessionsMenuOpen) closeSessionsMenu();
+    else openSessionsMenu();
+  }
+
+  /** 会话头：标题 = 当前终端描述，副标题 = 当前会话名 · 条数。 */
+  function renderSessionsHead(snapshot) {
+    if (!sessionsButton || !sessionsButton.__titleEl) return;
+    const terminal = terminalMeta();
+    const isRemote = terminal && terminal.kind === "remote";
+    // terminal.label 已经是 `bash: 41807` / `PS7: x` 这种「shell: 尾巴」形状，
+    // 直接用作标题；没有 label 时才拼。
+    const label = terminal && typeof terminal.label === "string" ? terminal.label : "";
+    const headTitle = isRemote
+      ? `ssh: ${(terminal && terminal.hostName) || "远程主机"}`
+      : label || "本机";
+    sessionsButton.__titleEl.textContent = headTitle;
+    const count = snapshot.sessions.length;
+    sessionsCount.textContent = `${count} 个会话`;
+    const current = snapshot.sessions.find((item) => item.id === snapshot.currentSessionId) || null;
+    const messageCount = current ? Number(current.messageCount) || 0 : 0;
+    sessionsSub.textContent = current
+      ? `${current.title || "新会话"} · ${messageCount} 条消息`
+      : "还没有会话 · 发送第一条消息时创建";
+    sessionsButton.title = `切换 ${headTitle} 的会话`;
+    if (newButton) newButton.title = `新建会话（${headTitle}）`;
+  }
 
   /* ---------------- 模型菜单（纯文本按钮 + 锚定菜单） ---------------- */
 
@@ -250,6 +651,9 @@ export default function createAiDrawer(elements) {
     const [modelsResult, configResult] = await Promise.all([api.models(), api.config()]);
     loading = false;
     if (modelSelect) modelSelect.removeAttribute("aria-busy");
+    if (configResult && configResult.ok && configResult.data) {
+      showApprovalEffect = configResult.data.showApprovalEffect === true;
+    }
     if (!modelsResult.ok) {
       reachable = false;
       models = [];
@@ -288,31 +692,97 @@ export default function createAiDrawer(elements) {
 
   /* ---------------- 时间线渲染 ---------------- */
 
-  function approvalForStep(stepId) {
-    const snapshot = agentStore.getSnapshot();
-    return snapshot.pendingApprovals.find((item) => item.stepId === stepId) || null;
+  function approvalForStep(snapshot, stepId) {
+    const pool = Array.isArray(snapshot.sessionPending) ? snapshot.sessionPending : snapshot.pendingApprovals;
+    return pool.find((item) => item.stepId === stepId) || null;
   }
 
   function orphanApprovals(snapshot) {
-    // 找不到对应步骤的审批（服务端可能先发 approval），单独在尾部画一张。
+    // 只画当前会话的待确认（其他终端会话的待确认进把手角标 / toast，不属于这条时间线）。
+    const pool = Array.isArray(snapshot.sessionPending) ? snapshot.sessionPending : snapshot.pendingApprovals;
     const ids = new Set(snapshot.steps.map((step) => step.stepId));
-    return snapshot.pendingApprovals.filter((item) => !ids.has(item.stepId));
+    return pool.filter((item) => !ids.has(item.stepId));
+  }
+
+  /** 角标四态 + tooltip 两段（TASK-V4-H §5.6）。 */
+  function buildReviewMark(approval) {
+    const key = ["safe", "caution", "danger"].includes(approval.risk) ? approval.risk : "none";
+    const state = REVIEW_STATE[key];
+    const mark = el("span", {
+      "data-role": "approval-review",
+      "data-review": state.state,
+      className: "review-mark",
+      tabindex: "0",
+      role: "img",
+      "aria-label": `审核 AI 判定：${state.state}，${state.label}`,
+    });
+    mark.appendChild(el("span", { className: "review-glyph", "aria-hidden": "true" }, "⛨"));
+    const tip = el("span", {
+      "data-role": "approval-review-tip",
+      className: "review-tip",
+      role: "tooltip",
+    });
+    tip.appendChild(el("b", {}, TIP_TITLE_EFFECT));
+    tip.appendChild(
+      el(
+        "p",
+        {},
+        approval.effect ||
+          (state.state === "none"
+            ? "审阅服务没给出结论，这一条没有效果评估可看。"
+            : "审阅没有给出这一段的具体影响。"),
+      ),
+    );
+    tip.appendChild(el("div", { className: "rt-sep" }));
+    tip.appendChild(el("b", {}, TIP_TITLE_WHY));
+    tip.appendChild(
+      el(
+        "p",
+        {},
+        approval.confirmWhy ||
+          (state.state === "none"
+            ? "审阅不可用，按「需要确认」处理：一定要你亲自看过这条命令才行。"
+            : "审阅没有说明为什么要你确认；按当前安全档位，这条不会自动执行。"),
+      ),
+    );
+    const metaParts = [];
+    if (approval.reviewModel) metaParts.push(`审核 AI · ${approval.reviewModel}`);
+    metaParts.push(`risk=${approval.risk || "null"}`);
+    if (approval.reversible !== null && approval.reversible !== undefined) {
+      metaParts.push(`reversible=${approval.reversible === true}`);
+    }
+    tip.appendChild(el("div", { className: "rt-foot" }, metaParts.join(" · ")));
+    mark.appendChild(tip);
+    return mark;
   }
 
   function buildApprovalCard(approval) {
-    const card = el("div", { "data-role": "agent-approval", className: "agent-approval" });
-    const riskText = RISK_LABEL[approval.risk] || "风险：未审阅（按需要确认处理）";
-    const risk = el(
-      "div",
-      { className: `risk risk-${approval.risk || "unknown"}` },
-      riskText,
-    );
-    card.appendChild(risk);
-    if (approval.reviewWhy) {
-      card.appendChild(el("div", { className: "review-why" }, `审阅：${approval.reviewWhy}`));
+    const card = el("div", {
+      "data-role": "agent-approval",
+      "data-review": (REVIEW_STATE[["safe", "caution", "danger"].includes(approval.risk) ? approval.risk : "none"]).state,
+      className: "agent-approval",
+    });
+    const headText =
+      approval.risk === "danger"
+        ? "需要你批准：这条命令不可逆"
+        : approval.risk === null
+          ? "需要你批准：审阅不可用，请自己看一眼"
+          : "需要你批准：这条会改动东西";
+    const head = el("div", { className: "approval-head" });
+    head.append(el("span", { className: "approval-head-glyph", "aria-hidden": "true" }, "!"), headText);
+    card.appendChild(head);
+    if (approval.command) {
+      card.appendChild(el("code", { "data-role": "agent-step-cmd", className: "approval-cmd" }, approval.command));
     }
-    if (approval.reversible === false) {
-      card.appendChild(el("div", { className: "review-why" }, "这条命令不可撤销，执行前请确认。"));
+    if (approval.why) {
+      card.appendChild(el("p", { className: "approval-why" }, approval.why));
+    }
+    // 常显效果行（设置开关打开时才有；默认关，卡片 §5.6）。
+    if (showApprovalEffect && approval.effect) {
+      const effectLine = el("p", { className: "approval-effect" });
+      effectLine.appendChild(el("b", {}, `${TIP_TITLE_EFFECT}：`));
+      effectLine.appendChild(document.createTextNode(approval.effect));
+      card.appendChild(effectLine);
     }
 
     const actions = el("div", { className: "agent-approval-actions" });
@@ -330,68 +800,119 @@ export default function createAiDrawer(elements) {
     });
     actions.append(run, rest, skip);
     card.appendChild(actions);
+    // 右下角角标（四态 + tooltip 两段）。
+    card.appendChild(buildReviewMark(approval));
     return card;
   }
 
-  function buildStep(step, snapshot, index) {
+  function buildReasoningBlock(turn, index) {
+    if (!turn.reasoning) return null;
+    const expanded = expandedReasoning.has(index);
+    const wrap = el("div", {
+      "data-role": "agent-reasoning",
+      className: "agent-reasoning",
+      "data-expanded": expanded ? "true" : "false",
+    });
+    const toggle = el("button", {
+      type: "button",
+      className: "think-btn",
+      "aria-expanded": expanded ? "true" : "false",
+      "data-role": "agent-reasoning-toggle",
+    });
+    toggle.appendChild(el("span", { className: "think-chev", "aria-hidden": "true" }, expanded ? "▾" : "▸"));
+    toggle.appendChild(
+      document.createTextNode(`思考过程 · ${turn.reasoning.length} 字`),
+    );
+    const body = el("div", { className: "think-body" }, turn.reasoning);
+    if (!expanded) body.setAttribute("hidden", "");
+    toggle.addEventListener("click", () => {
+      if (expandedReasoning.has(index)) expandedReasoning.delete(index);
+      else expandedReasoning.add(index);
+      render(agentStore.getSnapshot());
+    });
+    wrap.append(toggle, body);
+    return wrap;
+  }
+
+  function buildToolCard(step, snapshot, index) {
     const stepEl = el("div", {
       "data-role": "agent-step",
       "data-index": String(step.index || index + 1),
       "data-status": step.status,
       "data-step-id": step.stepId,
-      className: "agent-step",
+      className: "tool",
     });
 
-    const head = el("div", { className: "step-head" });
-    head.appendChild(el("span", { className: "step-idx" }, String(step.index || index + 1)));
-    if (step.kind === "note") {
-      head.appendChild(el("span", { className: "step-kind" }, "说明"));
+    const head = el("div", { className: "tool-head" });
+    head.appendChild(
+      el(
+        "span",
+        { className: `tool-status-icon s-${step.status}`, "aria-hidden": "true" },
+        STEP_GLYPH[step.status] || "·",
+      ),
+    );
+    const stateText = STEP_LABEL[step.status] || step.status;
+    head.appendChild(
+      el("span", { className: `dot dot-${dotTone(step.status)}`, title: stateText, "aria-label": stateText }),
+    );
+    head.appendChild(el("span", { className: "tool-name" }, "run_command"));
+    head.appendChild(el("span", { className: "tool-sep", "aria-hidden": "true" }, "·"));
+    head.appendChild(el("span", { className: "tool-sub" }, stateText));
+    const right = el("span", { className: "tool-right" });
+    const duration = formatDuration(step.durationMs);
+    if (duration) right.appendChild(el("span", { className: "tool-time" }, duration));
+    else if (step.status === "running") right.appendChild(el("span", { className: "tool-time" }, "执行中"));
+    else if (step.exitCode !== null && step.exitCode !== undefined) {
+      right.appendChild(el("span", { className: "tool-time" }, `退出 ${step.exitCode}`));
     }
-    head.appendChild(el("span", { className: "step-state" }, STEP_LABEL[step.status] || step.status));
+    head.appendChild(right);
     stepEl.appendChild(head);
 
     if (step.command) {
-      stepEl.appendChild(el("code", { "data-role": "agent-step-cmd" }, step.command));
+      stepEl.appendChild(
+        el("code", { "data-role": "agent-step-cmd", className: "tool-cmd" }, step.command),
+      );
     }
-    if (step.kind === "note" && step.why) {
-      stepEl.appendChild(el("div", { className: "step-why" }, step.why));
-    } else if (step.why) {
+    if (step.why) {
       stepEl.appendChild(el("div", { className: "step-why" }, step.why));
     }
     if (step.userText) {
       stepEl.appendChild(el("div", { className: "step-usertext" }, step.userText));
     }
-    if (step.exitCode !== null && step.exitCode !== undefined && step.status !== "running") {
-      stepEl.appendChild(el("div", { className: "step-exit" }, `退出码：${step.exitCode}`));
-    }
 
-    // 输出：默认折叠，点击展开。
+    // 输出：默认只露 3 行（折叠），点「展开」看全部。
     if (step.output && step.output.length > 0) {
       const expanded = expandedSteps.has(step.stepId);
-      const toggle = el(
-        "button",
-        {
-          type: "button",
-          "data-role": "agent-step-out-toggle",
-          className: "step-out-toggle",
-          "aria-expanded": expanded ? "true" : "false",
-        },
-        expanded ? "收起输出" : "查看输出",
+      const out = el("pre", { "data-role": "agent-step-out", className: "tool-out" }, step.output);
+      if (!expanded) out.setAttribute("data-collapsed", "true");
+      const foot = el("button", {
+        type: "button",
+        "data-role": "agent-step-out-toggle",
+        className: "tool-foot",
+        "aria-expanded": expanded ? "true" : "false",
+      });
+      foot.append(
+        el("span", { className: "foot-chev", "aria-hidden": "true" }, expanded ? "▴" : "▾"),
+        document.createTextNode(expanded ? "收起输出" : "展开输出"),
       );
-      // 展开态不要写 hidden=""（setAttribute("hidden","false") 依然是隐藏的）。
-      const out = el("pre", { "data-role": "agent-step-out", className: "step-out" }, step.output);
-      if (!expanded) out.setAttribute("hidden", "");
-      toggle.addEventListener("click", () => {
+      foot.addEventListener("click", () => {
         if (expandedSteps.has(step.stepId)) expandedSteps.delete(step.stepId);
         else expandedSteps.add(step.stepId);
         render(agentStore.getSnapshot());
       });
-      stepEl.append(toggle, out);
+      stepEl.append(out, foot);
     }
 
-    const approval = approvalForStep(step.stepId);
+    const approval = approvalForStep(snapshot, step.stepId);
     if (approval) stepEl.appendChild(buildApprovalCard(approval));
     return stepEl;
+  }
+
+  function dotTone(status) {
+    if (status === "running" || status === "awaiting") return "run";
+    if (status === "failed" || status === "denied") return "err";
+    if (status === "skipped") return "warn";
+    return "ok";
   }
 
   function buildLegacyBlock(block) {
@@ -431,10 +952,19 @@ export default function createAiDrawer(elements) {
     return box;
   }
 
-  function renderEmptyState() {
+  function renderEmptyState(snapshot) {
     const wrap = el("div", { className: "agent-empty", "data-role": "agent-empty" });
     wrap.appendChild(el("div", { className: "agent-empty-icon" }, "✦"));
-    wrap.appendChild(el("div", { className: "agent-empty-text" }, "说你想要什么结果，我来动手。"));
+    const hasSessions = snapshot.sessions.length > 0;
+    const terminal = terminalMeta();
+    const where = terminal && terminal.kind === "remote" ? (terminal.hostName || "这台机器") : "当前终端";
+    wrap.appendChild(
+      el(
+        "div",
+        { className: "agent-empty-text" },
+        hasSessions ? "这个会话是空的，问一句就行。" : `${where}还没有会话。`,
+      ),
+    );
     wrap.appendChild(
       el(
         "div",
@@ -442,35 +972,81 @@ export default function createAiDrawer(elements) {
         "比如「看看这个目录里有多少个文件」「把测试跑一遍告诉我有没有失败」。我只跑只读命令，改动类的会先问你。",
       ),
     );
+    if (!hasSessions) {
+      wrap.appendChild(
+        el(
+          "div",
+          { className: "empty-note" },
+          "会话属于终端：发第一条消息时创建，切标签会回到那个终端最近的会话。",
+        ),
+      );
+    }
     timeline.appendChild(wrap);
+  }
+
+  function renderTurn(turn, snapshot, turnIndex) {
+    const block = el("div", { className: "agent-turn", "data-round": String(turn.round) });
+
+    if (turn.question) {
+      block.appendChild(
+        el("div", { "data-role": "agent-question", className: "agent-question" }, turn.question),
+      );
+    }
+
+    const reasoning = buildReasoningBlock(turn, turnIndex);
+    if (reasoning) block.appendChild(reasoning);
+
+    if (turn.steps.length === 0 && snapshot.status === "running" && turnIndex === snapshot.turns.length - 1) {
+      block.appendChild(el("div", { className: "agent-thinking" }, "正在想怎么做…"));
+    }
+
+    for (let index = 0; index < turn.steps.length; index += 1) {
+      block.appendChild(buildToolCard(turn.steps[index], snapshot, index));
+    }
+
+    // 流式增量的实时区（AC13）：只在还没有总结时显示。
+    if (!turn.summary && turn.streamText) {
+      block.appendChild(el("div", { className: "agent-stream", "data-role": "agent-stream" }, turn.streamText));
+    }
+
+    if (turn.summary) {
+      const summary = el("div", { "data-role": "agent-summary", className: "agent-summary" });
+      if (snapshot.status === "stopped") {
+        summary.appendChild(el("div", { className: "summary-lead" }, "已停止。下面是我已经做完的部分："));
+      }
+      summary.appendChild(el("div", { className: "summary-text" }, turn.summary));
+      block.appendChild(summary);
+    } else if (snapshot.status === "stopped" && turnIndex === snapshot.turns.length - 1) {
+      block.appendChild(el("div", { "data-role": "agent-summary", className: "agent-summary" }, "已停止。"));
+    }
+
+    timeline.appendChild(block);
   }
 
   function render(snapshot) {
     if (!timeline) return;
+    renderSessionsHead(snapshot);
+    renderCtx();
+    if (sessionsMenuOpen) renderSessionsMenu(snapshot);
+
+    // 保留滚动位置：整体重画前先记住是否在底部。
+    const nearBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 120;
     timeline.textContent = "";
+
     const hasPendingApprovals = snapshot.pendingApprovals.length > 0;
-    // 待确认清空后提示自动收起。
     if (!hasPendingApprovals) blockedHint = false;
 
+    const turns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
     const hasContent =
-      snapshot.steps.length > 0 ||
-      snapshot.pendingApprovals.length > 0 ||
+      turns.length > 0 ||
+      orphanApprovals(snapshot).length > 0 ||
       Boolean(snapshot.summary) ||
-      Boolean(snapshot.question) ||
       legacyBlocks.length > 0;
 
-    if (snapshot.question) {
-      timeline.appendChild(el("div", { "data-role": "agent-question", className: "agent-question" }, snapshot.question));
-    }
+    if (!hasContent) renderEmptyState(snapshot);
 
-    if (snapshot.steps.length === 0 && snapshot.question && snapshot.status === "running") {
-      timeline.appendChild(el("div", { className: "agent-thinking" }, "正在想怎么做…"));
-    }
-
-    if (!hasContent) renderEmptyState();
-
-    for (let index = 0; index < snapshot.steps.length; index += 1) {
-      timeline.appendChild(buildStep(snapshot.steps[index], snapshot, index));
+    for (let index = 0; index < turns.length; index += 1) {
+      renderTurn(turns[index], snapshot, index);
     }
 
     for (const approval of orphanApprovals(snapshot)) {
@@ -498,22 +1074,11 @@ export default function createAiDrawer(elements) {
       timeline.appendChild(errorBox);
     }
 
-    if (snapshot.summary) {
-      const summary = el("div", { "data-role": "agent-summary", className: "agent-summary" });
-      if (snapshot.status === "stopped") summary.appendChild(el("div", { className: "summary-lead" }, "已停止。下面是我已经做完的部分："));
-      summary.appendChild(el("div", { className: "summary-text" }, snapshot.summary));
-      timeline.appendChild(summary);
-    } else if (snapshot.status === "stopped") {
-      timeline.appendChild(el("div", { "data-role": "agent-summary", className: "agent-summary" }, "已停止。"));
-    }
-
-    // 停止按钮只在 running / awaiting 时可见（其余状态隐藏）。
+    // 停止按钮只在 running / awaiting 时可见。
     if (stopButton) stopButton.hidden = !(snapshot.status === "running" || snapshot.status === "awaiting");
-    // 待确认期间不许再发新问题（修复 B/D6）：发送按钮 disabled，直到审批清空。
+    // 待确认期间不许再发新问题：发送按钮 disabled。
     if (sendButton) sendButton.disabled = hasPendingApprovals;
 
-    // 滚动到底部（用户正在读中间时略过：靠 near-bottom 判断）。
-    const nearBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 120;
     if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
   }
 
@@ -527,7 +1092,6 @@ export default function createAiDrawer(elements) {
       onNotice("先说一句你想干什么。", "warn");
       return;
     }
-    // 门禁（修复 B/D6）：有待确认时不允许开新任务，输入框保留原话。
     const snapshot = agentStore.getSnapshot();
     if (snapshot.pendingApprovals.length > 0) {
       blockedHint = true;
@@ -561,10 +1125,9 @@ export default function createAiDrawer(elements) {
       if (sawAgentFrame) return;
       const snapshot = agentStore.getSnapshot();
       if (snapshot.status !== "running" && snapshot.status !== "awaiting") return;
-      // 明确标记本地伪造（local:true）：收到任何真实 agent.* 帧时 agent-store 会自动清掉。
       agentStore.failLocally({
         code: "AGENT_NOT_READY",
-        userText: "AI 内核还没就绪（TASK-V3-D 未合入）：这版界面已经发得出 agent.run，但服务端没有回任何 agent.* 帧。",
+        userText: "AI 内核没有回任何 agent.* 帧：服务端可能没在跑，或者网关太慢。",
       });
     }, readyTimeoutMs);
   }
@@ -583,7 +1146,7 @@ export default function createAiDrawer(elements) {
     notifyAgentFrame();
     agentStore.failLocally({
       code: "AGENT_NOT_READY",
-      userText: "AI 内核还没就绪（TASK-V3-D 未合入）：服务端拒绝了 agent.run 帧。",
+      userText: "服务端拒绝了 agent.run 帧（BAD_FRAME）。",
     });
   }
 
@@ -671,7 +1234,6 @@ export default function createAiDrawer(elements) {
     if (!grip || !input) return;
 
     input.addEventListener("input", () => {
-      // 用户重新输入即回到自动增高，并清掉上次拖拽记住的高度。
       clearManualHeight();
       autoGrow();
     });
@@ -722,11 +1284,18 @@ export default function createAiDrawer(elements) {
       buildShell();
 
       modelSelect.addEventListener("click", () => toggleModelMenu());
+      sessionsButton.addEventListener("click", () => toggleSessionsMenu());
+      newButton.addEventListener("click", () => {
+        closeSessionsMenu();
+        const created = onNewSession();
+        if (created === false) onNotice("当前没有终端标签：先点「+」新建一个。", "warn");
+      });
 
       sendButton.addEventListener("click", () => send());
       input.addEventListener("keydown", (event) => {
         if (event.key === "Escape") {
           closeModelMenu();
+          closeSessionsMenu();
           return;
         }
         if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
@@ -737,24 +1306,29 @@ export default function createAiDrawer(elements) {
         onStop();
       });
 
-      // 点菜单外 / Esc 关菜单。
+      // 点菜单外 / Esc 关菜单（模型 + 会话两个菜单）。
       document.addEventListener(
         "mousedown",
         (event) => {
-          if (!modelMenu || modelMenu.hidden) return;
           const target = event.target;
           if (!(target instanceof Element)) return;
-          if (modelMenu.contains(target) || modelSelect.contains(target)) return;
-          closeModelMenu();
+          if (modelMenu && !modelMenu.hidden) {
+            if (!modelMenu.contains(target) && !modelSelect.contains(target)) closeModelMenu();
+          }
+          if (sessionsMenuOpen && sessionsMenu && sessionsMenu.hidden === false) {
+            if (!sessionsMenu.contains(target) && !sessionsButton.contains(target) && !newButton.contains(target)) {
+              closeSessionsMenu();
+            }
+          }
         },
         true,
       );
       document.addEventListener(
         "keydown",
         (event) => {
-          if (event.key === "Escape" && modelMenu && !modelMenu.hidden) {
-            closeModelMenu();
-          }
+          if (event.key !== "Escape") return;
+          if (modelMenu && !modelMenu.hidden) closeModelMenu();
+          if (sessionsMenuOpen) closeSessionsMenu();
         },
         true,
       );
@@ -790,6 +1364,12 @@ export default function createAiDrawer(elements) {
     },
     notifyAgentFrame,
     handleBadFrame,
+    /** 设置页改了「常显效果评估」→ 立刻反映到确认卡。 */
+    setShowApprovalEffect(value) {
+      showApprovalEffect = value === true;
+      render(agentStore.getSnapshot());
+      return showApprovalEffect;
+    },
     /** 测试/慢网关用：调整看门狗时长（毫秒）。 */
     setReadyTimeout(ms) {
       const next = Number(ms);
@@ -804,6 +1384,10 @@ export default function createAiDrawer(elements) {
     selectedModel() {
       const model = currentModel();
       return model ? model.id : null;
+    },
+    closeSessionsMenu,
+    get sessionsMenuOpen() {
+      return sessionsMenuOpen;
     },
   };
 }

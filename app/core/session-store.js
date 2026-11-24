@@ -83,6 +83,13 @@ export default function createSessionStore() {
         kind: session.kind === "remote" ? "remote" : "local",
         hostId: typeof session.hostId === "string" ? session.hostId : null,
         hostName: typeof session.hostName === "string" ? session.hostName : null,
+        // V4-H AC4：远程会话的展示地址（`host:port`）——会话徒标两行靠它。
+        hostAddr:
+          typeof session.hostAddr === "string"
+            ? session.hostAddr
+            : typeof session.host === "string" && session.host.length > 0
+              ? session.host
+              : null,
       });
       if (!state.activeId) state.activeId = session.id;
       notify();

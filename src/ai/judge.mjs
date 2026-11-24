@@ -1,4 +1,4 @@
-// 五级判级链（PROTOCOL-AGENT.md §5）。
+// 五级判级链（PROTOCOL-AGENT.md §5，TASK-V4-H §5.3）。
 //
 // 严格按顺序，命中即返回：
 //   1. 硬禁止（src/policy/forbidden.mjs）      → 永远 confirm
@@ -6,10 +6,19 @@
 //   2. 用户白名单（config.allowlist，§2 语义） → auto
 //   3. 内置只读白名单（src/policy/classify.mjs）→ 它说 auto 就 auto
 //   3.5 切不开的命令（unparsable / redirect / substitution …）→ 直接 confirm，不交审阅
-//   4. 第二 AI 审阅（src/ai/review.mjs）        → 按 autonomy 映射
+//   4. 第二 AI 审阅（src/ai/review.mjs）        → **三个档位都强制执行**
 //   5. 兜底                                     → confirm
 //
-// `autonomy === "strict"` 时跳过第 4 级（不调审阅，直接 confirm）。
+// TASK-V4-H §5.3（用户明确要求「审阅全档位」）：
+//   - 删掉了「strict 跳过审阅」的分支。三档都必须调审阅，档位只决定
+//     「审阅结论怎么用」（PROTOCOL §5 第 4 步逐字为准）：
+//       strict  ：结论只用于展示与日志，绝不据此自动放行（能 auto 的只有第 2/3 级）
+//       balanced：risk === "safe" 且 reversible === true → auto
+//       loose   ：在 balanced 基础上，risk === "caution" 且 reversible === true → auto
+//       risk === "danger"：任何档位都不 auto
+//   - 审阅失败 / 超时（8s）→ 任何档位都 confirm，reason 是协议原文，
+//     角标置灰（risk=null），日志写 REVIEW_FAILED（不许静默）。
+//
 // 第 1 级与 1.5 级任何档位、任何白名单都不能绕过 —— 这是 AC5 / AC6 的锁。
 
 import { classify } from "../policy/classify.mjs";
@@ -34,27 +43,31 @@ const UNREVIEWABLE_HITS = new Set(["unparsable", "substitution", "redirect", "ex
  * 判级。
  *
  * @param {{command: string, config?: object, cwd?: string, model?: string,
- *          review?: Function}} input
+ *          review?: Function, log?: Function}} input
  *   `review` 可注入假审阅函数（测试用），签名与 reviewCommand 相同。
+ *   `log` 注入日志函数（测试用）；生产由 agent 传进来，每次审阅写一行 `[REVIEW]`。
  * @returns {Promise<{decision:"auto"|"confirm", reason:string, hit:string|null,
- *          risk:"safe"|"caution"|"danger"|null, reviewModel:string|null}>}
+ *          risk:"safe"|"caution"|"danger"|null, effect:string|null, confirmWhy:string|null,
+ *          reversible:boolean|null, reviewModel:string|null}>}
  */
-export async function judge({ command, config, cwd, model, review } = {}) {
+export async function judge({ command, config, cwd, model, review, log } = {}) {
   const conf = config && typeof config === "object" ? config : {};
   const autonomy = conf.autonomy === "strict" || conf.autonomy === "loose" ? conf.autonomy : "balanced";
   const reviewModelSetting = conf.reviewModel === undefined ? null : conf.reviewModel;
   const conversationModel = typeof model === "string" && model.length > 0 ? model : null;
+  const logFn = typeof log === "function" ? log : () => {};
 
-  // 文档化的五个字段之外额外带上 `reviewWhy` / `reversible`：
-  // 前者是审阅原话（agent.approval 帧要单独展示），后者是审阅的「可撤销」结论。
-  // 没有审阅时两者都是 null。这两个是新增键，没有改名、没有替代任何文档化字段。
   const result = (decision, reason, hit, risk, reviewModel, extra) => ({
     decision,
     reason,
     hit: hit === undefined ? null : hit,
     risk: risk === undefined ? null : risk,
     reviewModel: reviewModel === undefined ? null : reviewModel,
-    reviewWhy: extra && typeof extra.reviewWhy === "string" ? extra.reviewWhy : null,
+    effect: extra && typeof extra.effect === "string" && extra.effect.length > 0 ? extra.effect : null,
+    confirmWhy:
+      extra && typeof extra.confirmWhy === "string" && extra.confirmWhy.length > 0
+        ? extra.confirmWhy
+        : null,
     reversible: extra && typeof extra.reversible === "boolean" ? extra.reversible : null,
   });
 
@@ -100,47 +113,102 @@ export async function judge({ command, config, cwd, model, review } = {}) {
     return result("confirm", builtin.reason || "这条命令无法静态判定，需要你确认", builtin.hit, null, null);
   }
 
-  // 审阅关闭（reviewModel === ""）或严格档：不调审阅，直接确认。
+  // 4. 第二 AI 审阅 —— **三个档位都跑，没有任何档位跳过这一步**（TASK-V4-H §5.3）。
+  //
+  // 这里只保留一个出口：`reviewModel === ""`（设置页的「关闭审阅」）。
+  // 那是用户明确的全局开关（PROTOCOL §1 的 reviewModel 语义），不是档位差异；
+  // 关掉以后等于「全都要确认」，同样不会自动放行任何命令。
   if (reviewModelSetting === "") {
-    return result("confirm", builtin && builtin.reason ? builtin.reason : "需要你确认", builtin ? builtin.hit : null, null, null);
-  }
-  if (autonomy === "strict") {
-    return result("confirm", builtin && builtin.reason ? builtin.reason : "严格档：需要你确认", builtin ? builtin.hit : null, null, null);
+    return result(
+      "confirm",
+      builtin && builtin.reason ? `${builtin.reason}（审阅已关闭，一律确认）` : "需要你确认（审阅已关闭）",
+      builtin ? builtin.hit : null,
+      null,
+      null,
+    );
   }
 
-  // 4. 第二 AI 审阅。
   const reviewModelId =
     typeof reviewModelSetting === "string" && reviewModelSetting.trim().length > 0
       ? reviewModelSetting.trim()
       : conversationModel || null;
 
   const doReview = typeof review === "function" ? review : reviewCommand;
+  const reviewStartedAt = Date.now();
 
   let verdict;
+  let failure = null;
   try {
     verdict = await doReview({ command: text, model: reviewModelId, cwd });
-  } catch {
+  } catch (err) {
     verdict = null;
+    failure = err && err.code ? String(err.code) : "REVIEW_THREW";
   }
 
-  if (!verdict || (verdict.risk !== "safe" && verdict.risk !== "caution" && verdict.risk !== "danger")) {
+  const riskOk = verdict && (verdict.risk === "safe" || verdict.risk === "caution" || verdict.risk === "danger");
+  if (!riskOk) {
+    if (!failure) failure = "REVIEW_NO_VERDICT";
+    // 审阅不可用：任何档位都 confirm，角标置灰（risk=null）。
+    // 日志写 REVIEW_FAILED（不许静默降级）。
+    logFn({
+      level: "warn",
+      code: "REVIEW_FAILED",
+      msg: "[REVIEW_FAILED] 审阅服务不可用，按需要确认处理",
+      commandLength: text.length,
+      commandHead: text.slice(0, 40),
+      autonomy,
+      reviewModel: reviewModelId,
+      reason: failure,
+      durationMs: Date.now() - reviewStartedAt,
+    });
     return result("confirm", REVIEW_UNAVAILABLE_REASON, null, null, null);
   }
 
   const risk = verdict.risk;
-  const why = typeof verdict.why === "string" && verdict.why.length > 0 ? verdict.why : "";
+  const effect = typeof verdict.effect === "string" ? verdict.effect : "";
+  const confirmWhy = typeof verdict.confirmWhy === "string" ? verdict.confirmWhy : "";
   const reversible = verdict.reversible === true;
   const resolvedModel = typeof verdict.model === "string" && verdict.model.length > 0 ? verdict.model : reviewModelId;
+  const extra = { effect: effect || null, confirmWhy: confirmWhy || null, reversible: verdict.reversible === true };
 
-  const extra = { reviewWhy: why || null, reversible: verdict.reversible === true };
+  // 每次审阅写一行独立日志（卡片 §5.3 逐字：`[REVIEW] {command, risk, effect, confirmWhy, reversible, model, ms}`）。
+  // 完整命令不进日志（PROTOCOL §4.5 铁律），只留前 40 字符 + 长度。
+  logFn({
+    level: "info",
+    code: "REVIEW",
+    msg: "[REVIEW]",
+    commandLength: text.length,
+    commandHead: text.slice(0, 40),
+    risk,
+    effect: effect || null,
+    confirmWhy: confirmWhy || null,
+    reversible: verdict.reversible === true,
+    reviewModel: resolvedModel,
+    autonomy,
+    durationMs: Date.now() - reviewStartedAt,
+  });
 
-  if (risk === "safe") {
-    return result("auto", why ? `AI 审阅：${why}` : "AI 审阅：只读操作", null, risk, resolvedModel, extra);
+  // 档位只决定「结论怎么用」。
+  const reason = confirmWhy ? `AI 审阅：${confirmWhy}` : effect ? `AI 审阅：${effect}` : "AI 审阅";
+
+  if (risk === "danger") {
+    // danger 任何档位都不 auto（含 loose）。
+    return result("confirm", reason, null, risk, resolvedModel, extra);
   }
-  if (risk === "caution" && autonomy === "loose" && reversible === true) {
-    return result("auto", why ? `AI 审阅：${why}` : "AI 审阅：可撤销的写操作", null, risk, resolvedModel, extra);
+
+  if (autonomy === "strict") {
+    // 严格档：审阅只用于展示与日志，绝不据此自动放行。
+    return result("confirm", reason, null, risk, resolvedModel, extra);
+  }
+
+  if (risk === "safe" && reversible) {
+    return result("auto", reason, null, risk, resolvedModel, extra);
+  }
+
+  if (autonomy === "loose" && risk === "caution" && reversible) {
+    return result("auto", reason, null, risk, resolvedModel, extra);
   }
 
   // 5. 兜底：其余全部 confirm。
-  return result("confirm", why ? `AI 审阅：${why}` : "需要你确认", null, risk, resolvedModel, extra);
+  return result("confirm", reason, null, risk, resolvedModel, extra);
 }

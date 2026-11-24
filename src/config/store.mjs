@@ -38,6 +38,8 @@ export const KNOWN_FIELDS = Object.freeze([
   "reviewModel",
   "basePrompt",
   "defaultShell",
+  // TASK-V4-H §6：确认卡上常显 AI 的效果评估（默认关）。
+  "showApprovalEffect",
 ]);
 
 /** 自动执行档位（PROTOCOL §1）。 */
@@ -69,6 +71,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   basePrompt: null,
   // null = 不指定，按 MAGPIE_TERMINAL_SHELL → 自动探测（git bash 优先）。
   defaultShell: null,
+  // TASK-V4-H §6：确认卡上是否常显「执行后会发生什么」，默认关。
+  showApprovalEffect: false,
 });
 
 /**
@@ -242,6 +246,13 @@ export function validateConfigPatch(patch) {
     }
   }
 
+  // TASK-V4-H §6：boolean，非法类型 400 INVALID_SHOW_EFFECT。
+  if (has("showApprovalEffect")) {
+    if (typeof patch.showApprovalEffect !== "boolean") {
+      return { code: "INVALID_SHOW_EFFECT", userText: "showApprovalEffect 必须是 true 或 false。" };
+    }
+  }
+
   // TASK-V4-F §5.3：只接受 SHELL_IDS 里的值或 null（null = 回到自动探测）。
   if (has("defaultShell")) {
     const value = patch.defaultShell;
@@ -288,6 +299,9 @@ function normalize(config) {
   // defaultShell：非法值一律回落 null（不抛错，下次再选就好）。
   if (!SHELL_IDS.includes(next.defaultShell)) next.defaultShell = null;
 
+  // showApprovalEffect：非 boolean 一律回落 false（默认关）。
+  if (typeof next.showApprovalEffect !== "boolean") next.showApprovalEffect = false;
+
   return next;
 }
 
@@ -302,6 +316,7 @@ export function publicConfig(config) {
     reviewModel: normalized.reviewModel,
     basePrompt: normalized.basePrompt,
     defaultShell: normalized.defaultShell,
+    showApprovalEffect: normalized.showApprovalEffect === true,
   };
 }
 

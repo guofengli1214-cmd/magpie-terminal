@@ -186,6 +186,26 @@ export default {
     return getJson("/api/shells");
   },
 
+  /* ---- AI 会话（TASK-V4-H §5.4） ---- */
+
+  /** GET /api/ai/sessions?current=<id> -> { sessions } */
+  aiSessions(currentId) {
+    const query = currentId ? `?current=${encodeURIComponent(currentId)}` : "";
+    return getJson(`/api/ai/sessions${query}`);
+  },
+  /** GET /api/ai/sessions/:id -> 全文（含 messages / steps） */
+  aiSession(id) {
+    return getJson(`/api/ai/sessions/${encodeURIComponent(id)}`);
+  },
+  /** PATCH /api/ai/sessions/:id {title} */
+  renameAiSession(id, title) {
+    return sendJson(`/api/ai/sessions/${encodeURIComponent(id)}`, "PATCH", { title });
+  },
+  /** DELETE /api/ai/sessions/:id（忙会话 409 SESSION_BUSY） */
+  deleteAiSession(id) {
+    return del(`/api/ai/sessions/${encodeURIComponent(id)}`);
+  },
+
   /* ---- 主机（TASK-V2-B §2.5） ---- */
 
   /** GET /api/hosts -> { hosts } */

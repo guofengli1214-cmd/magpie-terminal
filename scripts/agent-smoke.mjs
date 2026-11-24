@@ -66,7 +66,8 @@ ws.addEventListener("message", (event) => {
   if (frame.type === "agent.approval") {
     console.log(`  → 自动批准（模拟用户点确认）: ${frame.command}`);
     console.log(`    risk=${frame.risk} reversible=${frame.reversible} reviewModel=${frame.reviewModel}`);
-    console.log(`    reviewWhy=${JSON.stringify(frame.reviewWhy)}`);
+    console.log(`    effect=${JSON.stringify(frame.effect)}`);
+    console.log(`    confirmWhy=${JSON.stringify(frame.confirmWhy)}`);
     setTimeout(() => {
       ws.send(JSON.stringify({ type: "agent.approve", requestId: frame.requestId, approvalId: frame.approvalId, approved: true }));
     }, 300);

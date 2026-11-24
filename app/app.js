@@ -4,7 +4,7 @@ import constants from "./core/constants.js";
 import createSessionStore from "./core/session-store.js";
 import createWsClient from "./core/ws-client.js";
 import api from "./core/api.js";
-import createTabBar from "./ui/tab-bar.js";
+import createTabBar, { shellShortName } from "./ui/tab-bar.js";
 import createTerminalView from "./ui/terminal-view.js";
 import createStatusBar from "./ui/status-bar.js";
 import createAgentStore from "./core/agent-store.js";
@@ -151,6 +151,14 @@ function shellSummary(info) {
   return info.pty === "sentinel" ? `${name}（降级）` : name;
 }
 
+/** 远程会话的展示地址 `host:port`（端口是 22 就不写，卡片 D5：两行徒标不超过 120px）。 */
+function remoteAddrOf(frame) {
+  const host = frame && typeof frame.host === "string" ? frame.host : "";
+  if (!host) return null;
+  const port = Number(frame.port);
+  return Number.isFinite(port) && port > 0 && port !== 22 ? `${host}:${port}` : host;
+}
+
 function handleFrame(frame) {
   switch (frame.type) {
     case "session.created": {
@@ -170,6 +178,7 @@ function handleFrame(frame) {
         kind: isRemote ? "remote" : "local",
         hostId: isRemote ? frame.hostId || null : null,
         hostName: isRemote ? frame.hostName || frame.host || "远程主机" : null,
+        hostAddr: isRemote ? remoteAddrOf(frame) : null,
       });
       terminalView.ensure(id);
       store.patchSession(id, {
@@ -215,6 +224,7 @@ function handleFrame(frame) {
           kind: isRemote ? "remote" : "local",
           hostId: isRemote ? frame.hostId || null : null,
           hostName: isRemote ? frame.hostName || frame.host || "远程主机" : null,
+          hostAddr: isRemote ? remoteAddrOf(frame) : null,
         });
       } else {
         const isRemote = frame.kind === "remote" || existing.kind === "remote";
@@ -228,6 +238,7 @@ function handleFrame(frame) {
           kind: isRemote ? "remote" : "local",
           hostId: isRemote ? frame.hostId || existing.hostId || null : null,
           hostName: isRemote ? frame.hostName || existing.hostName || null : null,
+          hostAddr: isRemote ? remoteAddrOf(frame) || existing.hostAddr || null : null,
         });
       }
       terminalView.ensure(id);
@@ -342,12 +353,27 @@ function handleFrame(frame) {
       if (aiDrawer) aiDrawer.notifyAgentFrame();
       clearPendingAgentRequest(frame);
       agentStore.onStart(frame);
+      // 新一轮拿到真实 service 会话 id 后，刷新会话列表（标题/条数）。
+      void refreshAiSessions();
       return;
     }
     case "agent.step": {
       if (aiDrawer) aiDrawer.notifyAgentFrame();
       clearPendingAgentRequest(frame);
       agentStore.onStep(frame);
+      return;
+    }
+    case "agent.text": {
+      // AC13：流式文本增量（工具与审批仍然走 agent.step / agent.approval）。
+      if (aiDrawer) aiDrawer.notifyAgentFrame();
+      clearPendingAgentRequest(frame);
+      agentStore.onText(frame);
+      return;
+    }
+    case "agent.reasoning": {
+      if (aiDrawer) aiDrawer.notifyAgentFrame();
+      clearPendingAgentRequest(frame);
+      agentStore.onReasoning(frame);
       return;
     }
     case "agent.approval": {
@@ -360,6 +386,7 @@ function handleFrame(frame) {
       if (aiDrawer) aiDrawer.notifyAgentFrame();
       clearPendingAgentRequest(frame);
       agentStore.onDone(frame);
+      void refreshAiSessions();
       return;
     }
     case "agent.error": {
@@ -472,6 +499,85 @@ function setupKeyboard() {
  * ------------------------------------------------------------------ */
 
 let pendingAgentRequestId = null;
+// V4-H：上一次已切过 AI 会话的终端 id（避免 store 每帧变更都重算会话）。
+let lastFocusedTerminalId = null;
+
+/* ------------------------------------------------------------------ *
+ * V4-H：AI 会话列表 / 终端归属 / 会话切换
+ * ------------------------------------------------------------------ */
+
+/** 从本地会话 store 算该标签的归属（会话列表分组 + 徒标靠它）。 */
+function terminalMetaOf(session) {
+  if (!session) return null;
+  const remote = session.kind === "remote";
+  return {
+    id: session.id,
+    kind: remote ? "remote" : "local",
+    shell: session.shell || "shell",
+    hostId: remote ? session.hostId || null : null,
+    hostName: remote ? session.hostName || null : null,
+    hostAddr: remote ? session.hostAddr || null : null,
+    cwd: session.cwd || "",
+    label: shortLabelOf(session),
+  };
+}
+
+/** 标签短名：bash: 41807 / PS7: 1234 / 主机名（与 tab-bar 同口径，直接复用 titleFor 的 shell 段）。 */
+function shortLabelOf(session) {
+  if (!session) return "本机";
+  if (session.kind === "remote") return session.hostName || "远程主机";
+  const shell = shellShortName(session.shell);
+  const cwd = String(session.cwd || "");
+  const parts = cwd.split(/[\\/]/).filter(Boolean);
+  const tail = parts.length > 0 ? parts[parts.length - 1] : "";
+  return tail ? `${shell}: ${tail}` : shell;
+}
+
+/** 当前活动终端（抽屉上下文条 / 会话归属读它）。 */
+function activeTerminalMeta() {
+  const active = store.getActive();
+  if (!active) return null;
+  const meta = terminalMetaOf(active);
+  if (meta) meta.serviceSessionId = meta.id;
+  return meta;
+}
+
+let sessionListToken = 0;
+
+/** GET /api/ai/sessions → agentStore.setSessionsList（服务端是唯一事实来源）。 */
+async function refreshAiSessions() {
+  const token = ++sessionListToken;
+  const current = agentStore.getCurrentSessionId();
+  const result = await api.aiSessions(current);
+  if (token !== sessionListToken) return null;
+  if (!result.ok) return null;
+  const payload = result.data || {};
+  agentStore.setSessionsList(Array.isArray(payload.sessions) ? payload.sessions : []);
+  return payload.sessions || [];
+}
+
+/** 切终端标签 → 抽屉切到该终端绑定的会话（卡片 §5.5）。 */
+function focusTerminalSession() {
+  const meta = activeTerminalMeta();
+  if (!meta) return;
+  agentStore.focusTerminal(meta.id, meta);
+  // 已落的会话要把时间线拉回来（刷新后 / 切回标签）。
+  const bound = agentStore.getSnapshot().sessions.find((item) => item.terminalId === meta.id);
+  if (bound) void restoreSessionIfNeeded(bound.id);
+}
+
+const restoredSessionIds = new Set();
+
+async function restoreSessionIfNeeded(sessionId) {
+  if (!sessionId || restoredSessionIds.has(sessionId)) return;
+  restoredSessionIds.add(sessionId);
+  const result = await api.aiSession(sessionId);
+  if (!result.ok || !result.data) {
+    restoredSessionIds.delete(sessionId);
+    return;
+  }
+  agentStore.restoreSession(sessionId, result.data);
+}
 
 /** 只清掉「这一帧对应的」待确认 requestId，别把刚发出去的那次请求抹了。 */
 function clearPendingAgentRequest(frame) {
@@ -660,6 +766,58 @@ function init() {
     agentStore,
     api,
     onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
+    /** 抽屉读当前终端（上下文条 / 会话头 / 会话归属）。 */
+    getTerminal: () => activeTerminalMeta(),
+    /** 按 PTY 会话 id 找终端（会话下拉的组标题用它的真名）。 */
+    getTerminalById: (id) => {
+      const session = store.getSession(id);
+      return session ? terminalMetaOf(session) : null;
+    },
+    /** 「新会话」按钮：起一个空会话，不写服务端记录（发第一条消息才落盘）。 */
+    onNewSession: () => {
+      const meta = activeTerminalMeta();
+      if (!meta) return false;
+      agentStore.newDraft(meta.id, meta);
+      return true;
+    },
+    /** 下拉里点一条会话 → 切过去并拉全文。 */
+    onSelectSession: (sessionId) => {
+      if (!sessionId) return false;
+      agentStore.selectSession(sessionId);
+      void restoreSessionIfNeeded(sessionId);
+      return true;
+    },
+    /** 重命名会话：PATCH /api/ai/sessions/:id。 */
+    onRenameSession: ({ sessionId, title }) => {
+      void api.renameAiSession(sessionId, title).then((result) => {
+        if (!result.ok) {
+          statusBar.setNotice(result.userText || "重命名没成功。", "warn");
+          return;
+        }
+        agentStore.renameSession(sessionId, (result.data && result.data.title) || title);
+        statusBar.setNotice("会话已改名", "ok");
+        void refreshAiSessions();
+      });
+      return true;
+    },
+    /** 删除会话：DELETE，忙会话（409）照实说。 */
+    onDeleteSession: ({ sessionId }) => {
+      void api.deleteAiSession(sessionId).then((result) => {
+        if (!result.ok) {
+          statusBar.setNotice(result.userText || "删除没成功。", "warn");
+          return;
+        }
+        if (agentStore.getCurrentSessionId() === sessionId) {
+          const meta = activeTerminalMeta();
+          if (meta) agentStore.focusTerminal(meta.id, meta);
+        }
+        agentStore.dropSession(sessionId);
+        restoredSessionIds.delete(sessionId);
+        statusBar.setNotice("会话已删除", "ok");
+        void refreshAiSessions();
+      });
+      return true;
+    },
     // 发 agent.run（字段逐字按 PROTOCOL-AGENT.md §3.1）。
     // 返回值："sent" | "blocked-pending" | "no-active" | "send-failed"（ai-drawer 按它决定是否清输入框）。
     onAsk: ({ question, model }) => {
@@ -675,13 +833,19 @@ function init() {
         return "no-active";
       }
       const requestId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const meta = terminalMetaOf(active);
       const context = {
         cwd: active.cwd || "",
         shell: active.shell || null,
         recentOutput: terminalView.recentOutput(active.id, constants.RECENT_OUTPUT_LINES) || "",
         sessionId: active.id,
+        terminalKind: meta.kind,
+        ...(meta.hostId ? { hostId: meta.hostId, hostName: meta.hostName, hostAddr: meta.hostAddr } : {}),
       };
       const frame = { type: "agent.run", requestId, question, context };
+      // TASK-V4-H §5.2：续哪个 AI 会话（草稿不带：让服务端按终端兜底或新建）。
+      const aiSessionId = agentStore.currentServerSessionId();
+      if (aiSessionId) frame.sessionId = aiSessionId;
       if (model) frame.model = model;
       const sent = wsClient.send(frame);
       if (!sent) {
@@ -772,6 +936,10 @@ function init() {
 
   settingsPanel = createSettingsPanel({    host: settingsHost,
     api,
+    // TASK-V4-H §5.6：开关一变就反映到确认卡（不必等保存）。
+    onShowEffectChange: (value) => {
+      if (aiDrawer) aiDrawer.setShowApprovalEffect(value === true);
+    },
     onSaved: () => statusBar && statusBar.setNotice("设置已保存", "ok"),
   });
   settingsPanel.init();
@@ -780,7 +948,15 @@ function init() {
   agentStore.subscribe((snapshot) => {
     syncAgentBadge(snapshot);
     store.setAgentStatus(snapshot.status);
+    // 切到一个还没还原过、也没本地内容的会话 → 拉服务端全文填时间线。
+    const id = snapshot.currentSessionId;
+    if (id && !restoredSessionIds.has(id) && (!snapshot.turns || snapshot.turns.length === 0)) {
+      if (snapshot.sessions.some((item) => item.id === id)) void restoreSessionIfNeeded(id);
+    }
   });
+
+  // V4-H：打开页面就拉一次会话列表（画下拉），并给首个标签绑上会话。
+  void refreshAiSessions().then(() => focusTerminalSession());
 
   // 把手：点它开、再点收起（抽屉顶上不再有「收起」按钮）。
   if (aiHandle) {
@@ -807,6 +983,11 @@ function init() {
     // 只在活动标签真正变化时切换终端，避免任何门店变更都把焦点抢回终端。
     if (snapshot.activeId !== lastAttachedId && snapshot.activeId && terminalView) {
       attachActive();
+    }
+    // V4-H：切终端标签 → 抽屉跳到该终端最近的会话（卡片 §5.5 / AC3）。
+    if (snapshot.activeId && snapshot.activeId !== lastFocusedTerminalId) {
+      lastFocusedTerminalId = snapshot.activeId;
+      focusTerminalSession();
     }
     const open = snapshot.aiOpen === true;
     if (root.getAttribute("data-ai-open") !== (open ? "true" : "false")) applyAiOpen(open);

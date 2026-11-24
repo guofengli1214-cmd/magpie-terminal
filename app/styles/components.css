@@ -270,92 +270,188 @@ button[disabled] {
   font-style: italic;
 }
 
-/* 一步：状态用左边框 + 标签区分（不靠颜色单一通道）。 */
-[data-role="agent-step"] {
-  border: 1px solid var(--term-border);
-  border-left: 3px solid var(--term-border);
-  border-radius: var(--term-radius);
-  padding: 6px 8px;
+/* 一轮对话：问题 → 思考块 → 工具卡 → 总结（TASK-V4-H §5.6）。 */
+[data-role="agent-timeline"] .agent-turn {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   min-width: 0;
 }
 
-[data-role="agent-step"][data-status="running"] {
-  border-left-color: var(--term-accent);
+[data-role="agent-timeline"] .agent-turn + .agent-turn {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--term-line);
 }
 
-[data-role="agent-step"][data-status="awaiting"] {
-  border-left-color: var(--term-warn);
-  background: var(--term-warn-soft);
+/* 思考块：折叠，标题「思考过程 · N 字」，默认收起（§5.6）。 */
+[data-role="agent-reasoning"] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
 }
 
-[data-role="agent-step"][data-status="done"] {
-  border-left-color: var(--term-ok);
-}
-
-[data-role="agent-step"][data-status="failed"],
-[data-role="agent-step"][data-status="denied"] {
-  border-left-color: var(--term-danger);
-  background: var(--term-danger-soft);
-}
-
-[data-role="agent-step"][data-status="skipped"] {
-  opacity: 0.7;
-}
-
-[data-role="agent-step"] .step-head {
+[data-role="agent-reasoning"] .think-btn {
+  align-self: flex-start;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  height: 20px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--term-muted);
   font-size: 11px;
+  cursor: pointer;
+}
+
+[data-role="agent-reasoning"] .think-btn:hover {
+  color: var(--term-fg-2);
+}
+
+[data-role="agent-reasoning"] .think-chev {
+  color: var(--term-muted);
+  font-size: 10px;
+}
+
+[data-role="agent-reasoning"] .think-body {
+  border-left: 2px solid var(--term-line);
+  padding: 1px 0 1px 9px;
+  color: var(--term-muted);
+  font-size: 11.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+[data-role="agent-reasoning"] .think-body[hidden] {
+  display: none;
+}
+
+/* 工具卡（data-role="agent-step"）：状态图标 / 命令 / 耗时 / 输出折叠。 */
+[data-role="agent-step"] {
+  border: 1px solid var(--term-line);
+  border-radius: var(--term-radius-lg);
+  background: var(--term-panel-2);
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* 左侧状态图标（等/跑/成/败）：形状 + 颜色双通道。 */
+[data-role="agent-step"] .tool-status-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 1;
+  border-radius: 4px;
+  border: 1px solid var(--term-line);
+  background: var(--term-bg);
   color: var(--term-muted);
 }
 
-[data-role="agent-step"] .step-idx {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  box-sizing: border-box;
-  border-radius: 999px;
-  background: var(--term-accent-soft);
-  color: var(--term-fg);
-  font-weight: 700;
-}
-
-[data-role="agent-step"] .step-state {
-  font-weight: 600;
-}
-
-[data-role="agent-step"][data-status="running"] .step-state {
-  color: var(--term-accent);
-}
-
-[data-role="agent-step"][data-status="awaiting"] .step-state {
-  color: var(--term-warn);
-}
-
-[data-role="agent-step"][data-status="done"] .step-state {
+[data-role="agent-step"] .tool-status-icon.s-done {
   color: var(--term-ok);
+  border-color: var(--term-ok);
 }
 
-[data-role="agent-step"][data-status="failed"] .step-state,
-[data-role="agent-step"][data-status="denied"] .step-state {
+[data-role="agent-step"] .tool-status-icon.s-running {
+  color: var(--term-accent);
+  border-color: var(--term-accent);
+}
+
+[data-role="agent-step"] .tool-status-icon.s-awaiting {
+  color: var(--term-warn);
+  border-color: var(--term-warn);
+}
+
+[data-role="agent-step"] .tool-status-icon.s-failed,
+[data-role="agent-step"] .tool-status-icon.s-denied {
   color: var(--term-danger);
+  border-color: var(--term-danger);
 }
 
-/* 命令：等宽，单行省略（完整命令在点开输出/审批卡里能看到）。 */
-[data-role="agent-step-cmd"] {
+[data-role="agent-step"] .tool-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  color: var(--term-muted);
+}
+
+[data-role="agent-step"] .tool-name {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--term-fg-2);
+}
+
+[data-role="agent-step"] .tool-sep {
+  color: var(--term-dim);
+}
+
+[data-role="agent-step"] .tool-sub {
+  font-family: var(--term-mono);
+  font-size: 10.5px;
+  color: var(--term-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-role="agent-step"] .tool-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+[data-role="agent-step"] .tool-time {
+  font-size: 10.5px;
+  color: var(--term-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 状态点：形状（dot）+ 颜色，不是仅颜色单一通道。 */
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--term-muted);
+}
+
+.dot-ok {
+  background: var(--term-ok);
+}
+
+.dot-run {
+  background: var(--term-accent);
+  box-shadow: 0 0 0 3px var(--term-accent-soft);
+}
+
+.dot-err {
+  background: var(--term-danger);
+}
+
+.dot-warn {
+  background: var(--term-warn);
+}
+
+/* 命令：等宽一行，超长省略（点开输出能看完整命令）。 */
+[data-role="agent-step"] [data-role="agent-step-cmd"].tool-cmd {
   display: block;
-  padding: 4px 6px;
-  border-radius: var(--term-radius);
-  background: var(--term-selection);
+  margin: 0;
+  padding: 0 8px 8px 30px;
   font-family: var(--term-mono);
   font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--term-fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -363,58 +459,78 @@ button[disabled] {
 }
 
 [data-role="agent-step"] .step-why {
+  padding: 0 8px 6px 30px;
   color: var(--term-muted);
   font-size: 11.5px;
   line-height: 1.5;
 }
 
 [data-role="agent-step"] .step-usertext {
+  padding: 0 8px 6px 30px;
   color: var(--term-warn);
   font-size: 11.5px;
 }
 
-[data-role="agent-step"] .step-exit {
-  color: var(--term-muted);
-  font-size: 11px;
-  font-family: var(--term-mono);
-}
-
-[data-role="ai-drawer"] .step-out-toggle {
-  align-self: flex-start;
-  padding: 0 8px;
-  font-size: 11px;
-}
-
-/* 输出：默认折叠；展开后限高滚动。 */
+/* 输出：默认只露 3 行（卡片 §5.6），点「展开输出」看全部。 */
 [data-role="agent-step-out"] {
   margin: 0;
-  max-height: 220px;
-  overflow: auto;
-  padding: 6px 8px;
-  border-radius: var(--term-radius);
-  border: 1px solid var(--term-border);
+  border-top: 1px solid var(--term-line);
   background: var(--term-bg);
+  padding: 6px 9px;
   font-family: var(--term-mono);
-  font-size: 11px;
-  line-height: 1.35;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--term-muted);
   white-space: pre-wrap;
   word-break: break-all;
+  overflow: auto;
+}
+
+[data-role="agent-step-out"][data-collapsed="true"] {
+  max-height: calc(10.5px * 1.6 * 3 + 12px);
+  overflow: hidden;
 }
 
 [data-role="agent-step-out"][hidden] {
   display: none;
 }
 
-/* 审批卡 */
+[data-role="agent-step"] .tool-foot {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-top: 1px solid var(--term-line);
+  background: var(--term-panel-2);
+  color: var(--term-dim);
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-role="agent-step"] .tool-foot:hover {
+  color: var(--term-muted);
+}
+
+[data-role="agent-step"] .tool-foot .foot-chev {
+  font-size: 10px;
+}
+
+/* 确认卡（TASK-V4-H §5.6）：overflow 必须 visible（角标 tooltip 要出卡）。 */
 [data-role="agent-approval"] {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin-top: 4px;
   padding: 8px;
   border: 1px solid var(--term-warn);
-  border-radius: var(--term-radius);
-  background: var(--term-panel-bg);
+  border-radius: var(--term-radius-lg);
+  background: var(--term-warn-soft);
+  overflow: visible;
 }
 
 [data-role="agent-approval"][data-highlight="true"] {
@@ -423,34 +539,72 @@ button[disabled] {
   box-shadow: 0 0 0 4px var(--term-selection);
 }
 
-[data-role="agent-approval"] .risk {
+[data-role="agent-approval"] .approval-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--term-warn);
   font-size: 11.5px;
   font-weight: 600;
 }
 
-[data-role="agent-approval"] .risk-safe {
-  color: var(--term-ok);
+[data-role="agent-approval"] .approval-head-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  line-height: 1;
 }
 
-[data-role="agent-approval"] .risk-caution,
-[data-role="agent-approval"] .risk-unknown {
-  color: var(--term-warn);
-}
-
-[data-role="agent-approval"] .risk-danger {
-  color: var(--term-danger);
-}
-
-[data-role="agent-approval"] .review-why {
-  font-size: 11px;
-  color: var(--term-muted);
+[data-role="agent-approval"] .approval-cmd {
+  display: block;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--term-line);
+  background: var(--term-bg);
+  font-family: var(--term-mono);
+  font-size: 11.5px;
   line-height: 1.5;
+  color: var(--term-fg-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}
+
+[data-role="agent-approval"] .approval-why {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--term-muted);
+}
+
+/* 「在确认卡上常显 AI 的效果评估」开启后出现在按钮上方的一行。 */
+[data-role="agent-approval"] .approval-effect {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px dashed var(--term-line-2);
+  background: var(--term-panel-2);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--term-muted);
+}
+
+[data-role="agent-approval"] .approval-effect b {
+  color: var(--term-fg-2);
+  font-weight: 600;
 }
 
 [data-role="agent-approval"] .agent-approval-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  /* 右侧留 30px 给右下角角标（按钮不会被压，卡片 §5.6 要求 40px 的等效留白）。 */
+  padding: 2px 30px 2px 0;
 }
 
 [data-role="agent-approval"] .agent-approval-actions button {
@@ -464,26 +618,150 @@ button[disabled] {
   font-weight: 600;
 }
 
-[data-role="agent-approval"] [data-role="approval-skip"] {
-  border-color: var(--term-danger);
-  color: var(--term-danger);
+[data-role="agent-approval"] [data-role="approval-rest"] {
+  border-color: var(--term-line-2);
 }
 
-/* 总结 / 错误 */
-[data-role="agent-summary"] {
-  padding: 8px 10px;
-  border: 1px solid var(--term-ok);
-  border-radius: var(--term-radius);
+[data-role="agent-approval"] [data-role="approval-skip"] {
+  border-color: var(--term-line-2);
+  color: var(--term-muted);
+}
+
+/* ---------------------------------------------------------------- *
+ * 审核角标四态（CHANGES-V4 §1.2 / §4 第 3 条：data-review 值不许改名）
+ * ok=绿 / caution=琥珀 / danger=红 / none=灰（审阅不可用必须是 none）
+ * ---------------------------------------------------------------- */
+
+[data-role="agent-approval"] [data-role="approval-review"] {
+  position: absolute;
+  right: 9px;
+  bottom: 9px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  border-radius: 5px;
+  border: 1px solid var(--term-line);
+  background: var(--term-panel-2);
+  color: var(--term-dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: help;
+}
+
+[data-role="approval-review"] .review-glyph {
+  pointer-events: none;
+}
+
+[data-role="approval-review"][data-review="ok"] {
+  color: var(--term-ok);
+  border-color: var(--term-ok);
   background: var(--term-ok-soft);
-  line-height: 1.6;
+}
+
+[data-role="approval-review"][data-review="caution"] {
+  color: var(--term-warn);
+  border-color: var(--term-warn);
+  background: var(--term-warn-soft);
+}
+
+[data-role="approval-review"][data-review="danger"] {
+  color: var(--term-danger);
+  border-color: var(--term-danger);
+  background: var(--term-danger-soft);
+}
+
+[data-role="approval-review"][data-review="none"] {
+  color: var(--term-dim);
+  border-color: var(--term-line);
+  background: var(--term-panel-2);
+}
+
+/* tooltip 两段：标题逐字「执行后会发生什么」「为什么需要你确认」。 */
+[data-role="approval-review-tip"] {
+  position: absolute;
+  right: -2px;
+  bottom: calc(100% + 8px);
+  width: 254px;
+  display: none;
+  padding: 9px 10px 10px;
+  border: 1px solid var(--term-line-2);
+  border-radius: var(--term-radius-lg);
+  background: var(--term-panel-2);
+  box-shadow: 0 18px 44px var(--term-shadow);
+  z-index: 90;
+  text-align: left;
+  cursor: default;
+  color: var(--term-fg);
+}
+
+[data-role="approval-review"]:hover [data-role="approval-review-tip"],
+[data-role="approval-review"]:focus-visible [data-role="approval-review-tip"],
+[data-role="approval-review"][data-open="true"] [data-role="approval-review-tip"] {
+  display: block;
+}
+
+[data-role="approval-review-tip"] b {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--term-accent);
+}
+
+[data-role="approval-review-tip"] p {
+  margin: 3px 0 0;
+  font-size: 10.5px;
+  line-height: 1.68;
+  color: var(--term-fg);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+[data-role="approval-review-tip"] .rt-sep {
+  height: 1px;
+  background: var(--term-line);
+  margin: 8px 0;
+}
+
+[data-role="approval-review-tip"] .rt-foot {
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid var(--term-line);
+  font-family: var(--term-mono);
+  font-size: 9px;
+  line-height: 1.5;
+  color: var(--term-dim);
+}
+
+/* 总结块（data-role="agent-summary"）：字号大一号，前面一条细横线（§5.6）。 */
+[data-role="agent-summary"] {
+  padding: 8px 0 0;
+  border-top: 1px solid var(--term-line);
+  line-height: 1.7;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--term-fg);
 }
 
 [data-role="agent-summary"] .summary-lead {
   font-size: 11px;
   color: var(--term-muted);
   margin-bottom: 4px;
+}
+
+/* 流式增量（AC13）：等宽但底色更淡，总结到来后消失。 */
+.agent-stream {
+  padding: 6px 8px;
+  border-radius: var(--term-radius);
+  background: var(--term-panel-2);
+  color: var(--term-fg-2);
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .agent-error {
@@ -623,7 +901,10 @@ button[disabled] {
   min-width: 0;
 }
 
-/* 模型名：纯文本按钮，无边框、无常态底色，只有一枚 9px 下箭头。 */
+/* 模型名：纯文本按钮，无边框、无常态底色，只有一枚 9px 下箭头。
+   TASK-V4-H §8 附带修（V4-E 遗留）：原来是 58%，384px 抽屉下把
+   「DeepSeek V4.1 Flash (latest)」截成「…Command C…」。改 66% 并把省略
+   交给浏览器按尾部省略，同时不与发送按钮重叠（底栏是 flex，按钮不走 absolute）。 */
 [data-role="ai-drawer"] [data-role="model-select"] {
   margin-left: auto;
   display: flex;
@@ -639,7 +920,9 @@ button[disabled] {
   font: inherit;
   font-size: 11px;
   white-space: nowrap;
-  max-width: 58%;
+  max-width: 66%;
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -2245,4 +2528,575 @@ html[data-files-open="true"] [data-role="ai-handle"] {
   width: auto;
   max-width: min(880px, calc(100vw - 48px));
   overflow: visible;
+}
+
+/* ------------------------------------------------------------------ *
+ * V4-H：会话选择（抽屉头部）+ 会话下拉 + 上下文条 + 设置开关
+ * 规则来源：docs/mockups-v4/assets/v4.css（.ai-head / .sess / .sess-group /
+ * .src-badge / .menu-note）与 CHANGES-V4 §1.1（当前项只用底色，无竖线）。
+ * ------------------------------------------------------------------ */
+
+[data-role="ai-drawer"] .ai-head {
+  position: relative;
+  /* 抽屉头必须自成一层：会话下拉 z-index 40，时间线里的确认卡/角标不能盖到它上面。 */
+  z-index: 20;
+  gap: 4px;
+}
+
+[data-role="ai-drawer"] [data-role="agent-sessions"] {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 会话选择按钮：标题 = 当前终端，副标题 = 当前会话。 */
+[data-role="ai-drawer"] [data-role="agent-sessions-toggle"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: var(--term-radius);
+  background: transparent;
+  color: var(--term-fg-2);
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-role="ai-drawer"] [data-role="agent-sessions-toggle"]:hover,
+[data-role="ai-drawer"] [data-role="agent-sessions-toggle"][aria-expanded="true"] {
+  background: var(--term-panel-2);
+}
+
+[data-role="ai-drawer"] [data-role="agent-sessions-toggle"] .sess-mark {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  background: var(--term-accent-soft);
+  color: var(--term-accent);
+  font-size: 11px;
+}
+
+[data-role="ai-drawer"] [data-role="agent-sessions-toggle"] .sess-main {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+[data-role="ai-drawer"] [data-role="agent-sessions-toggle"] .sess-top {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-role="ai-drawer"] [data-role="agent-sessions-toggle"] .sess-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--term-fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-role="ai-drawer"] [data-role="agent-sessions-toggle"] .sess-count {
+  font-size: 9.5px;
+  color: var(--term-dim);
+  flex: 0 0 auto;
+}
+
+[data-role="ai-drawer"] [data-role="agent-sessions-toggle"] .sess-sep,
+[data-role="ai-drawer"] [data-role="agent-sessions-toggle"] .sess-caret {
+  color: var(--term-dim);
+  font-size: 10px;
+  flex: 0 0 auto;
+}
+
+[data-role="ai-drawer"] [data-role="agent-sessions-toggle"] .sess-sub {
+  font-size: 9.5px;
+  color: var(--term-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 新建会话按钮：图标尺寸与把手一致。 */
+[data-role="ai-drawer"] [data-role="agent-new"] {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--term-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+[data-role="ai-drawer"] [data-role="agent-new"]:hover {
+  background: var(--term-panel-2);
+  border-color: var(--term-line);
+  color: var(--term-fg-2);
+}
+
+/* 会话下拉：锚定头部下方，按终端分组。 */
+[data-role="ai-drawer"] [data-role="agent-sessions-menu"] {
+  position: absolute;
+  top: 46px;
+  left: 8px;
+  right: 8px;
+  z-index: 40;
+  max-height: min(58vh, 430px);
+  overflow: auto;
+  padding: 4px;
+  box-sizing: border-box;
+  border: 1px solid var(--term-line-2);
+  border-radius: var(--term-radius-lg);
+  background: var(--term-panel-2);
+  box-shadow: 0 18px 44px var(--term-shadow);
+}
+
+[data-role="ai-drawer"] [data-role="agent-sessions-menu"][hidden] {
+  display: none;
+}
+
+[data-role="agent-sessions-menu"] .menu-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px 5px;
+  font-size: 10.5px;
+  color: var(--term-dim);
+}
+
+[data-role="agent-sessions-menu"] .menu-empty {
+  padding: 8px 9px;
+  font-size: 11px;
+  color: var(--term-muted);
+}
+
+[data-role="agent-sessions-menu"] .sess-group {
+  border-radius: 6px;
+}
+
+[data-role="agent-sessions-menu"] .sess-group + .sess-group {
+  margin-top: 2px;
+  padding-top: 2px;
+  border-top: 1px solid var(--term-line);
+}
+
+/* 当前分组：只用极淡底色 + 标题提亮，没有竖线（CHANGES-V4 §1.1 硬约束）。 */
+[data-role="agent-sessions-menu"] .sess-group[data-current="true"] {
+  background: var(--term-accent-soft);
+}
+
+[data-role="agent-sessions-menu"] .sess-group[data-current="true"] .gr-main b {
+  color: var(--term-fg-2);
+}
+
+[data-role="agent-sessions-menu"] .sess-group-head {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--term-fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-role="agent-sessions-menu"] .sess-group-head:hover {
+  background: var(--term-raise);
+}
+
+[data-role="agent-sessions-menu"] .gr-chev {
+  flex: 0 0 auto;
+  color: var(--term-dim);
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+[data-role="agent-sessions-menu"] .sess-group-head[aria-expanded="false"] .gr-chev {
+  transform: rotate(-90deg);
+}
+
+[data-role="agent-sessions-menu"] .gr-ico {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  border: 1px solid var(--term-line);
+  background: var(--term-bg);
+  color: var(--term-muted);
+  font-size: 10px;
+}
+
+[data-role="agent-sessions-menu"] .sess-group[data-current="true"] .gr-ico {
+  color: var(--term-accent);
+  border-color: var(--term-accent-line);
+  background: var(--term-accent-soft);
+}
+
+[data-role="agent-sessions-menu"] .gr-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+[data-role="agent-sessions-menu"] .gr-main b {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--term-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-role="agent-sessions-menu"] .gr-main small {
+  font-family: var(--term-mono);
+  font-size: 9px;
+  color: var(--term-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-role="agent-sessions-menu"] .gr-count {
+  margin-left: auto;
+  flex: 0 0 auto;
+  min-width: 24px;
+  text-align: center;
+  padding: 0 5px;
+  border: 1px solid var(--term-line);
+  border-radius: 999px;
+  font-family: var(--term-mono);
+  font-size: 9.5px;
+  line-height: 17px;
+  color: var(--term-muted);
+}
+
+[data-role="agent-sessions-menu"] .sess-items {
+  padding: 1px 0 3px;
+}
+
+[data-role="agent-sessions-menu"] .sess-items[hidden] {
+  display: none;
+}
+
+/* 会话条目：当前项只用底色 + 文字色（data-current，无竖线）。 */
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  color: var(--term-fg);
+  cursor: pointer;
+}
+
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"]:hover {
+  background: var(--term-raise);
+}
+
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"][data-current="true"] {
+  background: var(--term-accent-soft);
+}
+
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"][data-current="true"] .mi-main b {
+  color: var(--term-fg-2);
+}
+
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"] .si-mark {
+  width: 13px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--term-accent);
+  font-size: 10px;
+}
+
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"] .mi-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"] .mi-main b,
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"] .mi-main small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"] .mi-main b {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"] .mi-main small {
+  font-size: 9px;
+  color: var(--term-dim);
+}
+
+/* 悬浮菜单（重命名 / 删除）：默认只露按钮，hover 才变实。 */
+[data-role="agent-sessions-menu"] .sess-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"]:hover .sess-actions,
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"]:focus-within .sess-actions {
+  opacity: 1;
+}
+
+[data-role="agent-sessions-menu"] .sess-action {
+  border: 1px solid var(--term-line);
+  border-radius: 4px;
+  background: var(--term-panel-2);
+  color: var(--term-muted);
+  font-size: 9.5px;
+  line-height: 1;
+  padding: 3px 5px;
+  cursor: pointer;
+}
+
+[data-role="agent-sessions-menu"] .sess-action:hover {
+  color: var(--term-fg-2);
+  border-color: var(--term-line-2);
+}
+
+[data-role="agent-sessions-menu"] .sess-action.danger:hover {
+  color: var(--term-danger);
+  border-color: var(--term-danger);
+}
+
+/* 来源徽标（AC4）：本机 `bash 5.2.37`；远程两行且宽度 ≤120px（D5）。 */
+[data-role="agent-sessions-menu"] [data-role="agent-session-badge"] {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 17px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 4px;
+  border: 1px solid var(--term-line);
+  background: var(--term-panel-bg);
+  color: var(--term-muted);
+  font-family: var(--term-mono);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1;
+  min-width: 0;
+  max-width: 120px;
+  overflow: hidden;
+}
+
+[data-role="agent-session-badge"].k-local {
+  color: var(--term-ansi-cyan);
+  border-color: var(--term-ansi-cyan);
+  background: var(--term-panel-2);
+}
+
+[data-role="agent-session-badge"].k-ssh {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1px;
+  height: 26px;
+  padding: 3px 6px;
+  line-height: 1.15;
+  color: var(--term-ansi-magenta);
+  border-color: var(--term-ansi-magenta);
+  background: var(--term-panel-2);
+}
+
+[data-role="agent-session-badge"] .sb-t,
+[data-role="agent-session-badge"] .addr {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-role="agent-session-badge"] .addr {
+  color: var(--term-dim);
+}
+
+[data-role="agent-sessions-menu"] .menu-note {
+  margin-top: 3px;
+  padding: 7px 9px 8px;
+  border-top: 1px solid var(--term-line);
+  font-size: 9.5px;
+  line-height: 1.55;
+  color: var(--term-dim);
+}
+
+/* 上下文条：告诉用户 AI 在哪儿执行（本机 / 主机名 + shell + cwd）。 */
+[data-role="ai-drawer"] .ai-ctx {
+  flex: 0 0 auto;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--term-line);
+  background: var(--term-panel-bg);
+  color: var(--term-muted);
+  font-size: 10.5px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+[data-role="ai-drawer"] .ai-ctx b {
+  color: var(--term-fg-2);
+  font-weight: 600;
+}
+
+[data-role="ai-drawer"] .ai-ctx .ctx-path {
+  font-family: var(--term-mono);
+  color: var(--term-dim);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 设置页开关（data-role="setting-show-effect"）：默认关。 */
+.settings-block .settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.settings-block .settings-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-block .settings-row-main b {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-block .settings-row-main small {
+  font-size: 11.5px;
+  color: var(--term-muted);
+  line-height: 1.5;
+}
+
+.settings-block [data-role="setting-show-effect"] {
+  flex: 0 0 auto;
+  position: relative;
+  width: 34px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--term-line-2);
+  border-radius: 999px;
+  background: var(--term-panel-2);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.settings-block [data-role="setting-show-effect"] .switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--term-muted);
+  transition: transform 0.14s ease, background 0.12s ease;
+}
+
+.settings-block [data-role="setting-show-effect"][aria-checked="true"] {
+  background: var(--term-accent-soft);
+  border-color: var(--term-accent);
+}
+
+.settings-block [data-role="setting-show-effect"][aria-checked="true"] .switch-knob {
+  transform: translateX(16px);
+  background: var(--term-accent);
+}
+
+.settings-block [data-role="setting-show-effect"]:focus-visible {
+  outline: 2px solid var(--term-focus);
+  outline-offset: 2px;
+}
+
+/* 会话行内重命名输入（TASK-V4-H：不用 window.prompt，沙箱里会阻塞）。 */
+[data-role="agent-sessions-menu"] .sess-rename-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--term-accent);
+  border-radius: 4px;
+  background: var(--term-bg);
+  color: var(--term-fg-2);
+  font: 11px / 1.4 var(--magpie-font);
+  outline: none;
+}
+
+/* 会话删除的行内二次确认（不用 window.confirm）。 */
+[data-role="agent-sessions-menu"] .sess-confirm {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: 1px solid var(--term-danger);
+  border-radius: 5px;
+  background: var(--term-panel-2);
+  box-shadow: 0 6px 18px var(--term-shadow);
+  z-index: 2;
+}
+
+[data-role="agent-sessions-menu"] .sess-confirm-text {
+  font-size: 9.5px;
+  color: var(--term-danger);
+  white-space: nowrap;
+}
+
+[data-role="agent-sessions-menu"] [data-role="agent-session-item"] {
+  position: relative;
 }

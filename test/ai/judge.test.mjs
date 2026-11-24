@@ -20,10 +20,12 @@ function reviewer(verdict) {
   const calls = [];
   const fn = async (input) => {
     calls.push(input);
-    if (verdict === null) return { risk: null, why: "审阅服务不可用", reversible: null, model: input.model };
+    if (verdict === null)
+      return { risk: null, effect: null, confirmWhy: null, reversible: null, model: input.model };
     return {
       risk: verdict.risk,
-      why: verdict.why === undefined ? "测试用理由" : verdict.why,
+      effect: verdict.effect === undefined ? "测试用效果：会改动一个文件" : verdict.effect,
+      confirmWhy: verdict.confirmWhy === undefined ? "测试用理由" : verdict.confirmWhy,
       reversible: verdict.reversible === undefined ? true : verdict.reversible,
       model: input.model || "review/model",
     };
@@ -119,7 +121,7 @@ test("第 3 级：内置只读命中时不受 reviewModel 关闭影响", async (
 
 // ---------------------------------------------------------------- 第 4 级
 
-test("AC6：mkdir testdir —— strict → confirm，且不调审阅", async () => {
+test("AC6 / AC8：mkdir testdir —— strict → confirm，但审阅**确实被调用**（TASK-V4-H §5.3）", async () => {
   const review = reviewer({ risk: "caution", reversible: true });
   const verdict = await judge({
     command: "mkdir testdir",
@@ -127,7 +129,8 @@ test("AC6：mkdir testdir —— strict → confirm，且不调审阅", async ()
     review,
   });
   assert.equal(verdict.decision, "confirm");
-  assert.equal(review.calls.length, 0, "strict 档必须跳过审阅");
+  assert.equal(review.calls.length, 1, "strict 档也必须调审阅（旧行为是跳过）");
+  assert.equal(verdict.risk, "caution", "strict 下审阅结论仍要透出（用于确认卡角标）");
 });
 
 test("AC6：mkdir testdir —— balanced + 审阅 caution + 不可逆 → confirm", async () => {
@@ -162,13 +165,17 @@ test("第 4 级：审阅 safe + balanced → auto", async () => {
   assert.equal(verdict.decision, "auto");
 });
 
-test("第 4 级：审阅 safe + strict → 仍是 confirm（strict 在第 4 级之前就返回了）", async () => {
+test("AC8：审阅 safe + strict → 仍是 confirm（strict 绝不据此自动放行），但审阅被调用了", async () => {
+  const review = reviewer({ risk: "safe", reversible: true });
   const verdict = await judge({
     command: "mkdir testdir",
     config: { ...baseConfig, autonomy: "strict" },
-    review: reviewer({ risk: "safe" }),
+    review,
   });
   assert.equal(verdict.decision, "confirm");
+  assert.equal(review.calls.length, 1, "strict 档必须调审阅，只是不能自动放行");
+  assert.equal(verdict.risk, "safe");
+  assert.equal(verdict.reversible, true);
 });
 
 test("第 4 级：审阅 danger + loose → confirm（只有 caution+reversible 才在 loose 放行）", async () => {
@@ -258,44 +265,104 @@ test("reviewModel 为 null 时回落到对话模型", async () => {
 
 // ---------------------------------------------------------------- 兜底 / 形状
 
-test("兜底：classify 说 confirm 且审阅未知风险值 → confirm", async () => {
+test("兜底：classify 说 confirm 且审阅未知风险值 → confirm，且写 REVIEW_FAILED 日志", async () => {
+  const logs = [];
   const verdict = await judge({
     command: "mkdir testdir",
     config: { ...baseConfig, autonomy: "loose" },
-    review: async () => ({ risk: "maybe", why: "?", reversible: true, model: "x" }),
+    review: async () => ({ risk: "maybe", effect: "?", confirmWhy: "?", reversible: true, model: "x" }),
+    log: (line) => logs.push(line),
   });
   assert.equal(verdict.decision, "confirm");
+  assert.equal(verdict.reason, REVIEW_UNAVAILABLE_REASON);
+  const failed = logs.filter((line) => line.code === "REVIEW_FAILED");
+  assert.equal(failed.length, 1, "审阅不可用必须写 REVIEW_FAILED，不许静默");
 });
 
-test("返回形状：文档化的五个字段都在，且类型正确", async () => {
+test("返回形状：文档化的五个字段 + effect/confirmWhy/reversible 都在，且类型正确", async () => {
   const verdict = await judge({
     command: "ls -la",
     config: { ...baseConfig },
     review: reviewer({ risk: "safe" }),
   });
-  for (const key of ["decision", "reason", "hit", "risk", "reviewModel"]) {
+  for (const key of ["decision", "reason", "hit", "risk", "reviewModel", "effect", "confirmWhy", "reversible"]) {
     assert.ok(Object.prototype.hasOwnProperty.call(verdict, key), `缺少字段 ${key}`);
   }
   assert.equal(typeof verdict.decision, "string");
   assert.equal(typeof verdict.reason, "string");
 });
 
-test("审阅结论透出 reviewWhy / reversible（agent.approval 帧要用，字段名取自 PROTOCOL §3.2）", async () => {
+test("审阅结论透出 effect / confirmWhy / reversible（agent.approval 帧要用，字段名按 PROTOCOL §3.2）", async () => {
   const verdict = await judge({
     command: "mkdir testdir",
     config: { ...baseConfig, autonomy: "balanced" },
-    review: reviewer({ risk: "caution", why: "建目录可撤销", reversible: true }),
+    review: reviewer({
+      risk: "caution",
+      effect: "会在当前目录下建一个空的 testdir",
+      confirmWhy: "建目录可撤销",
+      reversible: true,
+    }),
   });
   assert.equal(verdict.risk, "caution");
-  assert.equal(verdict.reviewWhy, "建目录可撤销");
+  assert.equal(verdict.effect, "会在当前目录下建一个空的 testdir");
+  assert.equal(verdict.confirmWhy, "建目录可撤销");
   assert.equal(verdict.reversible, true);
   assert.equal(verdict.reviewModel, "review/model");
 });
 
-test("没走审阅时 reviewWhy / reversible 都是 null", async () => {
+test("没走审阅时 effect / confirmWhy / reversible 都是 null", async () => {
   const verdict = await judge({ command: "ls -la", config: { ...baseConfig }, review: reviewer({ risk: "safe" }) });
-  assert.equal(verdict.reviewWhy, null);
+  assert.equal(verdict.effect, null);
+  assert.equal(verdict.confirmWhy, null);
   assert.equal(verdict.reversible, null);
+});
+
+test("每次审阅写一行 [REVIEW] 日志（含 risk/effect/confirmWhy/reversible/model/ms）", async () => {
+  const logs = [];
+  await judge({
+    command: "npm run build",
+    config: { ...baseConfig, autonomy: "balanced", reviewModel: "review/x" },
+    review: reviewer({ risk: "safe", effect: "会构建产物", confirmWhy: "", reversible: true }),
+    log: (line) => logs.push(line),
+  });
+  const reviews = logs.filter((line) => line.code === "REVIEW");
+  assert.equal(reviews.length, 1);
+  const line = reviews[0];
+  assert.equal(line.msg, "[REVIEW]");
+  assert.equal(line.risk, "safe");
+  assert.equal(line.effect, "会构建产物");
+  assert.equal(line.reversible, true);
+  assert.equal(line.reviewModel, "review/x");
+  assert.equal(typeof line.durationMs, "number");
+  // 铁律：日志里不出现完整命令。
+  assert.equal(Object.prototype.hasOwnProperty.call(line, "command"), false);
+  assert.equal(line.commandLength, "npm run build".length);
+});
+
+test("AC8：三档都调审阅（strict / balanced / loose 各一次）", async () => {
+  for (const autonomy of ["strict", "balanced", "loose"]) {
+    const review = reviewer({ risk: "caution", reversible: true });
+    await judge({ command: "mkdir testdir", config: { ...baseConfig, autonomy }, review });
+    assert.equal(review.calls.length, 1, `${autonomy} 档必须调审阅`);
+  }
+});
+
+test("AC9：审阅返回 risk:null（模型不存在 / 超时）→ 三档都 confirm + 角标 none + 协议原文 reason", async () => {
+  for (const autonomy of ["strict", "balanced", "loose"]) {
+    const logs = [];
+    const verdict = await judge({
+      command: "mkdir testdir",
+      config: { ...baseConfig, autonomy },
+      review: async () => ({ risk: null, effect: null, confirmWhy: null, reversible: null, model: "nope" }),
+      log: (line) => logs.push(line),
+    });
+    assert.equal(verdict.decision, "confirm", `${autonomy} 档必须 confirm`);
+    assert.equal(verdict.reason, REVIEW_UNAVAILABLE_REASON);
+    assert.equal(verdict.risk, null, "risk=null 是角标置灰的依据");
+    assert.equal(verdict.effect, null);
+    assert.equal(verdict.confirmWhy, null);
+    assert.equal(logs.filter((line) => line.code === "REVIEW_FAILED").length, 1);
+  }
 });
 
 test("非字符串命令不抛错，落到 confirm", async () => {
@@ -412,7 +479,7 @@ test("J4：正常命令照旧走审阅（不回退成 confirm-only）", async ()
 // ===========================================================================
 
 test("P1-2：rm -rf ~/ 在宽松档 + 审阅 caution 下仍 confirm，且审阅未被调用", async () => {
-  const review = reviewer({ risk: "caution", reversible: true, why: "清理家目录里的临时文件" });
+  const review = reviewer({ risk: "caution", reversible: true, confirmWhy: "清理家目录里的临时文件" });
   const verdict = await judge({
     command: "rm -rf ~/",
     config: { ...baseConfig, autonomy: "loose", reviewModel: "some/model" },
