@@ -118,6 +118,33 @@ function refreshPid(session) {
 }
 
 /**
+ * 幂等 kill：同一会话只允许关一次 pseudoconsole。
+ *
+ * 为什么需要：close() 先 kill 一次，node-pty 随后仍会触发 onExit → handleExit()
+ * 又 kill 一次。Windows 上两次 ClosePseudoConsole 之间 handle 还没被 exit watcher
+ * 摘掉，会重复关同一个 pseudoconsole（node-pty #989），诱发
+ * `BaseObject::decrease_refcount` / `HandleScope::CreateHandle` 原生崩溃。
+ */
+function killOnce(session) {
+  if (!session) return;
+  if (session.killed) return;
+  session.killed = true;
+  try {
+    if (session.handle) session.handle.kill();
+  } catch {
+    // kill 幂等：已退出则忽略。
+  }
+}
+
+/** 会话真正结束（onExit 到了）时唤醒等待者；重复调用无副作用。 */
+function markExited(session) {
+  if (!session || !session.resolveExit) return;
+  const resolve = session.resolveExit;
+  session.resolveExit = null;
+  resolve();
+}
+
+/**
  * 事件名：session.created / pty.output / session.exited / session.failed / session.cwd
  *
  * TASK-V4-G §5.1：`session.cwd` 由 handleOutput 里的 OSC 7 增量解析器 emit，
@@ -190,7 +217,17 @@ export class SessionManager extends EventEmitter {
       ready: false,
       pendingCols: null,
       pendingRows: null,
+      // 会话是否已被我方 kill 过：Windows ConPTY 二次 kill 会重复关 pseudoconsole
+      // （node-pty #989），close() 之后 handleExit() 还会再 kill 一次，必须幂等。
+      killed: false,
+      // onExit 真正到了才 resolve：测试 teardown 靠它「等 kill 落定再退进程」。
+      // ConPTY 的 kill 是异步的，kill 完立刻 process.exit 会撞上原生 teardown。
+      exitPromise: null,
+      resolveExit: null,
     };
+    session.exitPromise = new Promise((resolve) => {
+      session.resolveExit = resolve;
+    });
 
     this.sessions.set(id, session);
 
@@ -226,6 +263,7 @@ export class SessionManager extends EventEmitter {
     } catch (err) {
       session.state = "failed";
       this.sessions.delete(id);
+      markExited(session);
       this.emit("session.failed", {
         id,
         code: "PTY_SPAWN_FAILED",
@@ -322,11 +360,7 @@ export class SessionManager extends EventEmitter {
     }
     session.inputQueue.length = 0;
     session.state = "closing";
-    try {
-      if (session.handle) session.handle.kill();
-    } catch {
-      // kill 幂等：已退出则忽略。
-    }
+    killOnce(session);
     if (this.sessions.has(session.id)) {
       this.sessions.delete(session.id);
       this.emit("session.exited", {
@@ -336,11 +370,13 @@ export class SessionManager extends EventEmitter {
       });
     }
     session.state = "closed";
+    markExited(session);
   }
 
   handleFailure(session, err) {
     if (!session) return;
     this.sessions.delete(session.id);
+    markExited(session);
     this.emit("session.failed", {
       id: session.id,
       code: "PTY_SPAWN_FAILED",
@@ -475,11 +511,7 @@ export class SessionManager extends EventEmitter {
     }
     session.inputQueue.length = 0;
     session.state = "closing";
-    try {
-      session.handle.kill();
-    } catch {
-      // 幂等。
-    }
+    killOnce(session);
     this.sessions.delete(id);
     this.emit("session.exited", {
       id: session.id,
@@ -488,6 +520,25 @@ export class SessionManager extends EventEmitter {
     });
     session.state = "closed";
     return true;
+  }
+
+  /**
+   * 等会话真正退出（node-pty 的 onExit 到达）。已退出立即返回 true，超时 false。
+   *
+   * ConPTY 的 kill 是异步的：kill() 返回时 pseudoconsole 还没关完，
+   * 此时销毁进程/立刻建下一批 PTY 会撞上原生 teardown（见 VERIFY-V4-PTY.md）。
+   */
+  async whenExited(session, timeoutMs = 5000) {
+    if (!session || !session.exitPromise) return true;
+    let timer = null;
+    try {
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      });
+      return await Promise.race([session.exitPromise.then(() => true), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** 同步：只允许在 process.on('exit') 里调用。 */
@@ -502,11 +553,7 @@ export class SessionManager extends EventEmitter {
         clearTimeout(session.warmupTimer);
         session.warmupTimer = null;
       }
-      try {
-        session.handle.kill();
-      } catch {
-        // 幂等。
-      }
+      killOnce(session);
     }
     this.sessions.clear();
   }
