@@ -10,8 +10,9 @@ Active task: `.trellis/tasks/11-25-task-f-ux-review/`
 
 ## 本卡重点
 
-- **第一步是装 skill，装不上就 blocked**，不要跳过直接"审查"。
-- sparse clone 只取 `.claude/skills/ui-ux-pro-max`（别整仓 22MB），复制到 `C:/Users/41807/AppData/Local/hermes/skills/ui-ux-pro-max/`，跑 `python scripts/search.py "terminal layout spacing" --domain ux` 验证。
+- **skill 已由主控装好（2026-11-25 03:25），你不需要再 clone**：位置 `C:/Users/41807/AppData/Local/hermes/skills/ui-ux-pro-max/`（84 个文件，含 data/ 13 个 CSV、references/、scripts/），来源 commit `a4fc248f6136552cb881e298847abc7ddce84e6b`。安装证据在 `.dispatch/fix17-f/evidence/skill-install.txt`。
+- 你的第一步是**验证它可用**：`python C:/Users/41807/AppData/Local/hermes/skills/ui-ux-pro-max/scripts/search.py "terminal layout spacing" --domain ux` 退出码 0 且有结果。不可用就 blocked（不许自己重装、不许换别的 skill）。
+- 审查时至少跑这四类查询并引用原文：`--domain ux`（间距/热区/对比度/溢出）、`--domain style`（工具类产品视觉）、`--domain typography`（行高/字号）、`--domain icons`（图标按钮可访问性）。
 - 审查对象是**真跑起来的界面**（`scripts/browser-probe.mjs` 起真 Chrome），四个组合都要截图：浅/深 × 宽(1600×1000)/窄(1100×800)。
 - `AUDIT.md` 每条问题必须有：位置（文件:行号 或 截图坐标）、现象、违反的规则（**引 skill 原文**）、严重度（高/中/低）、建议、是否本批修。
 - 只修「高」+「改 CSS 数值就能解决的中」；**禁止结构性重构**；改动只允许 `app/styles/**` 与 `app/index.html`（`git status --porcelain` 断言）。
