@@ -302,6 +302,23 @@ export default {
   fsRename(target, from, to) {
     return sendJson(fsEndpoint(target, "rename"), "POST", { from, to });
   },
+  /**
+   * 批量移动（TASK-FIX17-C R3）：`POST /api/fs/move`。
+   *
+   * 服务端**逐项独立**执行，状态码固定 200，失败明细在 `data.failed` 里
+   * （`{from,to,code,userText}`）。调用方必须自己检查 `failed`，不能只看 `ok`。
+   *
+   * `overwrite` 默认 false（不覆盖任何已存在的目标）—— 本批 UI 永远不传 true。
+   *
+   * @param {Array<{from:string,to:string}>} items
+   * @param {{hostId?:string}|null} [target]
+   * @param {{overwrite?:boolean}} [opts]
+   */
+  fsMove(target, items, opts = {}) {
+    const payload = { items };
+    if (opts.overwrite === true) payload.overwrite = true;
+    return sendJson(fsEndpoint(target, "move"), "POST", payload);
+  },
   /** 写文本（原始 body，不是 JSON）。 */
   fsWrite(target, path, text) {
     return putRaw(fsEndpoint(target, "write", { path }), text);

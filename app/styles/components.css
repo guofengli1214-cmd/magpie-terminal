@@ -1598,18 +1598,10 @@ button[disabled] {
   font-size: 12px;
 }
 
-[data-role="hosts-panel"] .hosts-tabs {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 4px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--term-border);
-}
-
-[data-role="hosts-panel"] .hosts-tabs button[aria-selected="true"] {
-  background: var(--term-selection);
-  font-weight: 600;
-}
+/* TASK-FIX17-C R4（问题 16）：原来的 `.hosts-tabs` 与它里面的
+   「文件面板」按钮（`hosts-open-files`）已删。那个容器里只有这一个按钮，
+   删按钮后就是个空条 —— 所以样式一并去掉，不留真空。
+   文件面板的唯一入口是左侧 rail 的 `rail-files`。 */
 
 [data-role="hosts-panel"] .hosts-body {
   flex: 1 1 auto;
@@ -2195,6 +2187,122 @@ button[disabled] {
   border-color: var(--term-accent-line);
 }
 
+/* TASK-FIX17-C R1：定位按钮（常显内联 SVG，三态）。
+   注意不能用 `.file-panel-icon-btn` 的 28×28 —— 这个按钮要跟 24px 高的路径框
+   在同一行上不显眼地站起来，所以宽高都用 24px，图标居中。 */
+.file-panel-locate {
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  color: var(--term-muted);
+}
+
+.file-panel-locate:hover:not([disabled]) {
+  background: var(--term-raise);
+  color: var(--term-fg);
+}
+
+/* 三态：[data-state] 由 renderLocateButton() 写。
+   current = 「已经在这个目录」→ 弱化但仍在（AC2 要求「不能完全隐藏」）；
+   away = 可用，强调它是可点的（accent 色）；
+   no-terminal = 禁用（opacity 由全局 [disabled] 规则再压一层）。 */
+.file-panel-locate[data-state="current"] {
+  color: var(--term-dim);
+  opacity: 1;
+}
+
+.file-panel-locate[data-state="away"] {
+  color: var(--term-accent);
+}
+
+.file-panel-locate[data-state="away"]:hover {
+  color: var(--term-accent);
+}
+
+.file-panel-locate[data-state="no-terminal"] {
+  color: var(--term-dim);
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+/* R2 / AC4：路径输入框与批量操作条共用的槽位。
+   两个分支高度一致（28px）→ 切换时 `getBoundingClientRect().height` 不变。 */
+.file-panel-slot {
+  flex: 1 1 auto;
+  min-width: 60px;
+  height: 28px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  min-height: 0;
+}
+
+.file-panel-slot > .file-panel-path {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 批量操作条：已选 N 项 + 移动 / 删除 / 下载 + 取消。 */
+.file-panel-batch {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px 0 8px;
+  border: 1px solid var(--term-accent-line);
+  border-radius: 5px;
+  background: var(--term-accent-soft);
+  color: var(--term-accent);
+  overflow: hidden;
+}
+
+.file-panel-batch-count {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--term-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 批量条里的图标按钮：20×20，比工具栏默认的 28×28 小一档（行高只有 24px）。 */
+.file-panel-batch-btn,
+.file-panel-batch-cancel {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--term-accent);
+  flex: 0 0 auto;
+}
+
+.file-panel-batch-btn:hover:not([disabled]),
+.file-panel-batch-cancel:hover {
+  background: var(--term-raise);
+  color: var(--term-fg);
+}
+
+.file-panel-batch-btn[data-tone="danger"] {
+  color: var(--term-danger);
+}
+
+.file-panel-batch-btn[data-tone="danger"]:hover:not([disabled]) {
+  background: var(--term-danger-soft);
+  color: var(--term-danger);
+}
+
+.file-panel-batch-cancel {
+  color: var(--term-muted);
+}
+
+.file-panel-batch[aria-busy="true"] {
+  opacity: 0.7;
+}
+
 .file-panel-tools {
   display: flex;
   align-items: center;
@@ -2328,8 +2436,14 @@ button[disabled] {
   background: var(--term-panel-2);
 }
 
-/* 选中态：只有底色 + 文字/图标提亮，没有竖条、没有发光描边。 */
+/* 选中态：只有底色 + 文字/图标提亮，没有竖条、没有发光描边。
+   TASK-FIX17-C R2：多选时同样只靠底色区分（`data-selected` 逐条写），
+   不给选中项加框 —— 一屏选十项会变成十个框，噪声盖过信息。 */
 .file-panel-entry[data-selected="true"] {
+  background: var(--term-accent-soft);
+}
+
+.file-panel-entry[data-selected="true"]:hover {
   background: var(--term-accent-soft);
 }
 
@@ -2659,6 +2773,31 @@ button[disabled] {
   gap: 6px;
   font-size: 11.5px;
   color: var(--term-muted);
+}
+
+/* TASK-FIX17-C R2：批量操作的确认卡里列出即将处理的路径。
+   最多 8 行（file-panel.js 截断并补「…另外 N 项」），超过就在这里滚。 */
+.file-panel-batch-list {
+  margin: 0;
+  padding: 0 0 0 16px;
+  max-height: 132px;
+  overflow: auto;
+  font: 10.5px / 1.6 var(--term-mono);
+  color: var(--term-muted);
+  word-break: break-all;
+}
+
+.file-panel-batch-more {
+  list-style: none;
+  margin-left: -16px;
+  color: var(--term-dim);
+}
+
+/* 批量移动的「用当前目录 / 用终端目录」快捷键那一行。 */
+.file-panel-batch-quick {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* 文件面板展开时：AI 把手只在上方终端区域居中，不能盖住文件面板工具条

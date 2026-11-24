@@ -1057,10 +1057,8 @@ function init() {
     // TASK-V4-F：主机面板顶部的「本机」条目点击 = 用当前默认 shell 新开一个标签。
     onCreateLocal: (shellId) => createTab(shellId ? { shellId } : null),
     onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
-    // TASK-V4-G：主机面板不再自带文件树，只负责把用户送到终端的文件面板。
-    onOpenFiles: () => {
-      if (filePanel) filePanel.setOpen(true);
-    },
+    // TASK-FIX17-C R4：不再传 onOpenFiles（主机面板里的「文件面板」按钮已删，
+    // 文件面板的唯一入口是左侧 rail 的 rail-files）。
   });
   hostsPanel.init();
 

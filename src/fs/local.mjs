@@ -17,6 +17,8 @@
 import { createReadStream } from "node:fs";
 import { realpath } from "node:fs/promises";
 import {
+  copyFile,
+  lstat,
   mkdir,
   open,
   readdir,
@@ -449,6 +451,170 @@ export async function renamePath(rawFrom, rawTo) {
     throw translateIoError(err, to, "重命名");
   }
   return { from, to };
+}
+
+/* ------------------------------------------------------------------ *
+ * 移动（TASK-FIX17-C R3）：rename 优先，跨盘 EXDEV 降级为「复制 → 校验 → 删源」
+ * ------------------------------------------------------------------ */
+
+/**
+ * 递归复制一棵树（跨盘降级的第 1 步）。
+ *
+ * 遇到符号链接 / junction **直接拒绝**：跟随链接会把「本来不属于这个目录的」
+ * 内容复制出来（而且可能成环），与 `assertNoLinkHop` 的取舍保持一致 —— 宁可拒绝。
+ *
+ * @param {string} from 已经过 guardPath 的绝对路径
+ * @param {string} to 目标（必须不存在）
+ */
+async function copyTree(from, to) {
+  const info = await lstat(from);
+  if (info.isSymbolicLink()) {
+    throw fsError("SYMLINK_IN_TREE", `跨盘复制时遇到符号链接（${from}），为安全起见不跟随。`);
+  }
+  if (!info.isDirectory()) {
+    await copyFile(from, to);
+    return;
+  }
+  await mkdir(to);
+  const children = await readdir(from);
+  for (const name of children) {
+    await copyTree(path.join(from, name), path.join(to, name));
+  }
+}
+
+/**
+ * 校验指纹：`{ files, bytes, links }`。目录递归累加，文件取大小。
+ *
+ * 为什么只比「文件数 + 总字节」而不是逐个 sha256：跨盘移动动辄上百 MB，
+ * 全量哈希会让移动慢一个量级；而 `copyFile` 是系统调用级的复制，失败会抛错，
+ * 大小不符已经覆盖「复制被截断 / 少写了一部分」这一真正的风险。
+ *
+ * @param {string} target
+ * @returns {Promise<{files:number, bytes:number, links:number}>}
+ */
+async function treeSignature(target) {
+  const info = await lstat(target);
+  if (info.isSymbolicLink()) return { files: 0, bytes: 0, links: 1 };
+  if (!info.isDirectory()) return { files: 1, bytes: info.size, links: 0 };
+  const children = await readdir(target);
+  let files = 0;
+  let bytes = 0;
+  let links = 0;
+  for (const name of children) {
+    const sub = await treeSignature(path.join(target, name));
+    files += sub.files;
+    bytes += sub.bytes;
+    links += sub.links;
+  }
+  return { files, bytes, links };
+}
+
+/**
+ * 移动一个路径（文件或目录）。
+ *
+ * 三代行为：
+ *  1. 目标已存在且没传 `overwrite` → 抛 `TARGET_EXISTS`，**一个字节都不动**（本批前端不传）。
+ *  2. `rename` 成功 → 直接返回 `{via:"rename"}`（同盘，原子）。
+ *  3. `rename` 报 `EXDEV`（跨盘 / 跨卷）→ 降级：递归复制 → 比对「文件数 + 总字节」
+ *     → 删源。任一步失败都尽力回滚已复制的目标，**源文件保留**。
+ *
+ * 路径守卫与 `renamePath` 完全一致（同一个 guardPath / assertNoLinkHop /
+ * deletionBlockedReason），没有为 move 开新的口子。
+ *
+ * @param {string} rawFrom
+ * @param {string} rawTo
+ * @param {{overwrite?:boolean}} [opts]
+ * @returns {Promise<{from:string, to:string, via:"rename"|"copy"}>}
+ */
+export async function movePath(rawFrom, rawTo, opts = {}) {
+  const from = guardPath(rawFrom, { label: "原路径" });
+  const to = guardPath(rawTo, { label: "新路径" });
+  if (from === to) {
+    throw fsError("INVALID_PATH", "原路径和目标路径一样。");
+  }
+  // 移动 = 从原处消失，所以禁区（盘根 / 家目录根本身）与删除同一条判据。
+  const blocked = deletionBlockedReason(from);
+  if (blocked) throw fsError("FORBIDDEN_PATH", `不能移动：${blocked}`);
+  await assertNoLinkHop(from, { label: "原路径" });
+  await assertNoLinkHop(to, { label: "新路径" });
+  await assertNoLinkHop(path.dirname(to), { label: "新路径的上级目录" });
+
+  let fromInfo;
+  try {
+    fromInfo = await fsStat(from);
+  } catch (err) {
+    throw translateIoError(err, from, "移动");
+  }
+
+  let targetInfo = null;
+  try {
+    targetInfo = await fsStat(to);
+  } catch (err) {
+    if (!err || err.code !== "ENOENT") throw translateIoError(err, to, "移动");
+    targetInfo = null;
+  }
+  if (targetInfo && opts.overwrite !== true) {
+    throw fsError("TARGET_EXISTS", `目标已存在，未覆盖：${to}`);
+  }
+
+  // 把目录搬进它自己的子目录：rename 会失败，复制降级会把目录越搬越深 → 先拒。
+  if (fromInfo.isDirectory()) {
+    const rel = path.relative(from, to);
+    if (rel === "") throw fsError("INVALID_PATH", "原路径和目标路径一样。");
+    if (!rel.startsWith("..") && !path.isAbsolute(rel)) {
+      throw fsError("INVALID_PATH", "不能把目录移动到它自己的子目录里。");
+    }
+  }
+
+  if (targetInfo) {
+    try {
+      await rm(to, { recursive: true, force: true });
+    } catch (err) {
+      throw translateIoError(err, to, "移动（覆盖前删除旧目标）");
+    }
+  }
+
+  try {
+    await rename(from, to);
+    return { from, to, via: "rename" };
+  } catch (err) {
+    // 只有 EXDEV 才走降级；其它错误（EPERM / EACCES / ENOTDIR）原样抛。
+    if (!err || err.code !== "EXDEV") throw translateIoError(err, to, "移动");
+  }
+
+  // ---- EXDEV：跨盘 / 跨卷 ----
+  let copied = false;
+  try {
+    await copyTree(from, to);
+    copied = true;
+    const source = await treeSignature(from);
+    const target = await treeSignature(to);
+    if (source.files !== target.files || source.bytes !== target.bytes) {
+      throw fsError(
+        "COPY_VERIFY_FAILED",
+        `跨盘复制后校验不一致（源 ${source.files} 个文件 / ${source.bytes} 字节，` +
+          `目标 ${target.files} 个 / ${target.bytes}）。已回滚复制结果，原文件保留。`,
+        { source, target },
+      );
+    }
+  } catch (err) {
+    if (copied) {
+      // 尽力回滚：删掉半成品目标，别把一个不完整副本留在盘上。
+      try {
+        await rm(to, { recursive: true, force: true });
+      } catch {
+        // 回滚失败只能记录，不能掩盖原始错误。
+      }
+    }
+    if (err && err.code && err.userText) throw err;
+    throw translateIoError(err, to, "跨盘移动（复制阶段）");
+  }
+  try {
+    await rm(from, { recursive: true, force: false });
+  } catch (err) {
+    throw translateIoError(err, from, "跨盘移动（删除源）");
+  }
+  return { from, to, via: "copy" };
 }
 
 /**

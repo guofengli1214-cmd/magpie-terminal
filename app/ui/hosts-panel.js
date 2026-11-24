@@ -94,8 +94,8 @@ export default function createHostsPanel(elements) {
   const store = elements.store;
   const onCreateSession = typeof elements.onCreateSession === "function" ? elements.onCreateSession : () => {};
   const onNotice = typeof elements.onNotice === "function" ? elements.onNotice : () => {};
-  // TASK-V4-G：文件面板搬去终端下方后，主机面板只留一个跳转钩子。
-  const onOpenFiles = typeof elements.onOpenFiles === "function" ? elements.onOpenFiles : null;
+  // TASK-FIX17-C R4：`onOpenFiles` 形参已删（主机面板不再跳文件面板，
+  // 文件面板的唯一入口是 rail-files）。
   // TASK-V4-F：点「本机」条目 = 用当前默认 shell 新开一个本机标签（不给 shellId）。
   const onCreateLocal =
     typeof elements.onCreateLocal === "function" ? elements.onCreateLocal : () => {};
@@ -771,22 +771,11 @@ export default function createHostsPanel(elements) {
     header.appendChild(closeButton);
     panel.appendChild(header);
 
-    // TASK-V4-G：主机与文件分家。文件不再作为主机面板里的一个 tab ——
-    // 文件面板是终端下方的常驻区域（rail-files 开合）。这里只留一个按钮
-    // 把用户送过去，避免同一个信息出现两个入口两份实现。
-    const tabs = el("div", { className: "hosts-tabs", role: "tablist" });
-    const filesButton = el("button", {
-      type: "button",
-      "data-role": "hosts-open-files",
-      "data-tab": "files",
-      title: "文件在终端下方的文件面板里",
-    }, "文件面板");
-    filesButton.addEventListener("click", () => {
-      close();
-      if (typeof onOpenFiles === "function") onOpenFiles();
-    });
-    tabs.appendChild(filesButton);
-    panel.appendChild(tabs);
+    // TASK-FIX17-C R4（问题 16）：这里曾经有一个「文件面板」按钮
+    // （`data-role="hosts-open-files"`），它是文件面板的**第二个入口**。
+    // 已删：真正的入口是左侧 rail 的 `rail-files`（app/index.html），
+    // 同一个东西两个入口会让人反复怀疑「哪个才是真的」。
+    // 连同 `.hosts-tabs` 容器一起去掉 —— 它里面只剩这一个按钮，留着就是一个空条。
 
     const body = el("div", { className: "hosts-body" });
     // 固定在最顶上的「本机」条目（TASK-V4-F §5.4）。

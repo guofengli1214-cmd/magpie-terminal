@@ -1,15 +1,17 @@
 // 文件面板（TASK-V4-G §5.5）：终端下方的常驻区域，跟随当前终端目录，
-// 支持 列表 / 新建 / 查看 / 编辑 / 重命名 / 删除 / 上传 / 下载。
+// 支持 列表 / 新建 / 查看 / 编辑 / 重命名 / 删除 / 上传 / 下载 / **多选批量**。
 //
-// 三件事必须记住：
+// 四件事必须记住：
 // 1. 面板只依赖 api + store 的**只读**快照，不发 WS 帧（上行帧本卡不新增）。
 // 2. 高度只写 localStorage（key `magpie.term.filePanelHeight`），范围 150–520px。
 // 3. 分界必须同时有三样：1px 亮线 + `inset 0 7px 14px` 内投影 + 常显 46×4 把手
 //    （CHANGES-V4 §4 第 15 条）。CSS 在 components.css 的 `.file-panel*` 段。
+// 4. 选择模型是 `selected: Set<string>`，存**绝对路径**（不是索引 —— 列表刷新 /
+//    排序变化后索引会错位）。见下面的多选状态机（TASK-FIX17-C R2）。
 //
 // 跟随规则：收到 `session.cwd` 且该会话就是面板当前绑定的会话、且用户没有手动
-// 切过目录（manualPath=false）→ 自动跳过去。手动进目录后停止跟随，工具条给
-// 「回到终端目录」按钮恢复。
+// 切过目录（manualPath=false）→ 自动跳过去。手动进目录后停止跟随，工具条上的
+// **定位按钮**（常显，内联 SVG）一键回到终端目录并恢复跟随（TASK-FIX17-C R1）。
 
 const HEIGHT_KEY = "magpie.term.filePanelHeight";
 const OPEN_KEY = "magpie.term.filePanelOpen";
@@ -279,6 +281,168 @@ function iconFor(entry) {
   return { kind, text: "📄" };
 }
 
+/**
+ * 批量移动的分批大小（TASK-FIX17-C R3）。
+ *
+ * 服务端的 `POST /api/fs/move` 有两条上限：`MAX_MOVE_ITEMS = 500`（项数）与
+ * 64KB 的 JSON body（`http.mjs`）。所以前端按 50 项一批发，失败汇总后再刷新。
+ */
+export const MOVE_CHUNK_SIZE = 50;
+
+/** 文件面板工具栏的图标（内联 SVG，不引外部资源：沙箱禁 CDN）。 */
+const ICONS = {
+  // 准星：定位到终端所在目录（R1）
+  locate:
+    '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.6v3.2M12 18.2v3.2M21.4 12h-3.2M5.8 12H2.6"/>',
+  // 文件夹 + 右箭头：批量移动
+  move:
+    '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l1.6 1.8h4.4"/><path d="M11.5 19.5H4.5A1.5 1.5 0 0 1 3 18V6.5"/><path d="M14.5 14.5H21m0 0-2.7-2.7M21 14.5l-2.7 2.7"/>',
+  // 垃圾桶：批量删除
+  trash:
+    '<path d="M4 7h16M9.5 7V4.8h5V7M6.4 7l.9 12.4a1.6 1.6 0 0 0 1.6 1.5h6.2a1.6 1.6 0 0 0 1.6-1.5L17.6 7"/><path d="M10.2 10.8v6.4M13.8 10.8v6.4"/>',
+  // 下箭头：批量下载
+  download: '<path d="M12 4v10.2"/><path d="M7.8 10.2 12 14.4l4.2-4.2"/><path d="M4.6 18.4h14.8"/>',
+  // ✕：取消选择
+  cancel: '<path d="M6.4 6.4l11.2 11.2M17.6 6.4 6.4 17.6"/>',
+};
+
+/**
+ * 造一个内联 SVG 图标节点（纯 DOM，不返回字符串）。
+ *
+ * `aria-hidden` + `focusable=false`：图标不进读屏、不在 Tab 序列里，
+ * 语义一律由父按钮的 `title` / `aria-label` 提供。
+ *
+ * @param {keyof ICONS} name
+ * @param {number} [size]
+ */
+function iconSvg(name, size = 14) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.7");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  svg.innerHTML = ICONS[name] || "";
+  return svg;
+}
+
+/** 定位按钮的三态（R1 / AC2）。 */
+export const LOCATE_STATE = Object.freeze({
+  NO_TERMINAL: "no-terminal",
+  CURRENT: "current",
+  AWAY: "away",
+});
+
+/**
+ * 两个路径是否指同一处（Windows 大小写不敏感、分隔符混用）。纯函数。
+ *
+ * @param {string} a
+ * @param {string} b
+ */
+export function samePath(a, b) {
+  const norm = (value) =>
+    String(value == null ? "" : value)
+      .replace(/[\\/]+/g, "/")
+      .replace(/\/+$/, "")
+      .toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/**
+ * 定位按钮该显示成哪一态 + 给什么 title（AC2 的三态）。
+ *
+ *   - `no-terminal`：没有活动终端 / 终端还没上报 cwd → 禁用，title 说明原因；
+ *   - `current`：当前路径已经等于终端 cwd → 弱化（不是隐藏，用户要看得见）；
+ *   - `away`：可用，点了就跳过去并恢复跟随。
+ *
+ * @param {{termCwd?: string|null, path?: string|null, hasSession?: boolean}} input
+ * @returns {{state: string, disabled: boolean, title: string}}
+ */
+export function locateButtonState(input = {}) {
+  const termCwd = typeof input.termCwd === "string" ? input.termCwd.trim() : "";
+  const current = typeof input.path === "string" ? input.path.trim() : "";
+  if (!input.hasSession || termCwd.length === 0) {
+    return {
+      state: LOCATE_STATE.NO_TERMINAL,
+      disabled: true,
+      title: input.hasSession ? "这个终端还没上报目录，等它出现第一个提示符" : "当前没有终端，无法定位",
+    };
+  }
+  if (samePath(termCwd, current)) {
+    return { state: LOCATE_STATE.CURRENT, disabled: false, title: "已在此目录（点一下仍然可以重新跟随）" };
+  }
+  return { state: LOCATE_STATE.AWAY, disabled: false, title: `定位到终端所在目录：${termCwd}` };
+}
+
+/**
+ * 多选状态机（R2 / AC3）。纯函数：输入当前选择 + 事件，输出新的选择与锚点。
+ *
+ * 规则（与文件管理器一致）：
+ *   - 普通点击：清空其它，只选这一条，锚点 = 这一条；
+ *   - Ctrl/Cmd + 点击：切换这一条（锚点跟着走，与 Explorer 一致）；
+ *   - Shift + 点击：从锚点到这一条的**可见顺序区间**全选（锚点不动）。
+ *     没有锚点时退化成普通点击。
+ *
+ * @param {{selected?: Set<string>|string[], anchor?: string|null, paths?: string[], index?: number,
+ *          shift?: boolean, toggle?: boolean}} input
+ * @returns {{selected: Set<string>, anchor: string|null}}
+ */
+export function applySelectionClick(input = {}) {
+  const paths = Array.isArray(input.paths) ? input.paths : [];
+  const index = Number(input.index);
+  const path = paths[index];
+  const selected = new Set(
+    input.selected instanceof Set ? [...input.selected] : Array.isArray(input.selected) ? input.selected : [],
+  );
+  let anchor = typeof input.anchor === "string" ? input.anchor : null;
+  if (typeof path !== "string" || path.length === 0) return { selected, anchor };
+
+  if (input.shift === true && anchor !== null) {
+    const anchorIndex = paths.indexOf(anchor);
+    if (anchorIndex >= 0) {
+      // Shift 区间是加法语义：区间内的旧选择保留（与 Explorer 一致）。
+      const start = Math.min(anchorIndex, index);
+      const end = Math.max(anchorIndex, index);
+      for (let i = start; i <= end; i += 1) selected.add(paths[i]);
+      return { selected, anchor };
+    }
+    // 锚点已经不在当前列表里（切过目录 / 条目被删）→ 当普通点击处理。
+    anchor = null;
+  }
+
+  if (input.toggle === true) {
+    if (selected.has(path)) selected.delete(path);
+    else selected.add(path);
+    return { selected, anchor: path };
+  }
+
+  return { selected: new Set([path]), anchor: path };
+}
+
+/**
+ * 批量删除/移动后要清掉的选择：只保留**仍然存在**的路径。
+ *
+ * 例：选了 5 项，其中 3 项删成功、2 项失败 → 选择里只留那 2 项，
+ * 用户能直接重试，而不用重新找它们。
+ *
+ * @param {Set<string>} selected
+ * @param {Set<string>} survivors 保留下来的路径（失败的 / 还在的）
+ * @returns {Set<string>}
+ */
+export function pruneSelection(selected, survivors) {
+  const next = new Set();
+  const keep = survivors && typeof survivors.has === "function" ? survivors : new Set();
+  for (const path of selected || []) {
+    if (keep.has(path)) next.add(path);
+  }
+  return next;
+}
+
 /** 父路径（按分隔符风格）；到根返回 null。 */
 function parentOf(target) {
   const text = String(target || "").replace(/[\\/]+$/, "");
@@ -299,6 +463,53 @@ function joinPath(dir, name) {
   return `${base}${sep}${name}`;
 }
 
+/** 取路径的最后一段（`C:\\a\\b.txt` → `b.txt`）。纯函数。 */
+export function baseNameOf(target) {
+  const text = String(target == null ? "" : target).replace(/[\\/]+$/, "");
+  if (!text) return "";
+  const index = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+  return index >= 0 ? text.slice(index + 1) : text;
+}
+
+/**
+ * 把选中的每项推到目标目录下（批量移动的 `to` 计算）。
+ *
+ * 源和目标目录相同时**不产生条目**：服务端会把它当 INVALID_PATH
+ * （from === to），而用户看到的就是「什么都没发生」，不如前端直接不动。
+ *
+ * @param {string[]} sources
+ * @param {string} targetDir
+ * @returns {Array<{from:string, to:string}>}
+ */
+export function movePlan(sources, targetDir) {
+  const dir = String(targetDir == null ? "" : targetDir).trim();
+  if (!dir) return [];
+  const plan = [];
+  for (const from of Array.isArray(sources) ? sources : []) {
+    const name = baseNameOf(from);
+    if (!name) continue;
+    const to = joinPath(dir, name);
+    if (samePath(from, to)) continue;
+    plan.push({ from, to });
+  }
+  return plan;
+}
+
+/**
+ * 把一批 move 请求按 `chunkSize` 切开（服务端 64KB body + 500 项上限）。
+ * 纯函数。
+ *
+ * @param {Array<{from:string,to:string}>} items
+ * @param {number} [chunkSize]
+ */
+export function chunkMoves(items, chunkSize = MOVE_CHUNK_SIZE) {
+  const list = Array.isArray(items) ? items : [];
+  const size = Math.max(1, Math.floor(Number(chunkSize) || 1));
+  const chunks = [];
+  for (let i = 0; i < list.length; i += size) chunks.push(list.slice(i, i + size));
+  return chunks;
+}
+
 export default function createFilePanel(elements) {
   const api = elements.api;
   const store = elements.store;
@@ -316,7 +527,11 @@ export default function createFilePanel(elements) {
     path: null,
     parent: null,
     entries: [],
+    // TASK-FIX17-C R2：多选。存**绝对路径**（不是索引）；锚点给 Shift 区间用。
     selected: new Set(),
+    anchorPath: null,
+    // 批量操作进行中：禁用按钮防重复提交。
+    batchBusy: false,
     manualPath: false,
     busy: false,
     uploads: [],
@@ -325,7 +540,9 @@ export default function createFilePanel(elements) {
   let root = null;
   let toolbar = null;
   let pathInput = null;
-  let followButton = null;
+  let pathSlot = null;
+  let batchBar = null;
+  let locateButton = null;
   let grid = null;
   let statusLine = null;
   let uploadHost = null;
@@ -451,7 +668,10 @@ export default function createFilePanel(elements) {
     state.path = typeof data.path === "string" && data.path.length > 0 ? data.path : wanted;
     state.parent = typeof data.parent === "string" ? data.parent : parentOf(state.path);
     state.entries = Array.isArray(data.entries) ? data.entries : [];
-    if (!opts.keepSelection) state.selected.clear();
+    if (!opts.keepSelection) {
+      state.selected.clear();
+      state.anchorPath = null;
+    }
     render();
   }
 
@@ -459,10 +679,23 @@ export default function createFilePanel(elements) {
   async function followTerminalCwd(cwd) {
     if (typeof cwd !== "string" || cwd.length === 0) return;
     state.termCwd = cwd;
-    renderFollowButton();
+    renderLocateButton();
     if (state.manualPath) return;
-    if (state.path === cwd) return;
+    if (samePath(state.path, cwd)) return;
     await load(cwd);
+  }
+
+  /** R1：点定位按钮 = 显式要求跟随（清掉 manualPath 再跳过去）。 */
+  async function locateToTerminalCwd() {
+    const cwd = state.termCwd;
+    if (typeof cwd !== "string" || cwd.length === 0) return;
+    // 点它 = 显式要求重新跟随，把「手动改过路径」这件事清掉。
+    state.manualPath = false;
+    state.selected.clear();
+    state.anchorPath = null;
+    // 已经在目录里也刷一遍：用户点它可能就是想「重新读一次并恢复跟随」。
+    await load(cwd);
+    renderToolbarSlots();
   }
 
   /* ---------------------------- 渲染 ---------------------------- */
@@ -473,15 +706,65 @@ export default function createFilePanel(elements) {
     pathInput.title = state.path || "";
   }
 
-  function renderFollowButton() {
-    if (!followButton) return;
-    const canReturn =
-      state.manualPath &&
-      typeof state.termCwd === "string" &&
-      state.termCwd.length > 0 &&
-      state.termCwd !== state.path;
-    followButton.hidden = !canReturn;
-    followButton.title = canReturn ? `回到终端目录：${state.termCwd}` : "跟随终端目录";
+  /**
+   * 定位按钮三态（R1 / AC2）：**常显**，只是状态不同。
+   *
+   * 之前这里是一个 `hidden = !(manualPath && termCwd !== path)` 的文字按钮，
+   * 用户基本看不到它（问题 5）。现在改成：存在就一直在，靠 `data-state` +
+   * `title` 表达「没有终端 / 已在此处 / 可以跳过去」。
+   */
+  function renderLocateButton() {
+    if (!locateButton) return;
+    const view = locateButtonState({
+      termCwd: state.termCwd,
+      path: state.path,
+      hasSession: Boolean(state.sessionId),
+    });
+    locateButton.setAttribute("data-state", view.state);
+    locateButton.disabled = view.disabled;
+    locateButton.title = view.title;
+    locateButton.setAttribute("aria-label", view.title);
+    locateButton.setAttribute("aria-disabled", view.disabled ? "true" : "false");
+  }
+
+  /**
+   * 工具栏的两个分支（R2 / AC4）：
+   *
+   *   - 没选中任何项 → 显示路径输入框；
+   *   - 选中 ≥ 1 项 → 同一个容器里换成批量操作条（不是另加一行）。
+   *
+   * 两个分支的容器高度由 CSS 固定（`.file-panel-slot{height:28px}`），
+   * 所以切换不跳版。DOM 复用同一个 `pathSlot`，不用重建整个 toolbar（重建会
+   * 把焦点与 IME 状态弄没）。
+   */
+  function renderToolbarSlots() {
+    renderPathBar();
+    renderLocateButton();
+    if (!pathSlot) return;
+    const count = state.selected.size;
+    const showBatch = count > 0;
+    if (pathSlot.getAttribute("data-mode") !== (showBatch ? "batch" : "path")) {
+      pathSlot.setAttribute("data-mode", showBatch ? "batch" : "path");
+    }
+    if (pathInput) pathInput.hidden = showBatch;
+    if (batchBar) {
+      batchBar.hidden = !showBatch;
+      if (showBatch) renderBatchBar();
+    }
+  }
+
+  /** 批量条里的计数与按钮可用性。 */
+  function renderBatchBar() {
+    if (!batchBar) return;
+    const count = state.selected.size;
+    const label = batchBar.querySelector('[data-role="files-batch-count"]');
+    if (label) label.textContent = `已选 ${count} 项`;
+    for (const button of batchBar.querySelectorAll("button")) {
+      // 取消选择始终可用（批量操作卡住时用户必须能退出）。
+      if (button.getAttribute("data-role") === "files-batch-cancel") continue;
+      button.disabled = state.batchBusy || count === 0;
+    }
+    batchBar.setAttribute("aria-busy", state.batchBusy ? "true" : "false");
   }
 
   function renderGridMessage(text, isError) {
@@ -496,8 +779,8 @@ export default function createFilePanel(elements) {
   }
 
   function render() {
-    renderPathBar();
-    renderFollowButton();
+    // renderToolbarSlots 内部已调 renderPathBar + renderLocateButton。
+    renderToolbarSlots();
     // 切目录 / 刷新：菜单指向的条目即将被重建，先收掉。
     closeActionMenu({ restoreFocus: false });
     if (!grid) return;
@@ -706,6 +989,44 @@ export default function createFilePanel(elements) {
     paintWindow();
   }
 
+  /**
+   * 网格上的键盘（R2）：
+   *   - `Ctrl/Cmd + A`（焦点在列表里）→ 全选当前目录；
+   *   - `Escape` → 清空选择（菜单自己处理时已 preventDefault，这里兜底）。
+   *
+   * 只在事件来自网格内部时生效：页面上还有终端的 xterm，抢它的 Ctrl+A 不礼貌。
+   */
+  function onGridKeydown(event) {
+    if (event.key === "Escape") {
+      if (state.selected.size === 0) return;
+      event.preventDefault();
+      clearSelection();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && (event.key === "a" || event.key === "A")) {
+      // 焦点在批量条输入框 / 路径框里时不拦（用户想全选文本）。
+      const active = document.activeElement;
+      if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+      event.preventDefault();
+      selectAll();
+    }
+  }
+
+  /**
+   * 点空白处清空选择（R2）。
+   *
+   * 判定「空白」：事件目标是网格容器本身、上下 spacer、或条目之间的空隙 ——
+   * 都不是条目卡片、也不是卡片里的 ⋯ 按钮。
+   */
+  function onGridPointerDown(event) {
+    if (state.selected.size === 0) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest('[data-role="file-entry"]')) return;
+    if (target.closest('[data-role="file-action-menu"]')) return;
+    clearSelection();
+  }
+
   function renderEntry(entry) {
     const icon = iconFor(entry);
     const card = el("button", {
@@ -757,12 +1078,18 @@ export default function createFilePanel(elements) {
 
     card.addEventListener("click", (event) => {
       if (event.target && event.target.closest && event.target.closest(".file-panel-more-toggle")) return;
-      state.selected.clear();
-      state.selected.add(entry.path);
-      for (const node of grid.querySelectorAll('[data-role="file-entry"]')) {
-        node.setAttribute("data-selected", node.getAttribute("data-path") === entry.path ? "true" : "false");
-      }
-      renderStatus();
+      // R2：普通 / Ctrl(mac 上 Cmd) / Shift 三套语义全在纯函数里（可单测）。
+      const next = applySelectionClick({
+        selected: state.selected,
+        anchor: state.anchorPath,
+        paths: state.entries.map((item) => item.path),
+        index: state.entries.findIndex((item) => item.path === entry.path),
+        shift: event.shiftKey === true,
+        toggle: event.ctrlKey === true || event.metaKey === true,
+      });
+      state.selected = next.selected;
+      state.anchorPath = next.anchor;
+      paintSelection();
     });
     // 记住键盘焦点落在哪个 path：虚拟窗口重铺后要把它还回去。
     card.addEventListener("focus", () => { focusPath = entry.path; }, true);
@@ -780,6 +1107,39 @@ export default function createFilePanel(elements) {
     const selectedCount = state.selected.size;
     const suffix = selectedCount > 0 ? ` · 已选 ${selectedCount} 项` : "";
     statusLine.textContent = `${state.kind === "remote" ? "远程" : "本地"} · ${count} 项${suffix}`;
+  }
+
+  /**
+   * 把 `state.selected` 刷到 DOM（条目 `data-selected` + 工具栏 + 状态栏）。
+   *
+   * 只遍历**当前渲染窗口**的条目（虚拟滚动下 DOM 里只有几十个），
+   * 滚出窗口的条目重建时会从 `state.selected` 重新读，不需要额外同步。
+   */
+  function paintSelection() {
+    if (grid) {
+      for (const node of grid.querySelectorAll('[data-role="file-entry"]')) {
+        const path = node.getAttribute("data-path");
+        node.setAttribute("data-selected", state.selected.has(path) ? "true" : "false");
+      }
+    }
+    renderToolbarSlots();
+    renderStatus();
+  }
+
+  /** 清空选择（Escape / 点空白 / 取消按钮）。 */
+  function clearSelection() {
+    if (state.selected.size === 0 && state.anchorPath === null) return;
+    state.selected.clear();
+    state.anchorPath = null;
+    paintSelection();
+  }
+
+  /** Ctrl+A：全选当前目录下所有条目（不只是 DOM 里的窗口）。 */
+  function selectAll() {
+    if (state.entries.length === 0) return;
+    state.selected = new Set(state.entries.map((entry) => entry.path));
+    if (state.anchorPath === null) state.anchorPath = state.entries[0].path;
+    paintSelection();
   }
 
   /* ------------------ 面板级动作菜单（TASK-FIX-UI-REST §6.3） ------------------
@@ -949,6 +1309,12 @@ export default function createFilePanel(elements) {
   /** 菜单外部的 Esc（焦点不在菜单里时也要能关）。 */
   function onDocumentKeydown(event) {
     if (event.key !== "Escape") return;
+    // 模态开着时只关模态（不能顺手把选择也清了）。
+    if (backdrop && !backdrop.hidden) {
+      event.preventDefault();
+      closeModal();
+      return;
+    }
     if (!actionMenu || actionMenu.hidden) return;
     event.preventDefault();
     closeActionMenu({ restoreFocus: true });
@@ -965,7 +1331,7 @@ export default function createFilePanel(elements) {
   async function enterDirectory(pathValue) {
     state.manualPath = true;
     await load(pathValue);
-    renderFollowButton();
+    renderLocateButton();
   }
 
   /* ---------------------------- 操作 ---------------------------- */
@@ -1229,7 +1595,11 @@ export default function createFilePanel(elements) {
     cancel.focus();
   }
 
-  async function downloadFile(entry) {
+  /**
+   * 下载一个文件。返回 `{ok, size?}` / `{ok:false, code, userText}`，
+   * 供单个下载与批量下载共用（批量需要知道哪一条失败、失败原因）。
+   */
+  async function downloadFile(entry, opts = {}) {
     const url = api.fsDownloadUrl(target(), entry.path);
     try {
       const headers = api.fsAuthHeader();
@@ -1241,11 +1611,9 @@ export default function createFilePanel(elements) {
         } catch {
           body = null;
         }
-        onNotice(
-          (body && body.userText) || `下载失败（HTTP ${response.status}）。`,
-          "error",
-        );
-        return;
+        const userText = (body && body.userText) || `下载失败（HTTP ${response.status}）。`;
+        if (!opts.quiet) onNotice(userText, "error");
+        return { ok: false, code: (body && body.code) || `HTTP_${response.status}`, userText };
       }
       const blob = await response.blob();
       const objectUrl = URL.createObjectURL(blob);
@@ -1256,10 +1624,250 @@ export default function createFilePanel(elements) {
       anchor.click();
       anchor.remove();
       setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
-      onNotice(`已下载 ${entry.name}（${formatSize(blob.size)}）`, "ok");
+      if (!opts.quiet) onNotice(`已下载 ${entry.name}（${formatSize(blob.size)}）`, "ok");
+      return { ok: true, size: blob.size };
     } catch (err) {
-      onNotice(`下载失败：${err && err.message ? err.message : "网络错误"}`, "error");
+      const userText = `下载失败：${err && err.message ? err.message : "网络错误"}`;
+      if (!opts.quiet) onNotice(userText, "error");
+      return { ok: false, code: "NETWORK", userText };
     }
+  }
+
+  /* ------------------ 多选与批量操作（TASK-FIX17-C R2） ------------------ */
+
+  /** 选中的条目（按列表顺序，只含当前目录里真的存在的）。 */
+  function selectedEntries() {
+    return state.entries.filter((entry) => state.selected.has(entry.path));
+  }
+
+  /** 批量操作前后统一的「忙」开关：防重复提交。 */
+  function setBatchBusy(value) {
+    state.batchBusy = Boolean(value);
+    renderBatchBar();
+  }
+
+  /**
+   * 批量删除：二次确认（含「将删除 N 项，不可撤销」）→ 逐项 DELETE。
+   *
+   * 远程分支不允许递归（服务端 400），所以远程只删空目录；本地目录一律
+   * `recursive=true`（用户的意图就是「连同内容一起删」，而确认卡已经写明项数）。
+   */
+  async function batchDelete() {
+    if (state.batchBusy) return;
+    const items = selectedEntries();
+    if (items.length === 0) return;
+    const isRemote = state.kind === "remote";
+    const dirCount = items.filter((entry) => entry.type === "dir").length;
+
+    const card = openModalShell();
+    card.appendChild(el("h2", {}, "确认批量删除"));
+    card.appendChild(
+      el(
+        "p",
+        { className: "file-panel-modal-text", "data-role": "files-batch-delete-text" },
+        `将删除 ${items.length} 项${dirCount > 0 ? `（含 ${dirCount} 个目录及其内容）` : ""}，不可撤销。`,
+      ),
+    );
+    const list = el("ul", { className: "file-panel-batch-list", "data-role": "files-batch-delete-list" });
+    for (const entry of items.slice(0, 8)) list.appendChild(el("li", {}, entry.path));
+    if (items.length > 8) list.appendChild(el("li", { className: "file-panel-batch-more" }, `…另外 ${items.length - 8} 项`));
+    card.appendChild(list);
+
+    const actions = el("div", { className: "file-panel-modal-actions" });
+    const cancel = el("button", { type: "button", className: "file-panel-btn" }, "取消");
+    const ok = el("button", { type: "button", className: "file-panel-btn file-panel-btn-danger" }, "永久删除");
+    ok.setAttribute("data-role", "files-batch-delete-confirm");
+    cancel.addEventListener("click", () => closeModal());
+    ok.addEventListener("click", async () => {
+      ok.disabled = true;
+      cancel.disabled = true;
+      closeModal();
+      setBatchBusy(true);
+      const failed = [];
+      let deleted = 0;
+      for (const entry of items) {
+        const recursive = entry.type === "dir" && !isRemote;
+        const result = await api.fsDelete(target(), entry.path, recursive);
+        if (result.ok) deleted += 1;
+        else failed.push({ path: entry.path, name: entry.name, userText: result.userText || `删除失败（${result.code}）` });
+      }
+      // 成功的那几条从选择里剔掉；失败的留着让用户看清是哪些。
+      const failedPaths = new Set(failed.map((row) => row.path));
+      state.selected = pruneSelection(state.selected, failedPaths);
+      if (state.selected.size === 0) state.anchorPath = null;
+      setBatchBusy(false);
+      await load(state.path, { keepSelection: true });
+      if (failed.length === 0) {
+        onNotice(`已删除 ${deleted} 项`, "ok");
+      } else {
+        onNotice(`已删除 ${deleted} 项，${failed.length} 项失败：${failed[0].userText}`, "error");
+      }
+    });
+    actions.appendChild(cancel);
+    actions.appendChild(ok);
+    card.appendChild(actions);
+    // 危险操作：默认焦点在取消上。
+    cancel.focus();
+  }
+
+  /**
+   * 批量移动：填目标目录 → 逐批 `POST /api/fs/move` → 汇总 `failed`。
+   *
+   * 不覆盖任何已有文件（不传 `overwrite`）：撞名的那条进 `failed`，源文件原地不动。
+   */
+  async function batchMove() {
+    if (state.batchBusy) return;
+    const items = selectedEntries();
+    if (items.length === 0) return;
+    const isRemote = state.kind === "remote";
+
+    const card = openModalShell();
+    card.setAttribute("data-tone", "neutral");
+    card.appendChild(el("h2", {}, "批量移动到"));
+    card.appendChild(
+      el(
+        "p",
+        { className: "file-panel-modal-text" },
+        isRemote
+          ? `将移动 ${items.length} 项（远程主机暂不支持批量移动）。`
+          : `将移动 ${items.length} 项到这里（目标目录已存在同名项时不覆盖，该条会报告失败）。`,
+      ),
+    );
+    const input = el("input", {
+      type: "text",
+      className: "file-panel-input",
+      "data-role": "files-batch-move-input",
+      spellcheck: "false",
+      placeholder: "目标目录（绝对路径）",
+    });
+    input.value = state.path || "";
+    card.appendChild(input);
+
+    const quick = el(
+      "div",
+      { className: "file-panel-batch-quick" },
+    );
+    const currentButton = el(
+      "button",
+      { type: "button", className: "file-panel-btn file-panel-btn-quiet", "data-role": "files-batch-move-current" },
+      "用当前目录",
+    );
+    currentButton.addEventListener("click", () => {
+      input.value = state.path || "";
+      input.focus();
+    });
+    quick.appendChild(currentButton);
+    const termButton = el(
+      "button",
+      { type: "button", className: "file-panel-btn file-panel-btn-quiet", "data-role": "files-batch-move-term" },
+      "用终端目录",
+    );
+    const cwd = typeof state.termCwd === "string" ? state.termCwd : "";
+    termButton.disabled = cwd.length === 0;
+    termButton.title = cwd.length === 0 ? "终端还没上报目录" : `终端目录：${cwd}`;
+    termButton.addEventListener("click", () => {
+      if (cwd.length === 0) return;
+      input.value = cwd;
+      input.focus();
+    });
+    quick.appendChild(termButton);
+    card.appendChild(quick);
+
+    const actions = el("div", { className: "file-panel-modal-actions" });
+    const cancel = el("button", { type: "button", className: "file-panel-btn" }, "取消");
+    const ok = el("button", { type: "button", className: "file-panel-btn file-panel-btn-primary" }, "移动");
+    ok.setAttribute("data-role", "files-batch-move-confirm");
+    cancel.addEventListener("click", () => closeModal());
+    const submit = async () => {
+      const dir = input.value.trim();
+      if (!dir) {
+        onNotice("先填目标目录。", "warn");
+        return;
+      }
+      const plan = movePlan(items.map((entry) => entry.path), dir);
+      if (plan.length === 0) {
+        closeModal();
+        onNotice("目标目录与当前目录相同，没有可移动的项。", "warn");
+        return;
+      }
+      closeModal();
+      setBatchBusy(true);
+      const moved = [];
+      const failed = [];
+      for (const chunk of chunkMoves(plan)) {
+        const result = await api.fsMove(target(), chunk);
+        if (!result.ok) {
+          // 整批失败（网络 / 400）：每一项都记上同一个原因，不让它们静默消失。
+          for (const item of chunk) {
+            failed.push({ from: item.from, to: item.to, userText: result.userText || `移动失败（${result.code}）` });
+          }
+          continue;
+        }
+        const data = result.data || {};
+        if (Array.isArray(data.moved)) moved.push(...data.moved);
+        if (Array.isArray(data.failed)) {
+          for (const row of data.failed) {
+            failed.push({
+              from: row.from,
+              to: row.to,
+              code: row.code,
+              userText: row.userText || "移动失败。",
+            });
+          }
+        }
+      }
+      // 成功的那几条从选择里剔掉；失败的留着让用户重试。
+      const failedFrom = new Set(failed.map((row) => row.from));
+      state.selected = new Set([...state.selected].filter((path) => failedFrom.has(path)));
+      if (state.selected.size === 0) state.anchorPath = null;
+      setBatchBusy(false);
+      await load(state.path, { keepSelection: true });
+      if (failed.length === 0) {
+        onNotice(`已移动 ${moved.length} 项到 ${dir}`, "ok");
+      } else {
+        onNotice(`已移动 ${moved.length} 项，${failed.length} 项失败：${failed[0].userText}`, "error");
+      }
+    };
+    ok.addEventListener("click", () => void submit());
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") void submit();
+      if (event.key === "Escape") closeModal();
+    });
+    actions.appendChild(cancel);
+    actions.appendChild(ok);
+    card.appendChild(actions);
+    input.focus();
+    input.select();
+  }
+
+  /**
+   * 批量下载：逐项 `download`，浏览器逐个弹下载。
+   *
+   * 两条已知限制（写在这里，免得下次当成 bug 去修）：
+   *   1. 浏览器可能拦多次下载（站点的「允许自动下载多个文件」），那是浏览器行为；
+   *   2. 目录不能下载（服务端 `IS_A_DIRECTORY`）—— 跳过并计数，不报错。
+   */
+  async function batchDownload() {
+    if (state.batchBusy) return;
+    const items = selectedEntries();
+    if (items.length === 0) return;
+    const files = items.filter((entry) => entry.type !== "dir");
+    const skipped = items.length - files.length;
+    if (files.length === 0) {
+      onNotice("选中的都是目录，目录不支持下载。", "warn");
+      return;
+    }
+    setBatchBusy(true);
+    const failed = [];
+    for (const entry of files) {
+      const result = await downloadFile(entry, { quiet: true });
+      if (!result.ok) failed.push({ name: entry.name, userText: result.userText });
+    }
+    setBatchBusy(false);
+    const parts = [`已开始下载 ${files.length - failed.length} 个文件`];
+    if (skipped > 0) parts.push(`${skipped} 个目录不支持下载`);
+    if (failed.length > 0) parts.push(`${failed.length} 个失败：${failed[0].userText}`);
+    onNotice(parts.join(" · "), failed.length > 0 ? "warn" : "ok");
   }
 
   /* ---------------------------- 上传 ---------------------------- */
@@ -1465,8 +2073,26 @@ export default function createFilePanel(elements) {
     });
     toolbar.appendChild(up);
 
+    // TASK-FIX17-C R1：定位按钮——**常显**（之前那个只在手动改过路径后
+    // 才冒出来的文字按钮，用户基本看不到）。图标是内联 SVG（沙箱禁 CDN），
+    // 三态由 renderLocateButton() 写 data-state / title。
+    locateButton = el("button", {
+      type: "button",
+      className: "file-panel-icon-btn file-panel-locate",
+      "data-role": "files-locate",
+      title: "定位到终端所在目录",
+      "aria-label": "定位到终端所在目录",
+      "data-state": LOCATE_STATE.NO_TERMINAL,
+    });
+    locateButton.appendChild(iconSvg("locate", 14));
+    locateButton.addEventListener("click", () => void locateToTerminalCwd());
+    toolbar.appendChild(locateButton);
+
     const title = el("span", { className: "file-panel-title" }, "文件");
     toolbar.appendChild(title);
+
+    // R2 / AC4：路径输入框与批量操作条共用同一个槽位（同高，切换不跳版）。
+    pathSlot = el("div", { className: "file-panel-slot", "data-role": "file-panel-slot", "data-mode": "path" });
 
     pathInput = el("input", {
       type: "text",
@@ -1480,26 +2106,62 @@ export default function createFilePanel(elements) {
       const value = pathInput.value.trim();
       if (!value) return;
       state.manualPath = true;
-      void load(value).then(renderFollowButton);
+      void load(value).then(renderLocateButton);
     });
     pathInput.addEventListener("blur", () => {
       // 编辑后没回车就失焦：回填真实路径，不偷偷跳目录。
       if (pathInput.value !== (state.path || "")) pathInput.value = state.path || "";
     });
-    toolbar.appendChild(pathInput);
+    pathSlot.appendChild(pathInput);
 
-    followButton = el("button", {
-      type: "button",
-      className: "file-panel-btn file-panel-btn-quiet",
-      "data-role": "file-panel-follow",
+    // 批量操作条（默认 hidden）：计数 + 移动 / 删除 / 下载 + 取消。
+    batchBar = el("div", {
+      className: "file-panel-batch",
+      "data-role": "files-batch-bar",
       hidden: true,
-    }, "回到终端目录");
-    followButton.addEventListener("click", () => {
-      state.manualPath = false;
-      renderFollowButton();
-      if (state.termCwd) void load(state.termCwd);
     });
-    toolbar.appendChild(followButton);
+    const batchCount = el(
+      "span",
+      { className: "file-panel-batch-count", "data-role": "files-batch-count" },
+      "已选 0 项",
+    );
+    batchBar.appendChild(batchCount);
+
+    const batchButtons = [
+      { role: "files-batch-move", icon: "move", title: "批量移动到…", handler: batchMove },
+      { role: "files-batch-delete", icon: "trash", title: "批量删除…", handler: batchDelete, tone: "danger" },
+      { role: "files-batch-download", icon: "download", title: "批量下载（逐个下载文件）", handler: batchDownload },
+    ];
+    for (const item of batchButtons) {
+      const button = el("button", {
+        type: "button",
+        className: "file-panel-icon-btn file-panel-batch-btn",
+        "data-role": item.role,
+        title: item.title,
+        "aria-label": item.title,
+      });
+      if (item.tone) button.setAttribute("data-tone", item.tone);
+      button.appendChild(iconSvg(item.icon, 14));
+      button.addEventListener("click", () => void item.handler());
+      batchBar.appendChild(button);
+    }
+
+    const batchCancel = el("button", {
+      type: "button",
+      className: "file-panel-icon-btn file-panel-batch-cancel",
+      "data-role": "files-batch-cancel",
+      title: "取消选择（Esc）",
+      "aria-label": "取消选择",
+    });
+    batchCancel.appendChild(iconSvg("cancel", 14));
+    batchCancel.addEventListener("click", () => {
+      clearSelection();
+      if (grid && typeof grid.focus === "function") grid.focus({ preventScroll: true });
+    });
+    batchBar.appendChild(batchCancel);
+
+    pathSlot.appendChild(batchBar);
+    toolbar.appendChild(pathSlot);
 
     const tools = el("div", { className: "file-panel-tools" });
 
@@ -1572,6 +2234,9 @@ export default function createFilePanel(elements) {
     grid = el("div", { className: "file-panel-grid", "data-role": "file-panel-grid", tabindex: "-1" });
     // 网格自己就是滚动容器：滚动只换窗口里的条目，不重建整张列表。
     grid.addEventListener("scroll", onGridScroll, { passive: true });
+    // R2：Ctrl+A 全选 / Escape 清空 / 点空白清空。
+    grid.addEventListener("keydown", onGridKeydown);
+    grid.addEventListener("pointerdown", onGridPointerDown);
     // 列数（宽度）或可视高度变了要重算每行条目数。
     if (typeof ResizeObserver === "function") {
       gridObserver = new ResizeObserver(() => schedulePaint());
@@ -1649,6 +2314,13 @@ export default function createFilePanel(elements) {
       state.hostId = null;
       state.termCwd = null;
       state.manualPath = false;
+      // 没有终端 = 没有列表：条目与选择必须一起清，否则工具栏会留
+      // 「已选 N 项」，而网格已经在说「当前没有终端标签」——两句自相矛盾。
+      state.path = null;
+      state.parent = null;
+      state.entries = [];
+      state.selected = new Set();
+      state.anchorPath = null;
       return false;
     }
     const changed =
@@ -1664,7 +2336,8 @@ export default function createFilePanel(elements) {
       state.manualPath = false;
       state.path = null;
       state.entries = [];
-      state.selected.clear();
+      state.selected = new Set();
+      state.anchorPath = null;
     }
     return changed;
   }
@@ -1673,14 +2346,19 @@ export default function createFilePanel(elements) {
     const changed = bindSession(session);
     if (!state.open) return;
     if (!session) {
+      // 终端没了：定位按钮必须立刻转成 no-terminal 禁用态（不能停在上一个会话的
+      // 「away」，否则用户点一下无事发生，也不知道为什么）。
+      renderLocateButton();
+      renderToolbarSlots();
       renderGridMessage("当前没有终端标签：先开一个标签，文件面板会跟着它的目录走。");
+      renderStatus();
       return;
     }
     if (changed || force) {
       const start = state.termCwd || (state.kind === "remote" ? "." : null);
       if (start) await load(start);
       else renderGridMessage("这个终端还没报告目录，等它出现第一个提示符。");
-      renderFollowButton();
+      renderLocateButton();
     }
   }
 
@@ -1737,8 +2415,7 @@ export default function createFilePanel(elements) {
     },
 
     /** 打开 / 收起。 */
-    setOpen,
-    toggle() {
+    setOpen,    toggle() {
       setOpen(!state.open);
     },
     /** WS 帧 session.cwd 的入口（app.js 调）。 */
@@ -1761,8 +2438,22 @@ export default function createFilePanel(elements) {
         hostId: state.hostId,
         entries: state.entries.slice(),
         manualPath: state.manualPath,
+        termCwd: state.termCwd,
+        // R2：多选快照（探针要断言「已选 N 项」与具体路径）。
+        selected: [...state.selected],
+        selectedCount: state.selected.size,
+        anchorPath: state.anchorPath,
+        batchBusy: state.batchBusy,
+        // R1：定位按钮的三态（直接调同一个纯函数，不重复实现一份）。
+        locate: locateButtonState({
+          termCwd: state.termCwd,
+          path: state.path,
+          hasSession: Boolean(state.sessionId),
+        }),
       };
     },
+    /** 清空选择（探针 / 外部入口用）。 */
+    clearSelection,
     refresh() {
       if (state.open) void load(state.path);
     },
@@ -1772,6 +2463,10 @@ export default function createFilePanel(elements) {
       if (gridObserver) gridObserver.disconnect();
       gridObserver = null;
       window.removeEventListener("resize", onGridResize);
+      if (grid) {
+        grid.removeEventListener("keydown", onGridKeydown);
+        grid.removeEventListener("pointerdown", onGridPointerDown);
+      }
       document.removeEventListener("pointerdown", onDocumentPointerDown, true);
       document.removeEventListener("keydown", onDocumentKeydown, true);
       closeActionMenu({ restoreFocus: false });
