@@ -68,6 +68,13 @@
 - (a) 用 `waitUntil` 替掉 `test/ssh/registry.test.mjs:297` 附近固定 `setTimeout`，使全量稳定 610/610；
 - (b) 人类确认 AC10 以「干净子集 329/329 + 单文件 17/17 + 历史 610/610」为准放行。
 
+**→ 已于 2026-11-24 结案：走 (a)，条件已满足。**
+
+- 人类选 (a)：用户消息 `m01027`「A」，2026-11-24 13:46。
+- 修法：新增 `waitUntil(fn, timeoutMs, label)` 轮询原语（形状照抄 `test/ai/agent.test.mjs:527-536`），把 `test/ssh/registry.test.mjs:317` 的 `setTimeout(30)` 换成 `waitUntil(() => entered === true, 2000, "openShell 进入")`、`:321` 的 `setTimeout(50)` 换成 `waitUntil(() => fake.client.ended === true && registry.size === 0, 2000, "close 生效并关掉连接")`。断言语义未改，产品代码未动，唯一改动文件 `test/ssh/registry.test.mjs`（+14/−2）。
+- 主 agent 亲跑复核（不信执行者自述）：单文件 3 次 **17/17 / 17/17 / 17/17**（`.dispatch/my-sshflaky-single-1..3.txt`），全量 5 轮 **673/673、662/661、673/673、673/673、673/673**（`.dispatch/my-sshflaky-full-1..5.txt`）。目标用例 5 轮全绿，耗时 55.9 / 88.8 / 110.3 / 190.5 / 85.1 ms，2000ms 上限余量充足。
+- 全量第 2 轮那 1 个 fail **不是**本用例，是 `test/pty/session.test.mjs` 的 Node 原生崩溃（`v8::HandleScope::CreateHandle() Cannot create a handle without a HandleScope`，伴随 `BaseObject::decrease_refcount` 断言失败）。经查为**历史已有的环境级 flaky**，`pi-v2a.jsonl`（2026-11-23 04:52）记录过完全相同的原生栈（当时执行者亦实测 baseline 同样可复现）。与 ssh registry 无关，属 ConPTY 资源竞争，另立卡处理。
+
 **遗留 P2（不阻塞，进后续卡）**：
 1. `[data-role="toast-stack"]` 未纳入 `INERT_SELECTORS`（设置页打开时 toast 按钮可点）。
 2. 抽屉收起后打字落到真实焦点，语义混淆。

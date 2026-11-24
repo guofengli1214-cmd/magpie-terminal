@@ -76,6 +76,18 @@ function once(emitter, name, timeoutMs = 3000) {
   });
 }
 
+/** 等条件成立（并行负载下别用固定 sleep）。 */
+async function waitUntil(fn, timeoutMs = 2000, label = "") {
+  const started = Date.now();
+  for (;;) {
+    if (await fn()) return true;
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`等待超时${label ? `：${label}` : ""}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 async function makeHost({ port = 22, authType = "password", password = "pw" } = {}) {
   const host = await addHost({
     name: "probe-host",
@@ -314,11 +326,11 @@ test("远程注册表组", async (t) => {
     registry.on("session.created", (info) => created.push(info));
     const stub = registry.create({ hostId: host.id });
     // 等 openShell 真正进入（此时会话还没 created），再关标签 → 覆盖「建连中途关掉」这条路径。
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await waitUntil(() => entered === true, 2000, "openShell 进入");
     assert.equal(entered, true);
     registry.close(stub.id);
     release();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitUntil(() => fake.client.ended === true && registry.size === 0, 2000, "close 生效并关掉连接");
     assert.equal(created.length, 0, "用户已经关掉标签，不能再冒出 session.created");
     assert.equal(fake.client.ended, true, "已建立的连接必须被关掉");
     assert.equal(registry.size, 0);
