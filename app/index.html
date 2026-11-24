@@ -22,21 +22,27 @@
        AI 不再占左侧栏入口，也没有状态栏开关；右边缘把手是唯一开合入口，
        收起与展开都可见。抽屉默认收起（data-ai-open="false"）。 -->
   <div id="root" data-role="app" data-ai-open="false">
+    <!-- TASK-FIX-ACCEPT4：rail 图标从字符/emoji（▣ 🖧 🗀 ⚙）换成内联描边 SVG，
+         形状抄 docs/mockups-v4/assets/v4.js 的 i-terminal / i-server / i-folder /
+         i-settings（viewBox 0 0 24 24、fill:none、stroke:currentColor）。
+         16×16 = 设计稿 .rail-btn .ico 尺寸；按钮本身 36×36 不变。
+         每个 svg 都 aria-hidden + focusable=false：图标不进读屏、不在 IE 式
+         Tab 序列里，语义只由 .rail-label（视觉隐藏）和 title 提供。 -->
     <nav class="rail" data-role="rail" aria-label="主导航">
       <button type="button" data-role="rail-term" data-active="true" aria-pressed="true" title="终端（本地）">
-        <span aria-hidden="true">▣</span><span class="rail-label">终端</span>
+        <svg class="rail-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 7l5 5-5 5M12 19h8"/></svg><span class="rail-label">终端</span>
       </button>
       <!-- 主机按钮由 app.js 在 init 时去掉 hidden（历史占位，保持原行为）。 -->
       <button type="button" data-role="rail-hosts" hidden title="主机（即将支持）">
-        <span aria-hidden="true">🖧</span><span class="rail-label">主机</span>
+        <svg class="rail-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="6.5" rx="1.6"/><rect x="3" y="13.5" width="18" height="6.5" rx="1.6"/><path d="M7 7.2h.01M7 16.8h.01"/></svg><span class="rail-label">主机</span>
       </button>
       <!-- TASK-V4-G：文件面板是终端下方的常驻区域，入口在这里（与主机分开）。 -->
       <button type="button" data-role="rail-files" aria-pressed="false" title="文件面板">
-        <span aria-hidden="true">🗀</span><span class="rail-label">文件</span>
+        <svg class="rail-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2.2h8.5A1.5 1.5 0 0 1 21 9.7v8.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg><span class="rail-label">文件</span>
       </button>
       <div class="rail-spacer" aria-hidden="true"></div>
       <button type="button" data-role="rail-settings" title="设置">
-        <span aria-hidden="true">⚙</span><span class="rail-label">设置</span>
+        <svg class="rail-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3.1"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2L5.5 5.5"/></svg><span class="rail-label">设置</span>
       </button>
     </nav>
 

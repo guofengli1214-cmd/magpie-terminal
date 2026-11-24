@@ -17,6 +17,86 @@ export const MIN_HEIGHT = 150;
 export const MAX_HEIGHT = 520;
 export const DEFAULT_HEIGHT = 224;
 
+// TASK-FIX-ACCEPT4：虚拟滚动。只渲染「可视行 ± OVERSCAN 行」，上下各放一个
+// 跨全列的 spacer 撑住滚动高度（滚动条仍按全量条目算）。
+// 行高/行间距必须有兜底值：getComputedStyle 在面板 hidden 时也读得到，但
+// 万一以后 CSS 换成别的单位，兜底能保证不把窗口算成 0 行。
+export const VIRTUAL_OVERSCAN_ROWS = 2;
+// 小目录直通阈值：≤ 400 项的目录**整份渲染**，DOM 与改动前逐节点一致
+// （任务书 §任务1 第 5 条「小目录行为与现在一致」）。400 也是本卡的 DOM 上限，
+// 所以大目录虚拟化后（可视行 ± 2 行，实测 60–84 条）依然远低于这条线。
+export const FULL_RENDER_LIMIT = 400;
+const ROW_HEIGHT_FALLBACK = 74;
+const ROW_GAP_FALLBACK = 2;
+
+/** `grid-template-columns` 的计算值 → 列数（`none`/空记 0）。纯函数，可单测。 */
+export function countTracks(value) {
+  const text = String(value || "").trim();
+  if (!text || text === "none") return 0;
+  return text.split(/\s+/).filter(Boolean).length;
+}
+
+/**
+ * 纯窗口计算（可单测）：给定总数 / 列数 / 行高 / 滚动位置，算出要渲染的条目区间。
+ *
+ * - `topRows` / `bottomRows` 是上下 spacer 要占的行数；
+ * - `startIndex..endIndex` 是真正要 append 的条目下标区间（左闭右开）；
+ * - 小目录（总行数放得下）会得到 topRows=0 / bottomRows=0 / 全量区间，
+ *   与改动前的 DOM 完全一致。
+ */
+export function computeWindow({
+  count = 0,
+  columns = 1,
+  rowHeight = ROW_HEIGHT_FALLBACK,
+  rowGap = ROW_GAP_FALLBACK,
+  scrollTop = 0,
+  viewportHeight = 0,
+  overscan = VIRTUAL_OVERSCAN_ROWS,
+  fullRenderLimit = FULL_RENDER_LIMIT,
+} = {}) {
+  const total = Math.max(0, Math.floor(Number(count) || 0));
+  const cols = Math.max(1, Math.floor(Number(columns) || 1));
+  const rowH = Math.max(1, Number(rowHeight) || ROW_HEIGHT_FALLBACK);
+  const rowG = Math.max(0, Number(rowGap) || 0);
+  const step = rowH + rowG;
+  const view = Math.max(0, Number(viewportHeight) || 0);
+  const top = Math.max(0, Number(scrollTop) || 0);
+  const pad = Math.max(0, Math.floor(Number(overscan) || 0));
+  const totalRows = Math.ceil(total / cols);
+  // 小目录直通：全量渲染，上下 spacer 都是 0 行 —— 与改动前的 DOM 完全同构。
+  if (total > 0 && total <= Math.max(0, Number(fullRenderLimit) || 0)) {
+    return {
+      columns: cols,
+      totalRows,
+      startRow: 0,
+      endRow: totalRows,
+      startIndex: 0,
+      endIndex: total,
+      topRows: 0,
+      bottomRows: 0,
+      rendered: total,
+      fullRender: true,
+    };
+  }
+  const firstRow = Math.floor(top / step);
+  const startRow = Math.max(0, Math.min(totalRows, firstRow - pad));
+  const endRow = Math.max(startRow, Math.min(totalRows, Math.ceil((top + view) / step) + pad));
+  const startIndex = Math.min(total, startRow * cols);
+  const endIndex = Math.min(total, endRow * cols);
+  return {
+    columns: cols,
+    totalRows,
+    startRow,
+    endRow,
+    startIndex,
+    endIndex,
+    topRows: startRow,
+    bottomRows: totalRows - endRow,
+    rendered: endIndex - startIndex,
+    fullRender: false,
+  };
+}
+
 function el(tag, attrs = {}, text) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
@@ -119,6 +199,22 @@ export default function createFilePanel(elements) {
   let unsubscribe = null;
   let lastActiveId = null;
 
+  // TASK-FIX-ACCEPT4：虚拟窗口状态。
+  let topSpacer = null;
+  let bottomSpacer = null;
+  let paintScheduled = false;
+  let needsPaint = true;
+  let gridObserver = null;
+  let focusPath = null;
+  let rendered = {
+    startIndex: 0,
+    endIndex: 0,
+    columns: 0,
+    topRows: 0,
+    bottomRows: 0,
+    rowHeight: 0,
+  };
+
   /* ---------------------------- 存储 ---------------------------- */
 
   function readStoredHeight() {
@@ -183,6 +279,9 @@ export default function createFilePanel(elements) {
       railButton.setAttribute("data-active", state.open ? "true" : "false");
     }
     if (state.open) {
+      // 收起时宽度/高度为 0（先前记为 needsPaint），展开后要立刻补画一次窗口。
+      needsPaint = true;
+      schedulePaint();
       // 打开面板会改变终端可用高度：让 xterm 重新 fit（走常规 resize 管道）。
       window.dispatchEvent(new CustomEvent("magpie:file-panel-toggle", { detail: { open: true } }));
     } else {
@@ -248,6 +347,7 @@ export default function createFilePanel(elements) {
 
   function renderGridMessage(text, isError) {
     if (!grid) return;
+    rendered = { startIndex: 0, endIndex: 0, columns: 0 };
     grid.textContent = "";
     const note = el("p", { className: "file-panel-empty" }, text);
     if (isError) note.setAttribute("data-tone", "error");
@@ -258,16 +358,204 @@ export default function createFilePanel(elements) {
     renderPathBar();
     renderFollowButton();
     if (!grid) return;
-    grid.textContent = "";
+    rendered = { startIndex: 0, endIndex: 0, columns: 0 };
     if (state.entries.length === 0) {
+      grid.textContent = "";
       renderGridMessage("这个目录是空的。");
       renderStatus();
       return;
     }
-    for (const entry of state.entries) {
-      grid.appendChild(renderEntry(entry));
-    }
+    // 切目录 / 刷新：回到顶部，然后只铺可视窗口。
+    grid.textContent = "";
+    topSpacer = null;
+    bottomSpacer = null;
+    grid.scrollTop = 0;
+    paintWindow({ rebuild: true });
     renderStatus();
+  }
+
+  /* ------------------------- 虚拟窗口（TASK-FIX-ACCEPT4） ------------------------- */
+
+  /**
+   * 从布局里量当前的列数 / 行高 / 行距 / 可视高。
+   * 面板 hidden 或宽度为 0 时列数为 0，调用方必须推迟渲染——
+   * 否则 1 万条会被当成「放得下」全铺出来。
+   */
+  function gridMetrics() {
+    if (!grid) return null;
+    const cs = getComputedStyle(grid);
+    return {
+      columns: countTracks(cs.gridTemplateColumns),
+      rowHeight: Number.parseFloat(cs.gridAutoRows) || ROW_HEIGHT_FALLBACK,
+      rowGap: Number.parseFloat(cs.rowGap) || 0,
+      viewportHeight: grid.clientHeight || 0,
+      scrollTop: grid.scrollTop || 0,
+    };
+  }
+
+  function ensureSpacers() {
+    if (!grid) return;
+    if (!topSpacer || topSpacer.parentNode !== grid) {
+      topSpacer = el("div", {
+        className: "file-panel-spacer",
+        "data-role": "file-panel-spacer-top",
+        "aria-hidden": "true",
+      });
+      grid.insertBefore(topSpacer, grid.firstChild);
+    }
+    if (!bottomSpacer || bottomSpacer.parentNode !== grid) {
+      bottomSpacer = el("div", {
+        className: "file-panel-spacer",
+        "data-role": "file-panel-spacer-bottom",
+        "aria-hidden": "true",
+      });
+      grid.appendChild(bottomSpacer);
+    }
+  }
+
+  /** 0 行时就地移除（不占 DOM，小目录与改动前完全同构）。 */
+  function applySpacer(spacer, rows) {
+    if (!spacer) return;
+    const n = Math.max(0, Math.floor(Number(rows) || 0));
+    if (n <= 0) {
+      if (spacer.parentNode) spacer.parentNode.removeChild(spacer);
+      return;
+    }
+    spacer.style.gridRow = `span ${n}`;
+    if (spacer.parentNode !== grid) grid.insertBefore(spacer, spacer === topSpacer ? grid.firstChild : null);
+  }
+
+  function schedulePaint() {
+    if (paintScheduled) return;
+    paintScheduled = true;
+    const run = () => {
+      paintScheduled = false;
+      paintWindow();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else setTimeout(run, 16);
+  }
+
+  /** 按当前滚动位置与列数只铺「可视行 ± OVERSCAN 行」。 */
+  function paintWindow({ rebuild = false } = {}) {
+    if (!grid) return;
+    const metrics = gridMetrics();
+    if (!metrics || metrics.columns < 1 || metrics.viewportHeight <= 0) {
+      // 面板收着 / 宽度为 0：先记脏，等真正有布局时（ResizeObserver / applyOpen）
+      // 再算。这里不能自旋 rAF，否则收起状态下每帧空转。
+      needsPaint = true;
+      return;
+    }
+    needsPaint = false;
+    const win = computeWindow({ count: state.entries.length, ...metrics });
+    const unchanged =
+      !rebuild &&
+      rendered.startIndex === win.startIndex &&
+      rendered.endIndex === win.endIndex &&
+      rendered.columns === win.columns &&
+      rendered.topRows === win.topRows &&
+      rendered.bottomRows === win.bottomRows &&
+      rendered.rowHeight === metrics.rowHeight;
+    if (unchanged) return;
+
+    // 条目区间没变、只是 spacer 行数或行高变了（窗口高度变化）→ 只改 spacer。
+    const sameRange =
+      rendered.startIndex === win.startIndex &&
+      rendered.endIndex === win.endIndex &&
+      rendered.columns === win.columns;
+    ensureSpacers();
+    // 先补偿量（spacer）再动条目：同一任务里完成，浏览器不会看到中间态。
+    applySpacer(topSpacer, win.topRows);
+    applySpacer(bottomSpacer, win.bottomRows);
+    if (sameRange) {
+      rendered.topRows = win.topRows;
+      rendered.bottomRows = win.bottomRows;
+      rendered.rowHeight = metrics.rowHeight;
+      return;
+    }
+
+    // 按 data-path 复用已有节点：滚动一格只换掉进出窗口的那几个，
+    // 不重建整个窗口（hover / data-more-open / 焦点都留在原地）。
+    const existing = new Map();
+    for (const node of grid.querySelectorAll('[data-role="file-entry"]')) {
+      existing.set(node.getAttribute("data-path"), node);
+    }
+    const desired = [];
+    for (let i = win.startIndex; i < win.endIndex; i += 1) {
+      const entry = state.entries[i];
+      if (!entry) continue;
+      const reuse = existing.get(entry.path);
+      if (reuse) {
+        existing.delete(entry.path);
+        desired.push(reuse);
+      } else {
+        desired.push(renderEntry(entry));
+      }
+    }
+
+    // 焦点先记账：被移出窗口的那一条会被 removeChild，焦点会掉到 body。
+    const activeEl = document.activeElement;
+    const focusInsideGrid = Boolean(activeEl && activeEl.closest && activeEl.closest('[data-role="file-panel-grid"]') === grid);
+    const keepFocusPath = focusPath || (focusInsideGrid && activeEl.getAttribute ? activeEl.getAttribute("data-path") : null);
+
+    // 就地 diff：只动增/减的节点，不整块清空 —— 清空会把 scrollTop 夹回 0。
+    let ref = topSpacer && topSpacer.parentNode === grid ? topSpacer.nextSibling : grid.firstChild;
+    for (const node of desired) {
+      if (ref === node) {
+        ref = node.nextSibling;
+        continue;
+      }
+      grid.insertBefore(node, ref);
+      ref = node.nextSibling;
+    }
+    const stop = bottomSpacer && bottomSpacer.parentNode === grid ? bottomSpacer : null;
+    while (ref && ref !== stop) {
+      const next = ref.nextSibling;
+      grid.removeChild(ref);
+      ref = next;
+    }
+    // diff 只从窗口头部往尾部清，窗口后面还挂着的旧节点在这里兜底收尾。
+    for (const node of existing.values()) {
+      if (node.parentNode === grid) grid.removeChild(node);
+    }
+
+    rendered = {
+      startIndex: win.startIndex,
+      endIndex: win.endIndex,
+      columns: win.columns,
+      topRows: win.topRows,
+      bottomRows: win.bottomRows,
+      rowHeight: metrics.rowHeight,
+    };
+
+    // 焦点别丢：条目还在窗口里就把焦点还给同一个 path；
+    // 它已经滚出窗口（被卸载）就把焦点交给网格容器本身（tabindex=-1），
+    // 不让焦点掉到 body —— 那样键盘用户会失去位置感。
+    focusPath = null;
+    if (keepFocusPath) {
+      const node = grid.querySelector(`[data-role="file-entry"][data-path="${cssEscape(keepFocusPath)}"]`);
+      if (node && typeof node.focus === "function") {
+        node.focus({ preventScroll: true });
+      } else if (focusInsideGrid && typeof grid.focus === "function") {
+        grid.focus({ preventScroll: true });
+        grid.setAttribute("data-focus-path", keepFocusPath);
+      }
+    }
+  }
+
+  /** CSS.escape 兜底：Windows 路径里有反斜杠、空格与中文。 */
+  function cssEscape(value) {
+    const text = String(value == null ? "" : value);
+    if (typeof CSS !== "undefined" && CSS && typeof CSS.escape === "function") return CSS.escape(text);
+    return text.replace(/["\\]/g, "\\$&");
+  }
+  function onGridScroll() {
+    paintWindow();
+  }
+
+  function onGridResize() {
+    // 列数 / 可视高度变了：窗口要重算。paintWindow 自己会比较，没变就不动 DOM。
+    paintWindow();
   }
 
   function renderEntry(entry) {
@@ -354,9 +642,10 @@ export default function createFilePanel(elements) {
       }
       renderStatus();
     });
+    // 记住键盘焦点落在哪个 path：虚拟窗口重铺后要把它还回去。
+    card.addEventListener("focus", () => { focusPath = entry.path; }, true);
     card.addEventListener("dblclick", (event) => {
       event.preventDefault();
-      if (event.target && event.target.closest && event.target.closest(".file-panel-more-toggle")) return;
       if (entry.type === "dir") void enterDirectory(entry.path);
       else void openViewer(entry);
     });
@@ -978,7 +1267,16 @@ export default function createFilePanel(elements) {
     uploadHost = el("div", { className: "file-panel-uploads", "data-role": "file-panel-uploads", hidden: true });
     root.appendChild(uploadHost);
 
-    grid = el("div", { className: "file-panel-grid", "data-role": "file-panel-grid" });
+    grid = el("div", { className: "file-panel-grid", "data-role": "file-panel-grid", tabindex: "-1" });
+    // 网格自己就是滚动容器：滚动只换窗口里的条目，不重建整张列表。
+    grid.addEventListener("scroll", onGridScroll, { passive: true });
+    // 列数（宽度）或可视高度变了要重算每行条目数。
+    if (typeof ResizeObserver === "function") {
+      gridObserver = new ResizeObserver(() => schedulePaint());
+      gridObserver.observe(grid);
+    }
+    // 老 WebView2 没有 ResizeObserver 时的兜底：窗口尺寸变化也算一次。
+    window.addEventListener("resize", onGridResize);
     root.appendChild(grid);
 
     statusLine = el("div", { className: "file-panel-status", "data-role": "file-panel-status" });
@@ -1163,6 +1461,9 @@ export default function createFilePanel(elements) {
     dispose() {
       if (unsubscribe) unsubscribe();
       unsubscribe = null;
+      if (gridObserver) gridObserver.disconnect();
+      gridObserver = null;
+      window.removeEventListener("resize", onGridResize);
     },
   };
 }

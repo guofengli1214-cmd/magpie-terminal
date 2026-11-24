@@ -205,6 +205,18 @@ button[disabled] {
   min-height: 0;
 }
 
+/* TASK-FIX-ACCEPT4：图标是内联描边 SVG（16×16，stroke 跟随 currentColor）。
+   显式给盒尺寸，既不依赖 SVG 的 width/height 属性，也挡住 emoji 字体的
+   彩色回退；hover / active 的颜色变化完全由 button 的 color 继承。 */
+[data-role="rail"] .rail-ico {
+  width: 16px;
+  height: 16px;
+  display: block;
+  flex: 0 0 auto;
+  pointer-events: none;
+  color: inherit;
+}
+
 /* ------------------------------------------------------------------ *
  * AI 抽屉（TASK-V3-C §6.2）：标题栏 / 时间线 / 步骤 / 审批卡 / 输入条
  * 旧的底部 AI 条（aibar）与浮层（ai-layer）在 V3 已整体删除，规则一并删掉，
@@ -2278,8 +2290,23 @@ button[disabled] {
   grid-auto-rows: 74px;
   gap: 2px 4px;
   padding: 6px 14px 8px 9px;
-  overflow: auto;
+  /* TASK-FIX-ACCEPT4：网格自己是滚动容器（滚动条高度按全量条目算，
+     由渲染层的上下 spacer 撑住）。overflow-y:auto + overflow-x:hidden：
+     横向永不滚动，纵向只滚这一块。 */
+  overflow-y: auto;
+  overflow-x: hidden;
   align-content: start;
+  /* 滚到底时最后一行不要被 padding-bottom 挡；滚动锚定会干扰窗口重铺。 */
+  overflow-anchor: none;
+}
+
+/* 虚拟滚动的占位块：跨满整行，只贡献高度（不画任何东西）。
+   `grid-row: span N` 由 file-panel.js 按行数写；0 行时整块从 DOM 移除。 */
+.file-panel-grid > .file-panel-spacer {
+  grid-column: 1 / -1;
+  height: 100%;
+  min-height: 0;
+  pointer-events: none;
 }
 
 .file-panel-entry {
