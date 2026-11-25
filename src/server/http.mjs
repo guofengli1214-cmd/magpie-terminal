@@ -53,6 +53,12 @@ const VERSION = "0.1.0";
 export const MAX_BODY_BYTES = 64 * 1024;
 
 /**
+ * 重复告警的默认限流窗口（TASK-FIX17-E2 R3）：同一 `level|code|route` 60 秒内
+ * 只落一条，其余只计数，窗口结束后的下一条带 `suppressed`。
+ */
+export const LOG_DEDUPE_WINDOW_MS = 60_000;
+
+/**
  * CSP 的 connect-src 必须跟着实际端口走；3480 时与规范原文逐字一致。
  *
  * style-src 必须带 'unsafe-inline'（TASK.md §4.4）：
@@ -103,8 +109,22 @@ function timestamp() {
  * 写盘失败只 warn 一次（在 `createLogWriter` 里），绝不抛：日志是旁路，
  * 它不该有能力让服务退出。
  *
+ * TASK-FIX17-E2 R3：**重复告警限流**。只作用于 `warn` / `error` 且带字符串
+ * `code` 的条目（`info` 绝不限流——`SERVER_STARTED` 每次启动都必须有一行）。
+ * 键 = `level|code|route`，窗口内同键只落**第一条**，其余只计数；窗口结束后的
+ * 下一条落盘时追加 `suppressed: <上一窗口压掉的条数>`（没压掉就不加字段）。
+ * 这样「日志被旧页面的 403 洪水滚掉」的问题消失，同时第一发与总量都还在。
+ *
  * @param {Console|{log?:Function,warn?:Function}} [sink]
- * @param {{writer?: ReturnType<typeof createLogWriter>, file?: boolean}} [options]
+ * @param {{
+ *   writer?: ReturnType<typeof createLogWriter>,
+ *   file?: boolean,
+ *   dedupeWindowMs?: number,
+ *   now?: () => number,
+ * }} [options]
+ *   `dedupeWindowMs`：限流窗口（毫秒），默认 `LOG_DEDUPE_WINDOW_MS`；
+ *   **`<= 0` 表示关闭限流**（探针要数原始 403 次数时用）。
+ *   `now`：时钟注入，单测不真等 60 秒。
  */
 export function makeLogger(sink = console, options = {}) {
   // `file: false` 给单测用：只打 stdout，不碰磁盘（也不会污染真实日志文件）。
@@ -118,12 +138,42 @@ export function makeLogger(sink = console, options = {}) {
             else console.warn(message);
           },
         }));
-  const log = function log(entry) {
+  // 限流窗口：默认 60s；`<= 0` 关闭（探针数原始条数用，见上面的注释）。
+  const dedupeWindowMs = Number.isFinite(options.dedupeWindowMs)
+    ? Number(options.dedupeWindowMs)
+    : LOG_DEDUPE_WINDOW_MS;
+  const now = typeof options.now === "function" ? options.now : Date.now;
+  /** @type {Map<string, {at:number, suppressed:number}>} */
+  const dedupeState = new Map();
+
+  function emit(entry) {
     // 同一份 `entry` 走两条路：stdout 与文件都用脱敏后的行。
     // 为什么 stdout 也脱敏：宿主那份 `app.log` 同样会被人导出去发给别人。
     const line = formatLogLine(entry, timestamp());
     if (typeof sink.log === "function") sink.log(line);
     if (writer) writer.write(line);
+  }
+
+  const log = function log(entry) {
+    if (
+      dedupeWindowMs > 0 &&
+      entry &&
+      (entry.level === "warn" || entry.level === "error") &&
+      typeof entry.code === "string"
+    ) {
+      const key = `${entry.level}|${entry.code}|${entry.route || ""}`;
+      const at = now();
+      const state = dedupeState.get(key);
+      if (state && at - state.at < dedupeWindowMs) {
+        state.suppressed += 1;
+        return;
+      }
+      // 新窗口（或首次出现）：把上一窗口压掉的条数带上，让「被折叠了多少」可查。
+      const suppressed = state ? state.suppressed : 0;
+      dedupeState.set(key, { at, suppressed: 0 });
+      entry = suppressed > 0 ? { ...entry, suppressed } : entry;
+    }
+    emit(entry);
   };
   // 导出/清空/状态三个路由要用同一个 writer，挂在函数上而不是再建一个：
   // 两个 writer 各自缓存「目录已建」状态，会让轮转判断分叉。

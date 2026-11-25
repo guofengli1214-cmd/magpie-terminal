@@ -885,6 +885,29 @@ function systemPreference() {
 let themeSync = null;
 
 /**
+ * 连续几次「鉴权失败」就停止主题轮询（TASK-FIX17-E2 R1）。
+ *
+ * 为什么是 2 而不是 1：一次 403 可能是服务正在重启的瞬间（旧连接上的
+ * 单个请求），连第二发都 403 才能断言「口令真的作废了」。
+ */
+const THEME_AUTH_LOST_AFTER = 2;
+
+/**
+ * 这个响应算不算「口令失效」。
+ *
+ * `api.theme()` 对 403 走 `writeForbidden` 的 `{code:"FORBIDDEN"}`（服务端故意
+ * 不区分原因），而其它路由的错误码透传成 `HTTP_403`；两种都算。
+ * `NETWORK` 不算：宿主还没起来 / 网络抖动与口令无关，不能因为它停掉主题跟随。
+ *
+ * @param {{ok?:boolean, code?:string}|null|undefined} response
+ */
+function isThemeAuthFailure(response) {
+  return Boolean(
+    response && response.ok === false && (response.code === "FORBIDDEN" || response.code === "HTTP_403"),
+  );
+}
+
+/**
  * 启动主题同步（AC3 的「不刷新就变色」就是由它保证的）。
  *
  * 四个触发点：
@@ -895,9 +918,16 @@ let themeSync = null;
  *
  * 所有定时器都可注入，所以单测不用真等 1 秒（见 test/app/theme-sync.test.mjs）。
  *
+ * TASK-FIX17-E2 R1：**连续 2 次鉴权失败就 stop() 并上报 onAuthLost**。
+ * 服务重启（插件更新 / 开发热重载）后，已打开的旧页面拿的是旧口令，每秒一次的
+ * 轮询只会每秒往服务端刷一条 `AUTH_TOKEN_MISMATCH`；实测 628KB 日志里 5136 条。
+ * 旧页面本来就必须刷新才能恢复，所以这里停掉而不是降频。任何一次成功都清零计数，
+ * 避免一次网络抖动就把主题跟随永久关掉。
+ *
  * @param {object} [deps]
  * @param {() => Promise<object>} [deps.fetchTheme] 取主题的函数（默认走 api.theme）
  * @param {(payload:object) => object} [deps.apply] 应用主题的函数
+ * @param {() => void} [deps.onAuthLost] 口令被确认失效时通知调用方（只调一次）
  * @param {(fn:() => void, ms:number) => any} [deps.setTimer]
  * @param {(handle:any) => void} [deps.clearTimer]
  * @param {number} [deps.intervalMs]
@@ -920,10 +950,14 @@ export function createThemeSync(deps = {}) {
   const clearTimer = typeof deps.clearTimer === "function" ? deps.clearTimer : (h) => clearTimeout(h);
   const intervalMs = Number.isFinite(deps.intervalMs) ? deps.intervalMs : THEME_POLL_MS;
   const events = deps.events === undefined ? (typeof window !== "undefined" ? window : null) : deps.events;
+  const onAuthLost = typeof deps.onAuthLost === "function" ? deps.onAuthLost : null;
 
   let stopped = false;
   let timer = null;
   let inFlight = false;
+  // 连续鉴权失败计数（成功一次就清零，见 tick）。
+  let authFailures = 0;
+  let authLostReported = false;
 
   async function tick() {
     if (stopped || inFlight) return null;
@@ -932,7 +966,28 @@ export function createThemeSync(deps = {}) {
     try {
       const response = await fetchTheme();
       // api.theme() 把非 2xx 统一成 {ok:false}；拿不到就保留当前配色（不白屏）。
-      if (response && response.ok && response.data) result = apply(response.data);
+      if (response && response.ok && response.data) {
+        // 成功一律清零：一次网络抖动不能让主题跟随永久停掉。
+        authFailures = 0;
+        result = apply(response.data);
+      } else if (isThemeAuthFailure(response)) {
+        authFailures += 1;
+        if (authFailures >= THEME_AUTH_LOST_AFTER) {
+          // 口令确实作废：旧页面必须刷新才能恢复，再轮询只会给服务端刷日志。
+          // stop() 清掉已排的那一拍；schedule() 的下一拍检查 stopped 后不再排。
+          stop();
+          if (onAuthLost && !authLostReported) {
+            authLostReported = true;
+            try {
+              onAuthLost();
+            } catch {
+              // 回调抛错不能把轮询链炸掉（它可能做 DOM 操作）。
+            }
+          }
+          return null;
+        }
+      }
+      // 其它失败（NETWORK / BAD_JSON / 其它 4xx）不动计数：下一拍再试。
     } catch {
       // 网络抖动：下一拍再试。主题不是关键路径，绝不让它把页面弄崩。
     } finally {
@@ -944,12 +999,14 @@ export function createThemeSync(deps = {}) {
   function schedule() {
     if (stopped) return;
     timer = setTimer(() => {
+      timer = null;
       tick();
       schedule();
     }, intervalMs);
   }
 
   function onVisible() {
+    if (stopped) return;
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     tick();
   }
@@ -961,17 +1018,23 @@ export function createThemeSync(deps = {}) {
     events.addEventListener("focus", onVisible);
   }
 
+  /**
+   * 停止轮询（幂等）。确认口令失效时由 tick 自己调；页面卸载由调用方调。
+   * 注意必须定义在这个作用域里：它要清的是本实例的 timer 与监听。
+   */
+  function stop() {
+    stopped = true;
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+    if (events && typeof events.removeEventListener === "function") {
+      events.removeEventListener("visibilitychange", onVisible);
+      events.removeEventListener("focus", onVisible);
+    }
+  }
+
   const handle = {
     tick,
-    stop() {
-      stopped = true;
-      if (timer !== null) clearTimer(timer);
-      timer = null;
-      if (events && typeof events.removeEventListener === "function") {
-        events.removeEventListener("visibilitychange", onVisible);
-        events.removeEventListener("focus", onVisible);
-      }
-    },
+    stop,
   };
   tick();
   schedule();
@@ -980,7 +1043,16 @@ export function createThemeSync(deps = {}) {
 
 function startThemeSync() {
   if (themeSync) return themeSync;
-  themeSync = createThemeSync();
+  themeSync = createThemeSync({
+    // 口令确认作废：旧页面本来就要刷新才能恢复（ws 侧给出「请刷新」文案），
+    // 这里只丢掉句柄 + console.info 一行，**不新增 UI、不自动 reload**。
+    onAuthLost: () => {
+      themeSync = null;
+      // 与页面其余内部提示同一出口（logInternal → console.info 一行）：
+      // 不新增 UI、不自动 reload —— 旧页面本来就得用户自己刷新（状态栏已有文案）。
+      logInternal("theme sync stopped: token rejected, refresh the page to reconnect");
+    },
+  });
   if (typeof window !== "undefined") window.addEventListener("beforeunload", () => themeSync && themeSync.stop());
   return themeSync;
 }

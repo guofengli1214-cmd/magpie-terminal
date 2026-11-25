@@ -200,7 +200,7 @@ test("探测抛错：不刷新，且下一次失败仍会 probe → 第二次 40
   assert.equal(target.searchParams.get(STALE_TOKEN_MARK), "1");
 });
 
-test("URL 已带 mt_token_reload：不探测、不刷新，onStatus 收到 staleToken:true", async (t) => {
+test("URL 已带 mt_token_reload：不探测、不刷新，onStatus 收到 staleToken:true 且不再重连", async (t) => {
   const locationRef = fakeLocation(`?${STALE_TOKEN_MARK}=1`);
   let fetchCount = 0;
   const { sockets, statuses } = setup(t, {
@@ -213,12 +213,66 @@ test("URL 已带 mt_token_reload：不探测、不刷新，onStatus 收到 stale
 
   await dropConnectionNTimes(sockets, RELOAD_AFTER_FAILURES);
   await waitFor(() => statuses.some((s) => s.staleToken === true), "staleToken status");
-  await sleep(100);
+  // 旧行为：第 3 次失败时会排一个 2s 的重连定时器（后续 4s/8s… 无限）。
+  // 等过这个 2s 窗口，socket 数必须停在 3 —— 这就是 R2 的「不再重连」。
+  await sleep(2500);
 
   assert.deepEqual(locationRef.replaceCalls, []);
   // 已带标记时根本不该再探：标记本身就是「已经自动刷过一次」的证据。
   assert.equal(fetchCount, 0);
+  assert.equal(sockets.length, RELOAD_AFTER_FAILURES, "确认口令失效后不许再 connect");
   const stale = statuses.find((s) => s.staleToken === true);
   assert.equal(stale.state, "closed");
   assert.equal(stale.attempt, RELOAD_AFTER_FAILURES);
+});
+
+test("URL 已带 mt_token_reload：假定时器推进 60s 不再 connect；retryNow 后能重新连接", async (t) => {
+  // 只 mock setTimeout：客户端重连走它；setImmediate 仍是真的，用来冲微任务。
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const ws = installFakeWebSocket();
+  const statuses = [];
+  let fetchCount = 0;
+  const client = createWsClient({
+    port: 3795,
+    locationRef: fakeLocation(`?${STALE_TOKEN_MARK}=1`),
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return { status: 403 };
+    },
+    onStatus: (status) => statuses.push(status),
+  });
+  t.after(() => {
+    client.close();
+    ws.restore();
+  });
+  client.connect();
+  assert.equal(ws.sockets.length, 1);
+
+  // 三次失败：0.5s → 1s → 2s。第 3 次进入 mark-and-report。
+  ws.sockets[0].emit("close");
+  t.mock.timers.tick(500);
+  assert.equal(ws.sockets.length, 2);
+  ws.sockets[1].emit("close");
+  t.mock.timers.tick(1000);
+  assert.equal(ws.sockets.length, 3);
+  ws.sockets[2].emit("close");
+  // 让 onStatus 之前的同步链走完（probe 在 marked 时根本不该发起）。
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const stale = statuses.filter((s) => s.staleToken === true);
+  assert.equal(stale.length, 1, "staleToken 只上报一次");
+  assert.equal(stale[0].state, "closed");
+  assert.equal(stale[0].attempt, RELOAD_AFTER_FAILURES);
+  assert.equal(fetchCount, 0, "已带标记不 probe");
+
+  // 推进 60 秒：旧行为这里会再建出 4s / 8s / 10s… 一串 socket。
+  t.mock.timers.tick(60000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ws.sockets.length, RELOAD_AFTER_FAILURES, "60 秒内 connect 次数不许增长");
+  assert.equal(statuses.filter((s) => s.staleToken === true).length, 1);
+
+  // 手动重试是唯一的恢复通道（将来「重试」按钮用）。
+  client.retryNow();
+  assert.equal(ws.sockets.length, RELOAD_AFTER_FAILURES + 1, "retryNow 必须立刻重新 connect");
+  assert.equal(ws.sockets[3].readyState, 0, "新 socket 处于 CONNECTING");
 });

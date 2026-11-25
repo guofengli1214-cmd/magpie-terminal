@@ -457,3 +457,158 @@ test("createThemeSync：tick() 返回 apply 的结果（探针可观测）", asy
   assert.deepEqual(result, { applied: "dark" });
   sync.stop();
 });
+
+/* ---------------------------------------------------------------- TASK-FIX17-E2 R1 */
+
+/** 永不触发的定时器：手动调 tick() 驱动，避免 schedule() 自己跑拍。 */
+function inertTimers() {
+  let nextId = 1;
+  return {
+    setTimer() {
+      return nextId++;
+    },
+    clearTimer() {},
+  };
+}
+
+/** 可控响应队列；队列用尽后一直返回最后一条。 */
+function sequenceFetch(responses) {
+  const state = { calls: 0 };
+  const fetchTheme = async () => {
+    const index = Math.min(state.calls, responses.length - 1);
+    state.calls += 1;
+    return responses[index];
+  };
+  return { state, fetchTheme };
+}
+
+const OK_THEME = { ok: true, data: { scheme: "light", textSize: 100, tokens: {} } };
+
+test("createThemeSync（E2 R1）：连续 2 次 403 后停止轮询，第 3 拍不再 fetch", async () => {
+  const timers = fakeTimers();
+  let calls = 0;
+  let authLost = 0;
+  const sync = createThemeSync({
+    fetchTheme: async () => {
+      calls += 1;
+      return { ok: false, code: "FORBIDDEN", userText: "没权限" };
+    },
+    apply: () => ({}),
+    onAuthLost: () => (authLost += 1),
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    events: null,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1, "启动第一拍");
+  assert.equal(timers.pending(), 1);
+
+  await timers.tick(); // 第二拍：第 2 次 403 → stop
+  assert.equal(calls, 2, "第 2 次 403 必须已经发出去才会知道口令失效");
+  assert.equal(authLost, 1, "确认失效时上报一次 onAuthLost");
+  assert.equal(timers.pending(), 0, "stop 必须清掉已排的那一拍");
+
+  // 旧行为：schedule() 永远每秒一拍。现在推进 5 次也不该再有 fetch。
+  for (let i = 0; i < 5; i += 1) await timers.tick();
+  assert.equal(calls, 2, "第 3 拍起不许再 fetch");
+  assert.equal(await sync.tick(), null, "stop 之后手动 tick 也不 fetch");
+  assert.equal(calls, 2);
+  assert.equal(authLost, 1, "onAuthLost 只许调一次");
+});
+
+test("createThemeSync（E2 R1）：HTTP_403 与 FORBIDDEN 都算鉴权失败", async () => {
+  const timers = inertTimers();
+  const { state, fetchTheme } = sequenceFetch([
+    { ok: false, code: "HTTP_403", userText: "" },
+    { ok: false, code: "FORBIDDEN", userText: "" },
+  ]);
+  const sync = createThemeSync({
+    fetchTheme,
+    apply: () => ({}),
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    events: null,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await sync.tick();
+  assert.equal(state.calls, 2);
+  const afterStop = await sync.tick();
+  assert.equal(afterStop, null);
+  assert.equal(state.calls, 2, "两种 403 形态合起来算连续 2 次");
+});
+
+test("createThemeSync（E2 R1）：中间成功一次就清零计数（不能因一次抖动永久停掉）", async () => {
+  const timers = inertTimers();
+  const { state, fetchTheme } = sequenceFetch([
+    { ok: false, code: "FORBIDDEN", userText: "" }, // 启动：第 1 次
+    OK_THEME, // 成功 → 清零
+    { ok: false, code: "FORBIDDEN", userText: "" }, // 第 1 次
+    { ok: false, code: "FORBIDDEN", userText: "" }, // 第 2 次 → stop
+    { ok: false, code: "FORBIDDEN", userText: "" }, // stop 之后不该被取
+  ]);
+  let authLost = 0;
+  let applied = 0;
+  const sync = createThemeSync({
+    fetchTheme,
+    apply: () => (applied += 1),
+    onAuthLost: () => (authLost += 1),
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    events: null,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(state.calls, 1);
+
+  await sync.tick(); // 成功
+  assert.equal(state.calls, 2);
+  assert.equal(applied, 1);
+  assert.equal(authLost, 0);
+
+  await sync.tick(); // 失败 1
+  assert.equal(authLost, 0, "清零之后只失败一次还不能停");
+  await sync.tick(); // 失败 2 → stop
+  assert.equal(authLost, 1);
+
+  assert.equal(await sync.tick(), null);
+  assert.equal(state.calls, 4, "stop 之后不再 fetch（序列第 5 条永远取不到）");
+});
+
+test("createThemeSync（E2 R1）：NETWORK 不算鉴权失败，连续多次也只继续轮询", async () => {
+  const timers = fakeTimers();
+  let calls = 0;
+  let authLost = 0;
+  const sync = createThemeSync({
+    fetchTheme: async () => {
+      calls += 1;
+      return { ok: false, code: "NETWORK", userText: "连不上本地服务" };
+    },
+    apply: () => ({}),
+    onAuthLost: () => (authLost += 1),
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    events: null,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  for (let i = 0; i < 5; i += 1) await timers.tick();
+  assert.equal(calls, 6, "网络错误必须继续每秒重试");
+  assert.equal(authLost, 0, "NETWORK 绝不能被当成口令失效");
+  assert.equal(timers.pending(), 1, "轮询链仍然活着");
+  sync.stop();
+});
+
+test("createThemeSync（E2 R1）：onAuthLost 抛错不影响停止与后续行为", async () => {
+  const timers = inertTimers();
+  const sync = createThemeSync({
+    fetchTheme: async () => ({ ok: false, code: "FORBIDDEN", userText: "" }),
+    apply: () => ({}),
+    onAuthLost: () => {
+      throw new Error("boom");
+    },
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    events: null,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await assert.doesNotReject(() => sync.tick());
+  assert.equal(await sync.tick(), null, "回调抛错也必须已经 stop");
+});

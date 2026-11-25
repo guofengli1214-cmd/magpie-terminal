@@ -46,6 +46,9 @@ export default function createWsClient(options) {
   let attempt = 0;
   let retryTimer = null;
   let closedByUs = false;
+  // TASK-FIX17-E2 R2：口令确认作废后停止自动重连（与 close() 分开记，
+  // 这样 retryNow() 能复位它而 close() 的「彻底停止」语义不被削弱）。
+  let staleHalted = false;
   // 当前是否有一个 /api/health 探测在途。只在 finally 里复位：
   // 宿主重启期间服务可能还没起来，探测失败绝不能锁死后续探测和自动刷新。
   let inFlight = false;
@@ -106,7 +109,8 @@ export default function createWsClient(options) {
 
       if (marked) {
         // 本页已经自动刷过一次：绝不无限刷新，改为让状态栏提示手动刷新。
-        onStatus({ state: "closed", staleToken: true, attempt });
+        // TASK-FIX17-E2 R2：上报之后**不再重连**（见 haltForStaleToken）。
+        haltForStaleToken();
         return;
       }
       // 口令确实作废：加标记刷新一次。
@@ -115,6 +119,24 @@ export default function createWsClient(options) {
       // 硬要求：200 / 403 / 网络错误 / 超时都必须走到这里，
       // 否则一次探测失败会让页面永远不再刷新。
       inFlight = false;
+    }
+  }
+
+  /**
+   * 口令已确认作废（URL 已带刷新标记）：上报 staleToken 并**停止重连**。
+   *
+   * TASK-FIX17-E2 R2：页面本来就必须手动刷新才能恢复，继续每 ≤10s 重连一次
+   * 只会让服务端每 10 秒多一条 `AUTH_TOKEN_MISMATCH`（实测 628KB 日志里 5136 条，
+   * 2MB 轮转约 24 分钟就把真排障日志滚掉）。
+   *
+   * 不是死路：`retryNow()` 会复位 `staleHalted` 并 connect()。
+   */
+  function haltForStaleToken() {
+    onStatus({ state: "closed", staleToken: true, attempt });
+    staleHalted = true;
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
     }
   }
 
@@ -127,7 +149,7 @@ export default function createWsClient(options) {
   }
 
   function scheduleReconnect() {
-    if (closedByUs) return;
+    if (closedByUs || staleHalted) return;
     const delay = Math.min(
       constants.RECONNECT_MAX_MS,
       constants.RECONNECT_BASE_MS * Math.pow(2, Math.min(attempt, 5)),
@@ -140,10 +162,11 @@ export default function createWsClient(options) {
     const marked = hasStaleMark();
     const action = shouldProbeStaleToken(attempt, { inFlight, marked });
     if (action === "mark-and-report") {
-      onStatus({ state: "closed", staleToken: true, attempt });
-    } else if (action === "probe") {
-      void probeStaleToken(marked);
+      // TASK-FIX17-E2 R2：已确认口令失效 → 只上报，不再排重连（见 haltForStaleToken）。
+      haltForStaleToken();
+      return;
     }
+    if (action === "probe") void probeStaleToken(marked);
 
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = setTimeout(() => {
@@ -213,6 +236,9 @@ export default function createWsClient(options) {
       clearTimeout(retryTimer);
       retryTimer = null;
     }
+    // 手动重试是「用户主动要求再试一次」：解开 haltForStaleToken 设的闸。
+    // 口令仍然失效的话，下一次失败会重新走到 haltForStaleToken。
+    staleHalted = false;
     attempt = 0;
     connect();
   }
