@@ -14,6 +14,8 @@
 
 import crypto from "node:crypto";
 
+import { redact } from "../server/log-redact.mjs";
+
 /** 输出上限：头部 1000 + 尾部 3000 = 4000 字符（PROTOCOL §3.2）。 */
 export const OUTPUT_HEAD_CHARS = 1000;
 export const OUTPUT_TAIL_CHARS = 3000;
@@ -580,6 +582,14 @@ export function createCommandRunner(opts = {}) {
         ? buildPowerShellPayload(command, startMark, endMark)
         : buildPayload(command, startMark, endMark);
     // 日志里绝不出现完整命令（PROTOCOL §4.5）。
+    // TASK-FIX17-E R3：前 40 字符也要过 `redact()`。
+    //   为什么：这 40 字符是**用户原话切片**，里面可能带 `-p密码`、`--token=…`
+    //   或 `C:\Users\<name>\…` 这类绝对路径。logger 那边虽然也会再过一次，
+    //   但这里有两条独立理由不能省略：
+    //   ① `createCommandRunner({ log })` 的调用方可以传自己的 sink（单测、探针、
+    //      将来的日志转发），那份 sink 不一定过 `formatLogLine`；
+    //   ② 上游少一次泄漏面总比下游多一次补救划算（security-model §4「单点过滤
+    //      漏一次就够出事」）。
     log({
       level: "info",
       code: "COMMAND_RUN_START",
@@ -587,7 +597,7 @@ export function createCommandRunner(opts = {}) {
       sessionId,
       family,
       commandLength: command.length,
-      commandHead: command.slice(0, 40),
+      commandHead: redact(command.slice(0, 40)),
     });
 
     const startedAt = Date.now();

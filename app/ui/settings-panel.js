@@ -77,6 +77,10 @@ export default function createSettingsPanel(elements) {
   let saveButton = null;
   let effectToggle = null;
   let showApprovalEffect = false;
+  // TASK-FIX17-E：日志 block 的两个按钮与状态行（不是表单字段，不参与保存）。
+  let logExportButton = null;
+  let logClearButton = null;
+  let logStatusLine = null;
 
   /** 开关的可视/可读状态唯一同步点（默认关）。 */
   function setShowEffect(value) {
@@ -251,6 +255,111 @@ export default function createSettingsPanel(elements) {
     }
   }
 
+  /* ---------------- 日志（TASK-FIX17-E R4） ---------------- */
+
+  /** 把字节数写成人类可读（不足 1KB 就写字节，避免显示「0.0 KB」）。 */
+  function formatBytes(bytes) {
+    const value = Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  /** `2026-11-25T00:41:02.512Z` → `11-25 08:41:02`（本地时区，日志给人看）。 */
+  function formatMtime(iso) {
+    if (typeof iso !== "string" || iso.length === 0) return null;
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return null;
+    const pad = (value) => String(value).padStart(2, "0");
+    return (
+      `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+      `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+    );
+  }
+
+  function renderLogStatus(status) {
+    if (!logStatusLine) return;
+    if (!status) {
+      logStatusLine.textContent = "日志状态读取失败（不影响终端使用）。";
+      return;
+    }
+    const parts = [`当前 ${formatBytes(status.totalBytes ?? status.bytes)}`];
+    const when = formatMtime(status.mtime);
+    if (when) parts.push(`最后写入 ${when}`);
+    else parts.push("还没有写入过");
+    if (status.writable === false) parts.push("（写盘不可用，只在宿主日志里）");
+    logStatusLine.textContent = parts.join(" · ");
+  }
+
+  async function refreshLogStatus() {
+    if (!api || typeof api.logsStatus !== "function") return null;
+    const result = await api.logsStatus();
+    if (!result.ok) {
+      renderLogStatus(null);
+      return null;
+    }
+    renderLogStatus(result.data || null);
+    return result.data || null;
+  }
+
+  /**
+   * 导出日志。
+   *
+   * 走「先 fetch 拿 blob、再 `<a download>` 触发」而不是把 URL 丢给
+   * `location.href`：导出接口要带 token 头，Navigation 请求发不了自定义头，
+   * 直接跳过去只会得到一个 403 页面（同样模式见 file-panel 的下载）。
+   */
+  async function exportLogs() {
+    if (!api || typeof api.logsExport !== "function") {
+      setStatus("这个版本的本地服务不支持导出日志。", "error");
+      return;
+    }
+    if (logExportButton) logExportButton.disabled = true;
+    setStatus("正在导出日志…", "info");
+    const result = await api.logsExport();
+    if (logExportButton) logExportButton.disabled = false;
+    if (!result.ok) {
+      setStatus(result.userText || "导出失败", "error");
+      return;
+    }
+    try {
+      const blob = await result.response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = el("a", { href: objectUrl, download: result.filename });
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      // 30 秒后才释放：太早释放会让某些浏览器取消下载。
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+      setStatus(`已导出 ${result.filename}（${formatBytes(blob.size)}）`, "ok");
+    } catch (err) {
+      setStatus(`导出失败：${err && err.message ? err.message : "下载未能开始"}`, "error");
+    }
+    await refreshLogStatus();
+  }
+
+  /** 清空日志。二次确认：日志删了就找不回来（排查现场通常只有一次机会）。 */
+  async function clearLogs() {
+    if (!api || typeof api.logsClear !== "function") {
+      setStatus("这个版本的本地服务不支持清空日志。", "error");
+      return;
+    }
+    const confirmed = typeof window === "undefined" || typeof window.confirm !== "function"
+      ? true
+      : window.confirm("清空本插件的日志文件？清空后无法恢复（导出过的副本不受影响）。");
+    if (!confirmed) return;
+    if (logClearButton) logClearButton.disabled = true;
+    setStatus("正在清空日志…", "info");
+    const result = await api.logsClear();
+    if (logClearButton) logClearButton.disabled = false;
+    if (!result.ok) {
+      setStatus(result.userText || "清空失败", "error");
+      return;
+    }
+    setStatus("日志已清空", "ok");
+    await refreshLogStatus();
+  }
+
   /* ---------------- 结构 ---------------- */
 
   function build() {
@@ -412,6 +521,42 @@ export default function createSettingsPanel(elements) {
     blockGateway.appendChild(gatewayInfo);
     body.appendChild(blockGateway);
 
+    /* 6. 日志（TASK-FIX17-E R4）：导出 / 清空 / 状态。
+       放在末位：前面全是「决定 AI 怎么动」的设置，日志是事后排查用的，
+       不该抢在第一屏。两个按钮都不是表单字段，与「保存」无关，
+       所以切完这个 block 直接点取消退出也不会丢掉什么。 */
+    const blockLogs = el("section", { className: "settings-block", "data-block": "logs" });
+    blockLogs.appendChild(el("h3", { className: "settings-block-title" }, "日志"));
+    blockLogs.appendChild(
+      el(
+        "p",
+        { className: "settings-block-hint" },
+        "日志只保存在本机。导出前会自动去掉 token、密码与完整路径，不含你在终端里输入的内容。",
+      ),
+    );
+    const logRow = el("div", { className: "settings-row settings-log-actions" });
+    logExportButton = el(
+      "button",
+      { type: "button", "data-role": "logs-export" },
+      "导出日志",
+    );
+    logExportButton.addEventListener("click", () => void exportLogs());
+    logClearButton = el(
+      "button",
+      { type: "button", "data-role": "logs-clear" },
+      "清空日志",
+    );
+    logClearButton.addEventListener("click", () => void clearLogs());
+    logRow.append(logExportButton, logClearButton);
+    blockLogs.appendChild(logRow);
+    logStatusLine = el(
+      "p",
+      { className: "settings-block-hint", "data-role": "logs-status" },
+      "正在读取日志状态…",
+    );
+    blockLogs.appendChild(logStatusLine);
+    body.appendChild(blockLogs);
+
     modal.appendChild(body);
 
     const foot = el("div", { className: "settings-foot" });
@@ -475,6 +620,9 @@ export default function createSettingsPanel(elements) {
       basePromptInput.value = "";
       setShowEffect(false);
       renderGateway();
+      // 配置读不到也要把日志状态拉回来：这两条链路互不依赖（一个是 config.json，
+      // 一个是日志文件），一起失败时用户至少还能导出日志去查为什么。
+      await refreshLogStatus();
       return;
     }
     const config = configResult.data || {};
@@ -492,6 +640,8 @@ export default function createSettingsPanel(elements) {
     setShowEffect(config.showApprovalEffect === true);
     renderGateway();
     setStatus("", null);
+    // 日志 block 的状态单独拉：它读的是文件 stat，和 config/models 无关。
+    await refreshLogStatus();
   }
 
   async function save() {

@@ -39,6 +39,8 @@ import { handleAiPost } from "./routes/ai.mjs";
 import { handleLocalFs, handleRemoteFs } from "./routes/fs.mjs";
 import { isStaticPath, readAppFile, sendStatic } from "./static.mjs";
 import { attachWebSocket } from "./ws.mjs";
+import { LOG_FILE_NAME, LOG_ROTATED_NAME, createLogWriter, formatLogLine } from "./logger.mjs";
+import { redactText } from "./log-redact.mjs";
 import { readMagpieSettings, normalizeAccent } from "../config/magpie-settings.mjs";
 import { TITLE_MAX, createSessionStore } from "../ai/sessions.mjs";
 import { detectShell, loadNodePty, LOCKED_NODE_PTY_VERSION } from "../pty/bridge.mjs";
@@ -90,19 +92,43 @@ function timestamp() {
 
 /**
  * 单行 JSON 日志；绝不记 token 原文与终端输入。
+ *
+ * TASK-FIX17-E：两条输出并列，缺一不可。
+ *   ① stdout（`sink.log`）：宿主仍会收进它自己的 `app.log`，是「插件起来了」
+ *      那条健康标志行（`plugin: [magpie-terminal] listening on …`）的来源，
+ *      删了就等于拆掉现场排障的第 1 步；
+ *   ② 自有文件（`%LOCALAPPDATA%\magpie\logs\show-terminal.log`）：带 2MB 轮转，
+ *      可由设置页导出/清空。**写盘前已经过 `redact()`**，落地即安全。
+ *
+ * 写盘失败只 warn 一次（在 `createLogWriter` 里），绝不抛：日志是旁路，
+ * 它不该有能力让服务退出。
+ *
+ * @param {Console|{log?:Function,warn?:Function}} [sink]
+ * @param {{writer?: ReturnType<typeof createLogWriter>, file?: boolean}} [options]
  */
-export function makeLogger(sink = console) {
-  return function log(entry) {
-    const record = { ts: timestamp(), level: "info", ...entry };
-    if (record.msg === undefined) record.msg = "";
-    const line = JSON.stringify(record, (key, value) => {
-      if (key === "err" && value && typeof value === "object") {
-        return { name: value.name, message: value.message, stack: value.stack };
-      }
-      return value;
-    });
+export function makeLogger(sink = console, options = {}) {
+  // `file: false` 给单测用：只打 stdout，不碰磁盘（也不会污染真实日志文件）。
+  const writer =
+    options.writer ||
+    (options.file === false
+      ? null
+      : createLogWriter({
+          warn: (message) => {
+            if (sink && typeof sink.warn === "function") sink.warn(message);
+            else console.warn(message);
+          },
+        }));
+  const log = function log(entry) {
+    // 同一份 `entry` 走两条路：stdout 与文件都用脱敏后的行。
+    // 为什么 stdout 也脱敏：宿主那份 `app.log` 同样会被人导出去发给别人。
+    const line = formatLogLine(entry, timestamp());
     if (typeof sink.log === "function") sink.log(line);
+    if (writer) writer.write(line);
   };
+  // 导出/清空/状态三个路由要用同一个 writer，挂在函数上而不是再建一个：
+  // 两个 writer 各自缓存「目录已建」状态，会让轮转判断分叉。
+  log.writer = writer;
+  return log;
 }
 
 /**
@@ -145,6 +171,37 @@ function writeJson(res, status, payload, extraHeaders = {}, cors = {}) {
     ...extraHeaders,
   });
   res.end(body);
+}
+
+/**
+ * 附件下载（`GET /api/logs/export`）。
+ *
+ * 与 `writeJson` 分开的原因：
+ * - content-type 是纯文本，不能被 JSON 序列化；
+ * - `Content-Disposition: attachment` + `filename` 是浏览器弹出下载对话框的
+ *   唯一可靠信号（前端自己拼 blob 也行，但服务端给全了才能在 curl 里直接用）；
+ * - 比 JSON 多两份头：`content-disposition` 与显式 `content-length`。
+ */
+function writeAttachment(res, body, filename, cors = {}) {
+  const buffer = Buffer.from(body, "utf8");
+  res.writeHead(200, {
+    "content-type": "text/plain; charset=utf-8",
+    "content-length": buffer.length,
+    "content-disposition": `attachment; filename="${filename}"`,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    ...cors,
+  });
+  res.end(buffer);
+}
+
+/** 导出文件名：`show-terminal-logs-<YYYYMMDD-HHmmss>.log`（卡片逐字要求）。 */
+export function exportLogFilename(at = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  const stamp =
+    `${at.getFullYear()}${pad(at.getMonth() + 1)}${pad(at.getDate())}` +
+    `-${pad(at.getHours())}${pad(at.getMinutes())}${pad(at.getSeconds())}`;
+  return `show-terminal-logs-${stamp}.log`;
 }
 
 function writeForbidden(res, cors = {}) {
@@ -692,6 +749,14 @@ export async function startServer(options = {}) {
     : 3480;
   const host = "127.0.0.1";
   const log = options.log || makeLogger();
+  /**
+   * 日志 writer（TASK-FIX17-E）：三个 `/api/logs*` 路由与 logger 用同一个实例。
+   *
+   * 注入的 `options.log`（测试/doctor 的静默 logger）没有 writer 时就返回 null，
+   * 三个路由退化成「空日志 / 状态全0 / 清空0个」——**不**额外建一个：
+   * 否则跑一遍单测就会在用户真实日志目录里凭空造文件。
+   */
+  const logWriter = () => (log && log.writer ? log.writer : null);
   const token = options.token || generateToken();
 
   const shell = detectShell({ shell: options.shell });
@@ -1586,6 +1651,65 @@ export async function startServer(options = {}) {
       if (req.method === "POST" && pathname === "/api/ai") {
         await readBody(req, res);
         if (!res.writableEnded) handleAiPost(req, res);
+        return;
+      }
+
+      /* --------------------------------------------------------- *
+       * 日志（TASK-FIX17-E R4）：导出 / 状态 / 清空。
+       * 和其它 `/api/*` 一样过了 L2/L3/L4 三道门（没 token 先 403）。
+       *
+       * 三个路由都只碰**本插件自己的** `show-terminal.log`：宿主那份
+       * `app.log` 里混着别的插件，我们不读也不导（超出本卡范围）。
+       * --------------------------------------------------------- */
+      if (pathname === "/api/logs/export" && req.method === "GET") {
+        const writer = logWriter();
+        // 双保险：写入时已脱敏，导出前整文再过一遍（历史文件可能是旧版本落的）。
+        const body = writer ? redactText(writer.readAll()) : "";
+        writeAttachment(res, body, exportLogFilename(), cors);
+        log({
+          level: "info",
+          code: "LOGS_EXPORTED",
+          msg: "logs exported",
+          route: "GET /api/logs/export",
+          bytes: Buffer.byteLength(body),
+        });
+        return;
+      }
+
+      if (pathname === "/api/logs/status" && req.method === "GET") {
+        const writer = logWriter();
+        const status = writer ? writer.status() : { bytes: 0, mtime: null, maxBytes: null };
+        writeJson(
+          res,
+          200,
+          {
+            file: LOG_FILE_NAME,
+            rotatedFile: LOG_ROTATED_NAME,
+            bytes: status.bytes,
+            mtime: status.mtime,
+            rotatedBytes: status.rotatedBytes || 0,
+            maxBytes: status.maxBytes,
+            // 导出时 `.1` 会拼在主文件之前，界面上需要能如实提示总量。
+            totalBytes: (status.bytes || 0) + (status.rotatedBytes || 0),
+            writable: status.writable !== false,
+          },
+          {},
+          cors,
+        );
+        return;
+      }
+
+      if (pathname === "/api/logs" && req.method === "DELETE") {
+        const writer = logWriter();
+        const cleared = writer ? writer.clear() : 0;
+        log({
+          level: "info",
+          code: "LOGS_CLEARED",
+          msg: "logs cleared",
+          route: "DELETE /api/logs",
+          files: cleared,
+        });
+        writeJson(res, 200, { ok: true, cleared }, {}, cors);
         return;
       }
 

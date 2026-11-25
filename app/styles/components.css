@@ -1544,6 +1544,25 @@ button[disabled] {
   background: var(--term-selection);
 }
 
+/* 设置页「日志」block（TASK-FIX17-E R4）：两个按钮靠左、同一行。
+   只新增这一段，不改动上面的既有段落；颜色一律走变量（不引入任何字面量）。 */
+.settings-block .settings-log-actions {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.settings-block .settings-log-actions button {
+  flex: 0 0 auto;
+  padding: 2px 12px;
+}
+
+.settings-block [data-role="logs-status"] {
+  font-family: var(--term-mono);
+  font-size: 11px;
+  color: var(--term-muted);
+  word-break: break-word;
+}
+
 /* 确认卡（模态）：Esc 关闭、焦点陷阱由 JS 负责。 */
 
 [data-role="confirm-backdrop"] {

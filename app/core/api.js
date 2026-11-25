@@ -224,6 +224,61 @@ export default {
     return sendJson("/api/theme/bridge", "POST", { tokens, dark });
   },
 
+  /**
+   * 日志（TASK-FIX17-E R4）。
+   *
+   * `logsExport()` 返回原始 `Response` 而不是 JSON：导出的是纯文本附件，
+   * `content-disposition` 里的文件名只有调用方（`<a download>`）用得上。
+   * 交由 UI 判 `ok` / 取 blob，不在这一层猜。
+   */
+  logsStatus() {
+    return getJson("/api/logs/status");
+  },
+  /** DELETE /api/logs -> {ok, cleared} */
+  logsClear() {
+    return del("/api/logs");
+  },
+  /**
+   * GET /api/logs/export：返回 `{ok, response, filename}` / `{ok:false, code, userText}`。
+   *
+   * 为什么不直接在这里 `createObjectURL`：触发下载要用到 DOM，而 api.js
+   * 在单测里是裸 Node（只有 `document.querySelector` 桩），把 DOM 操作留在 UI 层
+   * 才能让这一层保持可单测。
+   */
+  async logsExport() {
+    let response;
+    try {
+      response = await fetch("/api/logs/export", {
+        method: "GET",
+        credentials: "omit",
+        headers: { accept: "text/plain", "x-magpie-term-token": readToken() },
+      });
+    } catch (err) {
+      return apiError("NETWORK", `连不上本地服务：${err && err.message ? err.message : "网络错误"}`);
+    }
+    if (!response.ok) {
+      let body = null;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+      return apiError(
+        body && typeof body.code === "string" ? body.code : `HTTP_${response.status}`,
+        body && typeof body.userText === "string"
+          ? body.userText
+          : `本地服务返回 HTTP ${response.status}，请重试。`,
+      );
+    }
+    const disposition = response.headers.get("content-disposition") || "";
+    const match = /filename="?([^";]+)"?/.exec(disposition);
+    return {
+      ok: true,
+      response,
+      filename: match ? match[1] : "show-terminal-logs.log",
+    };
+  },
+
   /* ---- AI 会话（TASK-V4-H §5.4） ---- */
 
   /** GET /api/ai/sessions?current=<id> -> { sessions } */

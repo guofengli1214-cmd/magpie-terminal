@@ -25,6 +25,7 @@
       "en": "A real terminal with an AI command assistant",
       "zh": "带 AI 助手的真终端"
     },
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzExMTMxOCIvPgogIDxwYXRoIGQ9Ik0xNiAyMmwxMCAxMC0xMCAxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGFkZTgwIiBzdHJva2Utd2lkdGg9IjUiCiAgICAgICAgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPHJlY3QgeD0iMzIiIHk9IjQwIiB3aWR0aD0iMTYiIGhlaWdodD0iNSIgcng9IjIuNSIgZmlsbD0iIzRhZGU4MCIvPgo8L3N2Zz4K",
     "page": {
       "title": "Terminal",
       "titles": {
@@ -33,7 +34,7 @@
         "ja": "ターミナル"
       },
       "file": "page/index.html",
-      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4IiB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCI+PHJlY3Qgd2lkdGg9IjEyOCIgaGVpZ2h0PSIxMjgiIHJ4PSIyOCIgZmlsbD0iIzFhMWQyMyIvPjxwYXRoIGQ9Ik0yOCAzOGgxNnYxMkgyOHptMjAgMjRoMzJ2MTBINTh6IiBmaWxsPSIjZmZmIi8+PHBhdGggZD0iTTI4IDI4bDMwIDI0LTMwIDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM3ZGQzZmMiIHN0cm9rZS13aWR0aD0iOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+",
+      "icon": "page/icon.svg",
       "service": {
         "port": 3480,
         "option": "port"
