@@ -14,6 +14,7 @@ import createSettingsPanel from "./ui/settings-panel.js";
 import createRail from "./ui/rail.js";
 import createHostsPanel from "./ui/hosts-panel.js";
 import createFilePanel from "./ui/file-panel.js";
+import createCommandOrb from "./ui/command-orb.js";
 
 const root = document.querySelector('[data-role="app"]');
 const railHost = document.querySelector('[data-role="rail"]');
@@ -56,6 +57,7 @@ let terminalView = null;
 let wsClient = null;
 let hostsPanel = null;
 let filePanel = null;
+let commandOrb = null;
 // 远程会话建连中的 hostId → 等 session.created 时补上的元数据（用于建标签后同步面板）。
 let pendingRemoteHost = null;
 // 刚发出、还没收到 session.created 的 pty.create 数。命中这些帧时只建标签并 attach，
@@ -695,7 +697,6 @@ function setupKeyboard() {
 let pendingAgentRequestId = null;
 // V4-H：上一次已切过 AI 会话的终端 id（避免 store 每帧变更都重算会话）。
 let lastFocusedTerminalId = null;
-
 /* ------------------------------------------------------------------ *
  * V4-H：AI 会话列表 / 终端归属 / 会话切换
  * ------------------------------------------------------------------ */
@@ -803,6 +804,75 @@ function closeDrawer() {
 function toggleAi() {
   if (store.getSnapshot().aiOpen === true) closeDrawer();
   else openDrawer({ focus: true });
+}
+
+/**
+ * `agent.run` 的唯一发送实现（TASK-FIX17-L2 R6）。
+ *
+ * 抽屉与悬浮球都走这里，所以两处的门禁、上下文组装、model 透传、
+ * pendingAgentRequestId 维护完全一致。第三个参数决定发送成功后要不要
+ * 把 AI 抽屉打开：抽屉默认 true（**原行为一字不改**），悬浮球传 false
+ * （用户原话：球里发送不许自动打开 AI 栏）。
+ *
+ * @param {{question: string, model?: string|null}} payload
+ * @param {{openDrawer?: boolean}} [options]
+ * @returns {"sent"|"blocked-pending"|"no-active"|"send-failed"}
+ */
+function askAgent(payload, { openDrawer: shouldOpenDrawer = true } = {}) {
+  const { question, model } = payload || {};
+  // 门禁（修复 B/D6）：有待确认时不许开新任务，一个状态都不动。
+  const before = agentStore.getSnapshot();
+  if (before.pendingApprovals.length > 0) {
+    statusBar.setNotice(constants.BLOCKED_PENDING_TEXT, "warn");
+    return "blocked-pending";
+  }
+  const active = store.getActive();
+  if (!active) {
+    statusBar.setNotice("还没有可用的终端标签：先点「+」新建一个。", "warn");
+    return "no-active";
+  }
+  const requestId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const meta = terminalMetaOf(active);
+  const context = {
+    cwd: active.cwd || "",
+    shell: active.shell || null,
+    recentOutput: terminalView.recentOutput(active.id, constants.RECENT_OUTPUT_LINES) || "",
+    sessionId: active.id,
+    terminalKind: meta.kind,
+    ...(meta.hostId ? { hostId: meta.hostId, hostName: meta.hostName, hostAddr: meta.hostAddr } : {}),
+  };
+  const frame = { type: "agent.run", requestId, question, context };
+  // TASK-V4-H §5.2：续哪个 AI 会话（草稿不带：让服务端按终端兜底或新建）。
+  const aiSessionId = agentStore.currentServerSessionId();
+  if (aiSessionId) frame.sessionId = aiSessionId;
+  if (model) frame.model = model;
+  const sent = wsClient.send(frame);
+  if (!sent) {
+    statusBar.setNotice("AI 请求没发出去：连接还没就绪。点状态栏「重连」后重试。", "error");
+    return "send-failed";
+  }
+  pendingAgentRequestId = requestId;
+  // 有活动任务时 beginRun 只记下这次请求、不清当前状态（等 agent.start 再切）。
+  const begun = agentStore.beginRun({ requestId, question });
+  if (begun && begun.adopted === false) {
+    logInternal(`上一个任务还在跑，本次 agent.run 等 agent.start 再接管（requestId=${requestId}）`);
+  }
+  if (shouldOpenDrawer) openDrawer();
+  return "sent";
+}
+
+/** 忙碌态的唯一判定（抽屉的 updateActionButton 用的是同一对值）。 */
+function agentBusy(snapshot) {
+  if (!snapshot) return false;
+  return snapshot.status === "running" || snapshot.status === "awaiting";
+}
+
+/** 停止当前任务的唯一实现（抽屉与悬浮球共用，行为与原先的 onStop 逐字一致）。 */
+function stopAgent() {
+  const snapshot = agentStore.getSnapshot();
+  if (!snapshot.requestId) return;
+  wsClient.send({ type: "agent.stop", requestId: snapshot.requestId });
+  agentStore.markStopped();
 }
 
 /** #root[data-ai-open] / 把手 aria-expanded 的唯一同步点。
@@ -1202,47 +1272,9 @@ function init() {
     },
     // 发 agent.run（字段逐字按 PROTOCOL-AGENT.md §3.1）。
     // 返回值："sent" | "blocked-pending" | "no-active" | "send-failed"（ai-drawer 按它决定是否清输入框）。
-    onAsk: ({ question, model }) => {
-      // 门禁（修复 B/D6）：有待确认时不许开新任务，一个状态都不动。
-      const before = agentStore.getSnapshot();
-      if (before.pendingApprovals.length > 0) {
-        statusBar.setNotice("先处理上面的待确认命令（或点停止），再问新的。", "warn");
-        return "blocked-pending";
-      }
-      const active = store.getActive();
-      if (!active) {
-        statusBar.setNotice("还没有可用的终端标签：先点「+」新建一个。", "warn");
-        return "no-active";
-      }
-      const requestId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const meta = terminalMetaOf(active);
-      const context = {
-        cwd: active.cwd || "",
-        shell: active.shell || null,
-        recentOutput: terminalView.recentOutput(active.id, constants.RECENT_OUTPUT_LINES) || "",
-        sessionId: active.id,
-        terminalKind: meta.kind,
-        ...(meta.hostId ? { hostId: meta.hostId, hostName: meta.hostName, hostAddr: meta.hostAddr } : {}),
-      };
-      const frame = { type: "agent.run", requestId, question, context };
-      // TASK-V4-H §5.2：续哪个 AI 会话（草稿不带：让服务端按终端兜底或新建）。
-      const aiSessionId = agentStore.currentServerSessionId();
-      if (aiSessionId) frame.sessionId = aiSessionId;
-      if (model) frame.model = model;
-      const sent = wsClient.send(frame);
-      if (!sent) {
-        statusBar.setNotice("AI 请求没发出去：连接还没就绪。点状态栏「重连」后重试。", "error");
-        return "send-failed";
-      }
-      pendingAgentRequestId = requestId;
-      // 有活动任务时 beginRun 只记下这次请求、不清当前状态（等 agent.start 再切）。
-      const begun = agentStore.beginRun({ requestId, question });
-      if (begun && begun.adopted === false) {
-        logInternal(`上一个任务还在跑，本次 agent.run 等 agent.start 再接管（requestId=${requestId}）`);
-      }
-      openDrawer();
-      return "sent";
-    },
+    // TASK-FIX17-L2 R6：主体抽到模块级的 askAgent()，抽屉与悬浮球共用同一条链路；
+    // 唯一差别是第三个参数 `{openDrawer}`（抽屉默认 true，球的默认行为一个字不改）。
+    onAsk: (payload, opts) => askAgent(payload, opts),
     // 审批按钮 → agent.approve（scope 默认 once；requestId 必须取当前活动任务）。
     onApprove: ({ approvalId, approved, scope }) => {
       const snapshot = agentStore.getSnapshot();
@@ -1264,12 +1296,7 @@ function init() {
       agentStore.removeApproval(approvalId, Boolean(approved));
       return true;
     },
-    onStop: () => {
-      const snapshot = agentStore.getSnapshot();
-      if (!snapshot.requestId) return;
-      wsClient.send({ type: "agent.stop", requestId: snapshot.requestId });
-      agentStore.markStopped();
-    },
+    onStop: () => stopAgent(),
     // 旧 ai.reply 的确认卡走本地直接写 PTY（不发 ai.confirm，保持原行为）。
     onExecuteLegacy: (command) => {
       const active = store.getActive();
@@ -1330,12 +1357,30 @@ function init() {
   agentStore.subscribe((snapshot) => {
     syncAgentBadge(snapshot);
     store.setAgentStatus(snapshot.status);
+    // TASK-FIX17-L2 R6：悬浮球的忙碌态与抽屉同源（同一个 snapshot，不另判）。
+    if (commandOrb) commandOrb.setBusy(agentBusy(snapshot));
     // 切到一个还没还原过、也没本地内容的会话 → 拉服务端全文填时间线。
     const id = snapshot.currentSessionId;
     if (id && !restoredSessionIds.has(id) && (!snapshot.turns || snapshot.turns.length === 0)) {
       if (snapshot.sessions.some((item) => item.id === id)) void restoreSessionIfNeeded(id);
     }
   });
+
+  // TASK-FIX17-L2 R6：终端底部居中的悬浮球。
+  // 与抽屉共用 askAgent（发送）/ stopAgent（停止）两条链路，只是不带 openDrawer。
+  commandOrb = createCommandOrb({
+    onAsk: (payload, opts) => askAgent(payload, opts),
+    onStop: () => stopAgent(),
+    // 模型跟抽屉当前选中的一致（用户没选就是 null，交给服务端默认）。
+    getModel: () => (aiDrawer ? aiDrawer.selectedModel() : null),
+    getBusy: () => agentBusy(agentStore.getSnapshot()),
+    getPendingCount: () => {
+      const snapshot = agentStore.getSnapshot();
+      return Array.isArray(snapshot.pendingApprovals) ? snapshot.pendingApprovals.length : 0;
+    },
+    onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
+  });
+  commandOrb.setBusy(agentBusy(agentStore.getSnapshot()));
 
   // V4-H：打开页面就拉一次会话列表（画下拉），并给首个标签绑上会话。
   void refreshAiSessions().then(() => focusTerminalSession());

@@ -3976,3 +3976,208 @@ html[data-files-open="true"] [data-role="ai-handle"] {
   background: var(--term-raise);
   color: var(--term-fg-2);
 }
+
+/* =====================================================================
+ * 终端悬浮球（TASK-FIX17-L2，用户问题清单第 2 条）
+ *
+ * 一条铁律：**只允许追加**，不许改上面任何一行。本段的选择器全部以
+ * `.command-orb` / `.orb-` 开头，不会命中既有元素。
+ *
+ * 几何（PRD R2）：
+ *   position: fixed + left:50% + translateX(-50%) → 水平居中，且**不参与任何流式布局**
+ *   bottom: calc(状态栏高度 + 18px) → 落在状态栏之上，不遮状态栏文字
+ *   收起 38×38 圆球；展开 360×40 胶囊；过渡 160ms ease 只动 width/opacity/transform
+ *
+ * 三条用户原话（PRD R3）在 CSS 里的落点：
+ *   1. 鼠标移上去必定展开 —— 展开只由 [data-state] 决定，与有没有内容无关；
+ *   2. 有内容移开不收回，只变半透明 —— [data-state="open-muted"] 仍是胶囊宽度，只降 opacity；
+ *   3. 球里发送不打开 AI 栏 —— 纯 JS 行为（app.js 的 askAgent 第三参），CSS 不参与。
+ *
+ * 颜色全部走变量（F 批规矩：本段不许出现任何颜色字面量）：
+ *   底色 --term-panel-solid / 边框 --term-line-3 / 聚焦 --term-focus /
+ *   忙碌红环 --term-danger + 深心 --term-busy-core。
+ * ===================================================================== */
+
+.command-orb {
+  position: fixed;
+  /* 水平居中于**终端区**，不是视口：左侧 rail 固定占 --term-rail-width（48px），
+     `.main`（终端所在格）从 rail 右边开始，所以终端区中心 = 视口中心 + rail/2。
+     只写 left:50% 会偏左 24px（AC1 的 ≤2px 立刻不过），这里把 rail 那一半补上。
+     用 fixed 而不是 absolute：fixed 不参与任何文档流，绝不可能撑出滚动区。 */
+  left: calc(50% + var(--term-rail-width) / 2);
+  /* 状态栏 26px + 18px 间距：球底边离状态栏还有 18px，展开成 40px 高的胶囊时也不压字。 */
+  bottom: calc(var(--term-statusbar-height) + 18px);
+  transform: translateX(-50%);
+  z-index: 30; /* 状态栏之上、AI 抽屉（30+）/设置（40）之下 */
+  box-sizing: border-box;
+  width: 38px;
+  height: 38px;
+  display: block;
+  /* 只过渡这三样：宽度、不透明度、位移。绝不过渡 height，也不会引起布局位移。 */
+  transition: width 0.16s ease, opacity 0.16s ease, transform 0.16s ease;
+  opacity: 0.72;
+  /* 关掉纵向滚动：容器永远是 40px 高的定高块，内部不许把自己撑高。 */
+  overflow: hidden;
+}
+
+/* 展开态：360×40 胶囊。宽度与高度一起变，但 height 参与的是 fixed 定位元素的
+   自身盒尺寸，不影响文档流（父级是 body，且 fixed 不占位）。 */
+.command-orb[data-state="open"],
+.command-orb[data-state="open-muted"] {
+  width: 360px;
+  height: 40px;
+  opacity: 1;
+}
+
+/* 用户原话 2 的落点：有内容 + 鼠标/焦点都不在 → 只降不透明度到 .55，**保持胶囊**。 */
+.command-orb[data-state="open-muted"] {
+  opacity: 0.55;
+}
+
+/* 收起态的圆球：整块可点（触屏 / 键盘都能触发）。 */
+.orb-ball {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--term-line-3);
+  border-radius: 50%;
+  background: var(--term-panel-solid);
+  color: var(--term-fg-2);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.orb-ball > svg {
+  display: block;
+  pointer-events: none;
+}
+
+.orb-ball:hover {
+  color: var(--term-fg);
+  border-color: var(--term-focus);
+}
+
+.orb-ball:focus-visible {
+  outline: 2px solid var(--term-focus);
+  outline-offset: 2px;
+}
+
+/* 展开态隐藏圆球、显示表单；收起态反之。两者始终都在 DOM 里（不重建节点）。 */
+.command-orb[data-state="open"] .orb-ball,
+.command-orb[data-state="open-muted"] .orb-ball,
+.command-orb[data-state="ball"] .orb-form {
+  display: none;
+}
+
+/* 展开态的外形：胶囊。圆角取 20px（= 高度 40 的一半），收起时仍是 50%（正圆）。 */
+.command-orb[data-state="open"] .orb-form,
+.command-orb[data-state="open-muted"] .orb-form {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--term-line-3);
+  border-radius: 20px;
+  background: var(--term-panel-solid);
+  color: var(--term-fg);
+}
+
+/* 展开态聚焦：边框换 --term-focus（F 批：焦点环不能拿 accent 当前景）。 */
+.command-orb[data-state="open"] .orb-form:focus-within,
+.command-orb[data-state="open-muted"] .orb-form:focus-within {
+  border-color: var(--term-focus);
+}
+
+/* 单行自适应输入框：高度锁定在 40px 胶囊的内径里，不出滚动条。 */
+.orb-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  max-height: 100%;
+  box-sizing: border-box;
+  padding: 10px 0;
+  border: 0;
+  outline: none;
+  background: none;
+  resize: none;
+  overflow: hidden;
+  font: 12.5px / 1.4 var(--magpie-font);
+  color: var(--term-fg);
+}
+
+.orb-input::placeholder {
+  color: var(--term-dim);
+  opacity: 1;
+}
+
+/* 动作按钮：与抽屉 `composer-action` 同一套视觉语言（空闲实心主色圆 + ↑）。 */
+.orb-action {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--term-accent);
+  color: var(--term-accent-fg);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.orb-action > svg {
+  display: block;
+  pointer-events: none;
+}
+
+.orb-action:hover {
+  background: var(--term-fg-2);
+  color: var(--term-bg);
+}
+
+/* 忙碌：红环 + 深色圆心（与抽屉停止按钮完全同一套变量，R5）。 */
+.orb-action[data-state="busy"] {
+  background: var(--term-busy-core);
+  border: 3px solid var(--term-danger);
+  color: var(--term-danger);
+}
+
+.orb-action[data-state="busy"]:hover {
+  background: var(--term-busy-core);
+  box-shadow: 0 0 0 3px var(--term-danger-soft);
+}
+
+/* 忙碌态把圆球本身也变成「红环 + 深色圆心」的停止按钮（R5：收起时也能一眼看出在跑）。 */
+.command-orb[data-busy="true"] .orb-ball {
+  background: var(--term-busy-core);
+  border: 3px solid var(--term-danger);
+  color: var(--term-danger);
+}
+
+.command-orb[data-busy="true"] .orb-ball:hover {
+  box-shadow: 0 0 0 3px var(--term-danger-soft);
+}
+
+/* 窄窗：360px 胶囊放不下时收到视口内（仍是悬浮层，不产生横向滚动）。 */
+@media (max-width: 420px) {
+  .command-orb[data-state="open"],
+  .command-orb[data-state="open-muted"] {
+    width: calc(100vw - 24px);
+  }
+}
+
+/* 减少动态效果偏好：去掉过渡，形态直接切换。 */
+@media (prefers-reduced-motion: reduce) {
+  .command-orb {
+    transition: none;
+  }
+}
