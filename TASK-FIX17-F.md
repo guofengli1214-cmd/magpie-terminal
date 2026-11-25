@@ -40,4 +40,5 @@ Active task: `.trellis/tasks/11-25-task-f-ux-review/`
 - Windows Terminal 配置：`%LOCALAPPDATA%/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json`（JSONC，含注释）。
 - magpie 主题设置：`~/.config/magpie/settings.json`（`theme`: system|light|dark、`accent`、`textSize`、`lang`）。
 - 真浏览器探针已有：`scripts/browser-probe.mjs`（自带极简 CDP 客户端，Chrome/Edge 路径内置）。核验用它或扩展它。
+- **深浅色截图怎么切（别改用户真实配置）**：真正配色由 `GET /api/theme` 决定，客户端 prefer 只来自 `app/app.js:875-882 systemPreference()` 的 `matchMedia("(prefers-color-scheme: dark)")`。所以用 CDP `Emulation.setEmulatedMedia({features:[{name:"prefers-color-scheme",value:"dark"|"light"}]})` 再刷新页面即可拿到两套配色。**不要写 `~/.config/magpie/settings.json`**（那是用户真实设置）。URL 上的 `?theme=dark|light` 只加 `colorScheme` 与 `theme-dark/theme-light` 类（`app/app.js:76-90`），不改变实际调色板，单靠它截图会得到"类名对、颜色不对"的假象。
 - magpie CSS 变量真名：`--bg --fg --line --accent --accent-fg --card --sub --muted --surface --surface-2 --edge --warn --bad --ok --ring`。
