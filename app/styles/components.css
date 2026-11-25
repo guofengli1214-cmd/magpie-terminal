@@ -841,8 +841,50 @@ button[disabled] {
 }
 
 /* ------------------------------------------------------------------ *
- * 输入区（V4-E）：composer-box 边框 + 内部提示 + 自动增高 + 拖拽把手。
- * 模型名是纯文本按钮；发送是向上箭头；停止按钮保留。
+ * TASK-FIX17-D 新增的两个变量（问题 8 的「不透明浮层」+ 问题 10 的「红环黑心」）
+ *
+ * 为何写在这里而不是 tokens.css：本卡的「涉及文件/不许改」白名单明确写了
+ * `app/tokens.css` 不可改（B 批刚重写过那份文件，本批只能改 components.css /
+ * layout.css / ai-drawer.js / index.html）。PRD R2 同时要求「新增
+ * `--term-panel-solid` 并显式用它」——所以变量声明落在 components.css 的 `:root`。
+ * `:root` 规则不分位置都全页生效；components.css 在 tokens.css 之后加载，
+ * 且两个名字都不在 tokens.css 里，不会覆盖 B 批的任何派生量。
+ *
+ * 颜色依旧不写死：两个值都由现有 --magpie-* / --term-* 派生（theme-tokens.md §5）。
+ * ------------------------------------------------------------------ */
+
+:root {
+  /* 浮层（下拉菜单）专用的**不透明**底色。
+     为何不能用 --term-panel-2：它在亮色下的历史值是 rgba(120,120,120,0.12)
+     （88% 透明），三处菜单叠在它上面就是「透明看不清」（问题 8 的根因）。
+     本卡不依赖 B 批把 --term-panel-2 改成实色：我们另起一个名字、从 magpie 的
+     card 实色派生 —— card 往 fg 方向压 4%，仍是不透明实色（alpha == 1）。 */
+  --term-panel-solid: color-mix(in srgb, var(--magpie-card) 96%, var(--magpie-fg));
+
+  /* 忙碌态动作按钮的「深色圆心」（用户原话「红色周边黑色圆心」）。
+     两套主题都要接近黑：浅色主题的 fg 本身就是近黑（#1c1c21），深色主题
+     则用 bg 那侧的深色（#1a1a1e）。不写死 #000（theme-tokens.md §5 禁止）。 */
+  --term-busy-core: color-mix(in srgb, var(--magpie-fg) 94%, var(--magpie-bg));
+}
+
+/* 深色主题下的深色圆心：从 bg 侧取，避免拿浅色的 fg（#ededf1）当圆心。 */
+:root:where(.is-dark) {
+  --term-busy-core: color-mix(in srgb, var(--magpie-bg) 88%, var(--magpie-fg));
+}
+
+/* ------------------------------------------------------------------ *
+ * 输入区（TASK-FIX17-D R3/R4，重写 843-1126 段）
+ *
+ * 结构（ai-drawer.js 的 buildShell）：
+ *   .composer
+ *     .composer-topbar   ← flex 一行：模型下拉（左） / 动作按钮（右）
+ *     [data-role="model-menu"]  ← 绝对定位，锚点 = .composer（向上弹）
+ *     .composer-box      ← 只有 textarea（撑满，无内嵌按钮、无 grid、无 hint 行）
+ *
+ * 相对 V4-E 的三处删除：
+ *   * `.composer-box` 的 grid-template-areas（"model input send" / "hint hint send"）
+ *   * `.composer-hint` 的全部规则（提示现在是 textarea 的 placeholder）
+ *   * `[data-role="agent-send"]` / `[data-role="agent-stop"]`（合成 `composer-action`）
  * ------------------------------------------------------------------ */
 
 [data-role="ai-drawer"] .composer {
@@ -853,24 +895,25 @@ button[disabled] {
   background: var(--term-panel-bg);
 }
 
+/* 顶栏：模型下拉靠左、动作按钮靠右，同一行。
+   `justify-content: space-between` + 左项 `min-width: 0` 保证模型名过长时
+   只截断自己，不把按钮挤出抽屉。 */
+[data-role="ai-drawer"] .composer-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px 6px;
+  min-width: 0;
+}
+
+/* 输入框外框：**不再是 grid**。块级容器 + 一个撑满的 textarea。 */
 [data-role="ai-drawer"] .composer-box {
   position: relative;
   min-width: 0;
   min-height: 0;
   box-sizing: border-box;
-  /* TASK-FIX-ACCEPT3：一行三块（模型名 / 正文 / 发送）+ 框内第二行 Enter 提示。
-     发送按钮跨两行，贴右下；提示只占 1-2 列，永远不压正文。
-     container-type 让下面的 40cqw（框宽 40%）在 auto 轨道里也是确定值，
-     模型名过长时能在 40% 处截断，而不是把中间输入框挤没。 */
-  container-type: inline-size;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas:
-    "model input send"
-    "hint  hint  send";
-  column-gap: 8px;
-  row-gap: 2px;
-  align-items: center;
+  display: block;
   padding: 4px 8px;
   border: 1px solid var(--term-line-2);
   border-radius: var(--term-radius-lg);
@@ -883,7 +926,7 @@ button[disabled] {
 }
 
 [data-role="ai-drawer"] [data-role="agent-input"] {
-  grid-area: input;
+  display: block;
   min-width: 0;
   width: 100%;
   min-height: 19.375px;
@@ -899,22 +942,11 @@ button[disabled] {
   overflow-y: auto;
 }
 
+/* R3（AC4）：提示就是 placeholder —— 空输入时可见，一打字就被浏览器原生覆盖。
+   颜色用 --term-dim（比正文弱一档），不能靠透明度叠色（quality-guidelines 门槛四）。 */
 [data-role="ai-drawer"] [data-role="agent-input"]::placeholder {
   color: var(--term-dim);
-}
-
-[data-role="ai-drawer"] .composer-hint {
-  grid-area: hint;
-  justify-self: end;
-  align-self: center;
-  max-width: 100%;
-  font: 9.5px / 14px var(--term-mono);
-  color: var(--term-dim);
-  pointer-events: none;
-  user-select: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  opacity: 1;
 }
 
 /* 顶部拖拽把手：与设计稿的 composer-grip 同一套语言。 */
@@ -948,26 +980,27 @@ button[disabled] {
 }
 
 /* 模型名：纯文本按钮，无边框、无常态底色，只有一枚 9px 下箭头。
-   TASK-FIX-ACCEPT3：移到输入框左侧（grid 的 model 列），最多占框宽 40%，
-   超出由内部 .model-label 尾部省略；title 仍是完整模型名。 */
+   TASK-FIX17-D R3：从输入框里搬到了顶栏左侧；**高度与右侧动作按钮一致（34px）**，
+   否则两者垂直居中对齐后 `top` 相差 6px，AC3（同一行 ≤ 2px）就不成立。
+   仍然最多占顶栏 60% 宽度（`min-width: 0` + `.model-label` 的 text-overflow 才生效）。 */
 [data-role="ai-drawer"] [data-role="model-select"] {
-  grid-area: model;
+  flex: 0 1 auto;
   justify-self: start;
   align-self: center;
   display: flex;
   align-items: center;
   gap: 3px;
-  height: 22px;
-  padding: 0 3px;
+  height: 34px;
+  padding: 0 4px;
   box-sizing: border-box;
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   background: transparent;
   color: var(--term-muted);
   font: inherit;
   font-size: 11px;
   white-space: nowrap;
-  max-width: 40cqw;
+  max-width: 60%;
   min-width: 0;
   overflow: hidden;
 }
@@ -981,7 +1014,7 @@ button[disabled] {
 
 [data-role="ai-drawer"] [data-role="model-select"]:hover,
 [data-role="ai-drawer"] [data-role="model-select"][aria-expanded="true"] {
-  background: var(--term-panel-2);
+  background: var(--term-raise);
   color: var(--term-fg-2);
 }
 
@@ -996,24 +1029,28 @@ button[disabled] {
   color: var(--term-dim);
 }
 
-/* 模型菜单：现在挂在 composer-box 内部（position:relative 的包含块就是框），
-   bottom: calc(100% + 2px) 让菜单底边落在框顶边之上，和输入框相交面积为 0。 */
+/* 模型菜单：锚点是 `.composer`（position:relative），向上弹。
+   bottom: calc(100% - 6px) 让菜单底边落在顶栏之上；
+   `--term-panel-solid` 是**显式的不透明实色**（见 tokens.css 的说明）：
+   这里不能用 `--term-panel-2` 这类可能带 alpha 的派生色 —— 问题 8 的根因就是
+   菜单底色 88% 透明，底下的抽屉文字透上来，亮色下完全看不清。 */
 [data-role="ai-drawer"] [data-role="model-menu"] {
   position: absolute;
-  bottom: calc(100% + 2px);
-  right: 8px;
-  left: auto;
+  bottom: 100%;
+  margin-bottom: 2px;
+  left: 10px;
+  right: auto;
   min-width: 236px;
-  max-width: calc(100% - 16px);
+  max-width: calc(100% - 20px);
   max-height: 240px;
   overflow-y: auto;
   z-index: 5;
   padding: 4px;
   box-sizing: border-box;
-  border: 1px solid var(--term-line-2);
+  border: 1px solid var(--term-border);
   border-radius: var(--term-radius-lg);
-  background: var(--term-panel-2);
-  box-shadow: 0 18px 44px var(--term-shadow);
+  background: var(--term-panel-solid);
+  box-shadow: 0 8px 24px var(--term-shadow);
 }
 
 [data-role="ai-drawer"] [data-role="model-menu"][hidden] {
@@ -1070,19 +1107,20 @@ button[disabled] {
   color: var(--term-accent);
 }
 
-/* 发送 / 停止：都放进 composer-box 右侧；隐藏停止时 send 独占 34px，不影响布局。 */
-[data-role="ai-drawer"] .composer-actions {
-  grid-area: send;
-  justify-self: end;
-  align-self: end;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
+/* ------------------------------------------------------------------ *
+ * 单一动作按钮（TASK-FIX17-D R4 / 问题 10 / AC6 / AC7）
+ *
+ * 一个元素两种形态，靠 `.is-busy` 切换。**不做两个按钮互相显隐**：
+ * 那样 DOM 一变，焦点会掉、页读会重报一次，视觉上还会「跳一下」。
+ *
+ *   空闲（无 .is-busy）：实心圆 --term-accent + ↑
+ *   忙碌（.is-busy）    ：3px --term-danger 环 + 「深色圆心」——深色圆心由
+ *                        background: var(--term-busy-core) 提供（浅色主题取自 fg 那侧、
+ *                        深色主题取自 bg 那侧，均见本文件顶部的 :root 声明），
+ *                        图标本身用 --term-danger，让「点它能停」在两种主题下都一眼看见。
+ * ------------------------------------------------------------------ */
 
-/* 发送按钮：圆形，向上箭头。 */
-[data-role="ai-drawer"] [data-role="agent-send"] {
+[data-role="ai-drawer"] .composer-action {
   flex: 0 0 auto;
   width: 34px;
   height: 34px;
@@ -1092,36 +1130,40 @@ button[disabled] {
   border: 0;
   border-radius: 50%;
   background: var(--term-accent);
-  color: var(--term-bg);
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1;
+  color: var(--term-accent-fg);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
 
-[data-role="ai-drawer"] [data-role="agent-send"]:hover {
+[data-role="ai-drawer"] .composer-action > svg {
+  display: block;
+  pointer-events: none;
+}
+
+[data-role="ai-drawer"] .composer-action:hover:not(:disabled) {
   background: var(--term-fg-2);
+  color: var(--term-bg);
 }
 
-[data-role="ai-drawer"] [data-role="agent-send"]:disabled {
-  background: var(--term-panel-2);
-  color: var(--term-dim);
-  border: 1px solid var(--term-line);
-  cursor: not-allowed;
-}
-
-[data-role="ai-drawer"] [data-role="agent-stop"] {
-  flex: 0 0 auto;
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--term-danger);
-  border-radius: var(--term-radius);
-  background: transparent;
+[data-role="ai-drawer"] .composer-action.is-busy {
+  /* 红环：border 参与盒模型，所以内径 = 34 - 2×3 = 28px 的深色圆心。 */
+  background: var(--term-busy-core);
+  border: 3px solid var(--term-danger);
   color: var(--term-danger);
-  font-size: 11.5px;
 }
 
-[data-role="ai-drawer"] [data-role="agent-stop"][hidden] {
-  display: none;
+[data-role="ai-drawer"] .composer-action.is-busy:hover {
+  background: var(--term-busy-core);
+  box-shadow: 0 0 0 3px var(--term-danger-soft);
+}
+/* 只有「输入为空且不在跑」会 disabled（R4 逐字：忙碌时永远可点 = 能停）。
+   视觉上**仍然保持发送形态**（实心主色圆 + ↑）：全局 `button[disabled]` 已经给了
+   `opacity: .6`，再换底色会让它变成一个「看不出是什么」的灰块，反而更差。 */
+[data-role="ai-drawer"] .composer-action:disabled {
+  background: var(--term-accent);
+  color: var(--term-accent-fg);
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 /* ------------------------------------------------------------------ *
@@ -2539,7 +2581,11 @@ button[disabled] {
 /* TASK-FIX-UI-REST §6.3：文件条目的动作菜单。
    挂在 `.file-panel` 根（不是 card、不是 grid）→ 不被 grid 的 overflow-y:auto
    裁剪，也不会被虚拟滚动重渲染丢掉；坐标由 file-panel.js 的 clampMenuPosition
-   钳在面板 rect 内（宽度固定 120px，高度 = 项数 × 26 + 4，不依赖测量）。 */
+   钳在面板 rect 内（宽度固定 120px，高度 = 项数 × 26 + 4，不依赖测量）。
+
+   TASK-FIX17-D R2（问题 8）：底色改 `--term-panel-solid`（不透明实色）。
+   为何不能用 `--term-panel-2`：它在亮色下的历史值是 rgba(120,120,120,0.12)，
+   叠在文件面板上就是「透明看不清」。边框 + 阴影给浮层边界感。 */
 .file-panel-action-menu {
   position: absolute;
   z-index: 12;
@@ -2548,9 +2594,9 @@ button[disabled] {
   padding: 1px;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--term-line-2);
+  border: 1px solid var(--term-border);
   border-radius: 6px;
-  background: var(--term-panel-2);
+  background: var(--term-panel-solid);
   box-shadow: 0 12px 30px var(--term-shadow);
 }
 
@@ -2947,7 +2993,9 @@ html[data-files-open="true"] [data-role="ai-handle"] {
   color: var(--term-fg-2);
 }
 
-/* 会话下拉：锚定头部下方，按终端分组。 */
+/* 会话下拉：锚定头部下方，按终端分组。
+   TASK-FIX17-D R2（问题 8）：底色改 `--term-panel-solid`（不透明实色）——
+   `--term-panel-2` 在亮色下的历史值 88% 透明，会话下拉会透出下面的时间线文字。 */
 [data-role="ai-drawer"] [data-role="agent-sessions-menu"] {
   position: absolute;
   top: 46px;
@@ -2958,9 +3006,9 @@ html[data-files-open="true"] [data-role="ai-handle"] {
   overflow: auto;
   padding: 4px;
   box-sizing: border-box;
-  border: 1px solid var(--term-line-2);
+  border: 1px solid var(--term-border);
   border-radius: var(--term-radius-lg);
-  background: var(--term-panel-2);
+  background: var(--term-panel-solid);
   box-shadow: 0 18px 44px var(--term-shadow);
 }
 
@@ -3413,4 +3461,182 @@ html[data-files-open="true"] [data-role="ai-handle"] {
   .file-panel-more-toggle {
     opacity: 1;
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * markdown 渲染（TASK-FIX17-D R5，问题 12）
+ *
+ * 作用域收在 `[data-role="agent-summary-md"]`（ai-drawer.js 的 buildSummaryText
+ * 只在 markdown 真渲染成功时才写这个 data-role）。纯文本降级路径不受影响，
+ * 用户消息（agent-question）也不走这里。
+ *
+ * 硬要求（PRD R5）：代码块等宽 + 横向可滚动、不撑破抽屉；表格可读；链接主题色。
+ * 颜色一律用变量，不写死字面量（theme-tokens.md §5）。
+ * ------------------------------------------------------------------ */
+
+[data-role="agent-summary"] .summary-text[data-role="agent-summary-md"] {
+  /* markdown 出来的块级元素自己带换行，父规则里的 pre-wrap 会把 HTML 源码的
+     换行也画出来（每个 <li> 之间多一个空行），所以这里改回 normal。 */
+  white-space: normal;
+}
+
+[data-role="agent-summary-md"] > :first-child {
+  margin-top: 0;
+}
+
+[data-role="agent-summary-md"] > :last-child {
+  margin-bottom: 0;
+}
+
+[data-role="agent-summary-md"] p {
+  margin: 0 0 8px;
+  line-height: 1.7;
+}
+
+[data-role="agent-summary-md"] h1,
+[data-role="agent-summary-md"] h2,
+[data-role="agent-summary-md"] h3,
+[data-role="agent-summary-md"] h4,
+[data-role="agent-summary-md"] h5,
+[data-role="agent-summary-md"] h6 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--term-fg);
+}
+
+[data-role="agent-summary-md"] h1 {
+  font-size: 15px;
+}
+
+[data-role="agent-summary-md"] h2 {
+  font-size: 14px;
+}
+
+[data-role="agent-summary-md"] strong,
+[data-role="agent-summary-md"] b {
+  font-weight: 600;
+  color: var(--term-fg);
+}
+
+[data-role="agent-summary-md"] em,
+[data-role="agent-summary-md"] i {
+  font-style: italic;
+}
+
+[data-role="agent-summary-md"] del,
+[data-role="agent-summary-md"] s {
+  color: var(--term-muted);
+}
+
+/* 行内代码：等宽 + 淡底，和正文分开；`code` 在 `pre` 里时下面单独覆盖。 */
+[data-role="agent-summary-md"] code {
+  font-family: var(--term-mono);
+  font-size: 11.5px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--term-panel-solid);
+  color: var(--term-fg-2);
+  word-break: break-word;
+}
+
+/* 围栏代码块：等宽 + 主题化实色底 + **横向滚动**（不撑破 384px 的抽屉）。
+   不用 `white-space: pre-wrap`：代码换行会改变语义（复制的命令就废了）。 */
+[data-role="agent-summary-md"] pre {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--term-line);
+  border-radius: var(--term-radius);
+  background: var(--term-panel-solid);
+}
+
+[data-role="agent-summary-md"] pre code {
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--term-fg);
+  /* 显式再写一次等宽：`pre code` 会覆盖 `code` 的 font-size/line-height，
+     字体族靠继承也能推到，但显式写死可以躲开「将来有人改了 code 的 font-family」
+     这种回归（AC8.4 直接断言这条 computed 值）。 */
+  font-family: var(--term-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre;
+  word-break: normal;
+}
+
+/* 有序 / 无序列表：缩进 + 项目符号，列表项之间不额外空行。 */
+[data-role="agent-summary-md"] ul,
+[data-role="agent-summary-md"] ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+[data-role="agent-summary-md"] li {
+  margin: 2px 0;
+  line-height: 1.65;
+}
+
+[data-role="agent-summary-md"] li > p {
+  margin: 0;
+}
+
+/* 引用：左侧一条竖线 + 弱化文字。 */
+[data-role="agent-summary-md"] blockquote {
+  margin: 0 0 8px;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--term-line-2);
+  color: var(--term-muted);
+}
+
+/* 表格：`border-collapse` + 横向滚动容器（宽表不能把抽屉撑开）。 */
+[data-role="agent-summary-md"] table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 0 8px;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+[data-role="agent-summary-md"] th,
+[data-role="agent-summary-md"] td {
+  padding: 4px 8px;
+  border: 1px solid var(--term-line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+[data-role="agent-summary-md"] th {
+  background: var(--term-panel-solid);
+  font-weight: 600;
+  color: var(--term-fg);
+}
+
+/* 分隔线。 */
+[data-role="agent-summary-md"] hr {
+  height: 1px;
+  margin: 10px 0;
+  border: 0;
+  background: var(--term-line);
+}
+
+/* 链接：主题主色 + 下划线（不靠颜色当唯一载体，quality-guidelines 门槛三）。 */
+[data-role="agent-summary-md"] a {
+  color: var(--term-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-word;
+}
+
+[data-role="agent-summary-md"] a:hover {
+  color: var(--term-fg);
 }

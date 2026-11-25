@@ -42,7 +42,16 @@ html, body {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  /* TASK-FIX17-D R1（问题 7「打开 AI 栏整页左移」）：
+     `overflow: hidden` **仍然是可编程滚动容器** —— 抽屉用 translateX(100%)
+     在右侧撑出 385px 的横向滚动区（scrollWidth 2201 > clientWidth 1816），
+     一旦有元素被 focus()，浏览器会把它 `scrollIntoView` 到可视区，
+     `.main.scrollLeft` 就从 0 变成 385，tabbar / 终端 / 文件面板整体左移。
+     `overflow: clip` 不产生滚动容器（scrollLeft 恒 0），是真修法。
+     两行都写：旧内核（WebView2 < 90）不认 clip 时回落到 hidden（至少不会溢出显示），
+     认 clip 的内核走下面一行。JS 侧另有一道 `focus({preventScroll:true})` 双保险。 */
   overflow: hidden;
+  overflow: clip;
 }
 
 [data-role="statusbar"] {

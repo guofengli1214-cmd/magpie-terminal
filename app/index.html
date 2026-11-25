@@ -70,6 +70,14 @@
     <div data-role="toast-stack" aria-live="polite"></div>
     <div data-role="settings-host"></div>
   </div>
+  <!-- TASK-FIX17-D R5（问题 12）：AI 回复的 markdown 渲染。
+       两个都是**普通 script**（不是 module）：沙箱 CSP 对 module 有额外 CORS 要求，
+       而普通 script 只受 `script-src 'self'` 约束，本地文件可直接加载。
+       必须排在 `app.js` 之前：app.js 是 type=module（天然 defer），
+       这两个是同步脚本，所以 globalThis.marked / globalThis.DOMPurify 一定先就绪。
+       离线副本，不走 CDN（CSP 也不允许）；版本与来源见 /vendor/markdown/VERSION.md。 -->
+  <script src="/vendor/markdown/marked.umd.js"></script>
+  <script src="/vendor/markdown/purify.min.js"></script>
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/xterm/addon-fit.js"></script>
   <script type="module" src="/app.js"></script>

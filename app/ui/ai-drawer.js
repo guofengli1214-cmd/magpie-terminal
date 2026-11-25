@@ -1,4 +1,4 @@
-// 右侧 AI 抽屉（TASK-V4-E → TASK-V4-H）：会话选择 / 多轮时间线 / 输入区。
+// 右侧 AI 抽屉（TASK-V4-E → TASK-V4-H → TASK-FIX17-D）：会话选择 / 多轮时间线 / 输入区。
 //
 // 数据来源：core/agent-store.js 的订阅（agent.* 帧由 app.js 转进来）。
 // 这里只渲染 + 发帧，不改 store 字段。
@@ -7,19 +7,39 @@
 //   保留：ai-drawer-head / model-select / agent-timeline / agent-question
 //        agent-step(+data-status,+data-index) / agent-step-cmd / agent-step-out
 //        agent-summary / agent-approval / approval-run / approval-rest / approval-skip
-//        agent-input / agent-send / agent-stop / model-menu / composer-box /
-//        composer-hint / agent-grow
-//   新增：agent-sessions / agent-sessions-toggle / agent-sessions-menu /
+//        agent-input / model-menu / composer-box / agent-grow
+//        agent-sessions / agent-sessions-toggle / agent-sessions-menu /
 //        agent-session-item / agent-new / agent-session-badge / agent-reasoning /
 //        approval-review / approval-review-tip
+//   TASK-FIX17-D（问题 9/10/11）**删掉**的三个旧钩子：
+//        agent-send（发送按钮） / agent-stop（停止按钮） / composer-hint（常驻提示行）
+//        发送与停止合成一个元素 `data-role="composer-action"` + `.is-busy`；
+//        提示改成 `textarea[data-role="agent-input"]` 的 placeholder。
 //
 // 降级路径：旧的 ai.reply / ai.error 仍然渲染成一条简化块（ai.reply 的 confirm
 // 确认卡也搬进抽屉里，但仍是本地直接 pty.input，不发 ai.confirm）。
+//
+// TASK-FIX17-D 新增：AI 消息的 markdown 渲染（R5）。流式期间保持纯文本，
+// 只在总结落地（agent.done → turn.summary）后把该条换成渲染后的 HTML。
+
+// 相对路径（不是 `/vendor/...`）：浏览器里解析成同一个 URL（静态服务前缀已放行
+// `/vendor/`），而 `node --test` 直接 import 本文件时也能解析 —— 以 `/` 开头的路径在
+// Node 里是文件系统根，会 ENOENT。
+import { renderMarkdown } from "../vendor/markdown/markdown.js";
 
 // V4-E：输入框拖拽高度持久化 key（逐字固定）。
 const COMPOSER_HEIGHT_KEY = "magpie.term.composerHeight";
 const COMPOSER_LINE_HEIGHT = 19.375;
 const COMPOSER_MAX_AUTO = 116;
+
+/** TASK-FIX17-D R3：Enter 提示是 placeholder，不再占一行。 */
+const INPUT_PLACEHOLDER = "Enter 发送 · Shift+Enter 换行";
+
+/** 单个动作按钮的两种图标（14×14 描边 SVG，颜色跟随 currentColor）。 */
+const ACTION_ICON_SEND =
+  '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+const ACTION_ICON_STOP =
+  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="7" y="7" width="10" height="10" rx="1.6"/></svg>';
 
 const STEP_LABEL = {
   pending: "等待中",
@@ -117,8 +137,8 @@ export default function createAiDrawer(elements) {
   let timeline = null;
   let input = null;
   let composerEl = null;
-  let sendButton = null;
-  let stopButton = null;
+  // TASK-FIX17-D R4：发送/停止合成一个元素（旧的 sendButton / stopButton 已删）。
+  let actionButton = null;
   let selectedModelId = null;
   let headEl = null;
   let sessionsButton = null;
@@ -195,33 +215,16 @@ export default function createAiDrawer(elements) {
     });
     host.appendChild(timeline);
 
+    // TASK-FIX17-D R3（问题 9/11）输入区结构：
+    //   .composer
+    //     .composer-topbar  ← 一行：模型下拉（左） / 单一动作按钮（右）
+    //     .composer-box     ← 只有 textarea（撑满，无内嵌按钮）
+    //     [model-menu]      ← 定位相对 .composer（topbar 的包含块不再是输入框）
+    // 提示不再占一行：改成 `textarea.placeholder`（输入即覆盖 = 浏览器原生行为），
+    // 旧的 `.composer-hint` / `composer-hint` 元素与 grid area 一并删除。
     composerEl = el("div", { className: "composer" });
-    const composerBox = el("div", {
-      "data-role": "composer-box",
-      className: "composer-box",
-    });
-    const grow = el("div", {
-      "data-role": "agent-grow",
-      className: "composer-grip",
-      title: "拖动调整输入框高度（最高到抽屉高度的 40%）",
-    });
-    input = el("textarea", {
-      "data-role": "agent-input",
-      rows: "1",
-      placeholder: "继续追问，或描述下一步…",
-      autocomplete: "off",
-      spellcheck: "false",
-      "aria-label": "告诉 AI 要做什么",
-    });
-    const hint = el(
-      "span",
-      { "data-role": "composer-hint", className: "composer-hint" },
-      "Enter 发送 · Shift+Enter 换行",
-    );
+    const topbar = el("div", { className: "composer-topbar" });
 
-    // TASK-FIX-ACCEPT3：模型名 / 正文 / 发送三个块都在 composer-box 内。
-    // 模型名在左（纯文本按钮），正文居中，发送在右；Enter 提示在框内第二行，
-    // 不再用绝对定位压在正文右下角。
     modelSelect = el("button", {
       type: "button",
       "data-role": "model-select",
@@ -235,20 +238,40 @@ export default function createAiDrawer(elements) {
       className: "model-menu",
       hidden: "",
     });
-    stopButton = el(
-      "button",
-      { type: "button", "data-role": "agent-stop", className: "agent-stop", hidden: "" },
-      "停止",
-    );
-    sendButton = el(
-      "button",
-      { type: "button", "data-role": "agent-send", className: "agent-send", "aria-label": "发送" },
-      "↑",
-    );
-    const actions = el("div", { className: "composer-actions" });
-    actions.append(stopButton, sendButton);
-    composerBox.append(grow, modelSelect, input, hint, actions, modelMenu);
-    composerEl.append(composerBox);
+
+    // TASK-FIX17-D R4（问题 10）：发送与停止合成同一个按钮 —— 单元素 + `.is-busy` 类。
+    // 空闲：实心圆 + ↑（发送）；忙碌：红环 + 深色圆心（点它 = 停止）。
+    // 仍然保留 `data-role="composer-action"` 作为探针钩子（AC6/AC7）。
+    actionButton = el("button", {
+      type: "button",
+      "data-role": "composer-action",
+      className: "composer-action",
+      "aria-label": "发送",
+      title: "发送（Enter）",
+    });
+    actionButton.innerHTML = ACTION_ICON_SEND;
+    topbar.append(modelSelect, actionButton);
+
+    const composerBox = el("div", {
+      "data-role": "composer-box",
+      className: "composer-box",
+    });
+    const grow = el("div", {
+      "data-role": "agent-grow",
+      className: "composer-grip",
+      title: "拖动调整输入框高度（最高到抽屉高度的 40%）",
+    });
+    input = el("textarea", {
+      "data-role": "agent-input",
+      rows: "1",
+      // R3：Enter 提示就是 placeholder —— 用户一输入就被覆盖，不占第二行、不抢焦点。
+      placeholder: INPUT_PLACEHOLDER,
+      autocomplete: "off",
+      spellcheck: "false",
+      "aria-label": "告诉 AI 要做什么",
+    });
+    composerBox.append(grow, input);
+    composerEl.append(topbar, modelMenu, composerBox);
     host.appendChild(composerEl);
   }
 
@@ -379,10 +402,11 @@ export default function createAiDrawer(elements) {
     if (previous) previous.replaceWith(input);
     else main.appendChild(input);
     try {
-      input.focus();
+      // TASK-FIX17-D R1：重命名输入框也在抽屉里，同样不能把 `.main` 滚走。
+      input.focus({ preventScroll: true });
       input.select();
     } catch {
-      // 忽略：焦点不是安全边界。
+      // 忽略：焦点不是安全边界；另外 `select()` 也不滚动。
     }
   }
 
@@ -629,12 +653,13 @@ export default function createAiDrawer(elements) {
     if (nextOpen) {
       renderModelMenu();
       // L1-06：按输入区顶边限制菜单高度，窗口再矮也不会顶出抽屉。
-      if (host) {
-        const box = host.querySelector('[data-role="composer-box"]');
-        if (box) {
-          const available = Math.floor(box.getBoundingClientRect().top - host.getBoundingClientRect().top - 12);
-          modelMenu.style.maxHeight = `${Math.max(80, Math.min(240, available))}px`;
-        }
+      // TASK-FIX17-D R3：菜单现在锚在 `.composer` 上方（不再是 composer-box 内部），
+      // 所以可用高度从 composer 的顶边算。
+      if (host && composerEl) {
+        const available = Math.floor(
+          composerEl.getBoundingClientRect().top - host.getBoundingClientRect().top - 12,
+        );
+        modelMenu.style.maxHeight = `${Math.max(80, Math.min(240, available))}px`;
       }
       modelMenu.hidden = false;
       modelSelect.setAttribute("aria-expanded", "true");
@@ -1000,6 +1025,55 @@ export default function createAiDrawer(elements) {
     timeline.appendChild(wrap);
   }
 
+  /**
+   * markdown 渲染结果的小缓存（text → html|null）。
+   *
+   * 为何要缓存：`render()` 是整条时间线重画（无 diff），流式期间每个 `agent.text`
+   * 帧都会重画一次。已完成的历史轮次也就会被反复重渲染 —— 不缓存的话同一个
+   * 长回复每秒要重新跑十几次 marked + DOMPurify。
+   * 上限 64 条：抽屉里同时可见的轮次远不到这个量，超出直接清空（一屏内的会话
+   * 不可能有这个量；清空不会错，只是下次重新算）。
+   */
+  const markdownCache = new Map();
+  const MARKDOWN_CACHE_MAX = 64;
+
+  /**
+   * 一条 AI 总结的正文节点：markdown → 安全 HTML；不可用时降级成纯文本。
+   *
+   * TASK-FIX17-D R5（问题 12）的三条硬要求都落在这里：
+   *   1. **只在消息结束后调**。调用点是 `renderTurn` 的 `turn.summary` 分支；
+   *      流式帧走的是 `turn.streamText`（纯文本），所以不会每帧跑一遍 marked。
+   *   2. **渲染失败不能丢消息**。`renderMarkdown` 返回 null（库缺失 / marked 抛错 /
+   *      清洗后仍有危险形态）就保持 `textContent`，消息一字不少。
+   *   3. **用户消息不渲染**。`turn.question` 用的是 `el()` 的 textContent 路径，
+   *      这里只处理 AI 侧的 summary。
+   *
+   * @param {string} text
+   * @returns {HTMLElement}
+   */
+  function buildSummaryText(text) {
+    const wrap = el("div", { className: "summary-text" });
+    let html;
+    if (typeof text === "string" && markdownCache.has(text)) {
+      html = markdownCache.get(text);
+    } else {
+      html = renderMarkdown(text);
+      if (typeof text === "string") {
+        if (markdownCache.size >= MARKDOWN_CACHE_MAX) markdownCache.clear();
+        markdownCache.set(text, html);
+      }
+    }
+    if (html === null) {
+      wrap.textContent = text;
+      return wrap;
+    }
+    // html 已经过 DOMPurify（白名单标签/属性）+ 本项目的危险形态闸门，
+    // 见 app/vendor/markdown/markdown.js。
+    wrap.innerHTML = html;
+    wrap.setAttribute("data-role", "agent-summary-md");
+    return wrap;
+  }
+
   function renderTurn(turn, snapshot, turnIndex) {
     const block = el("div", { className: "agent-turn", "data-round": String(turn.round) });
 
@@ -1021,6 +1095,7 @@ export default function createAiDrawer(elements) {
     }
 
     // 流式增量的实时区（AC13）：只在还没有总结时显示。
+    // TASK-FIX17-D R5（AC10）：**流式期间一律纯文本**——这个分支不能用 innerHTML。
     if (!turn.summary && turn.streamText) {
       block.appendChild(el("div", { className: "agent-stream", "data-role": "agent-stream" }, turn.streamText));
     }
@@ -1030,7 +1105,7 @@ export default function createAiDrawer(elements) {
       if (snapshot.status === "stopped") {
         summary.appendChild(el("div", { className: "summary-lead" }, "已停止。下面是我已经做完的部分："));
       }
-      summary.appendChild(el("div", { className: "summary-text" }, turn.summary));
+      summary.appendChild(buildSummaryText(turn.summary));
       block.appendChild(summary);
     } else if (snapshot.status === "stopped" && turnIndex === snapshot.turns.length - 1) {
       block.appendChild(el("div", { "data-role": "agent-summary", className: "agent-summary" }, "已停止。"));
@@ -1090,12 +1165,41 @@ export default function createAiDrawer(elements) {
       timeline.appendChild(errorBox);
     }
 
-    // 停止按钮只在 running / awaiting 时可见。
-    if (stopButton) stopButton.hidden = !(snapshot.status === "running" || snapshot.status === "awaiting");
-    // 待确认期间不许再发新问题：发送按钮 disabled。
-    if (sendButton) sendButton.disabled = hasPendingApprovals;
+    // TASK-FIX17-D R4（问题 10 / AC6 / AC7）：**一个**元素、两种形态。
+    //   空闲：实心圆 + ↑，点击 = 发送；`disabled` 仅在「输入为空且不在跑」时置位（R4 逐字）。
+    //   忙碌：`.is-busy` → 红环 + 深色圆心，点击 = 停止（在跑时永远可点）。
+    updateActionButton(snapshot);
 
     if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
+  }
+
+  /**
+   * 单一动作按钮的两形态同步（R4）。只用类 + 属性，不重建元素：
+   * AC6 要求的“同一个 DOM 节点变形态”靠的就是这一点。
+   *
+   * `disabled` 的判定按 R4 逐字：**只在「输入为空且不在跑」时置位**。
+   * （在跑时永远可点 —— 那就是唯一的停止入口，禁用等于把停止锁死。）
+   * 所以还要在 input 事件里再调一次，否则用户输入后按钮永远停在禁用态。
+   *
+   * @param {object} snapshot agentStore 快照
+   */
+  function updateActionButton(snapshot) {
+    if (!actionButton) return;
+    const busy = snapshot.status === "running" || snapshot.status === "awaiting";
+    const empty = !input || input.value.trim().length === 0;
+    actionButton.classList.toggle("is-busy", busy);
+    actionButton.setAttribute("aria-label", busy ? "停止" : "发送");
+    actionButton.title = busy ? "停止（现在就能停）" : "发送（Enter）";
+    actionButton.setAttribute("data-state", busy ? "busy" : "idle");
+    if (!busy) actionButton.removeAttribute("aria-busy");
+    else actionButton.setAttribute("aria-busy", "true");
+    actionButton.disabled = !busy && empty;
+    const icon = busy ? ACTION_ICON_STOP : ACTION_ICON_SEND;
+    // 只在真变了才写 innerHTML（避免每帧重建 SVG 导致子节点闪烁）。
+    if (actionButton.dataset.icon !== (busy ? "stop" : "send")) {
+      actionButton.dataset.icon = busy ? "stop" : "send";
+      actionButton.innerHTML = icon;
+    }
   }
 
   /* ---------------- 发送 / 审批 / 停止 ---------------- */
@@ -1254,6 +1358,9 @@ export default function createAiDrawer(elements) {
     input.addEventListener("input", () => {
       clearManualHeight();
       autoGrow();
+      // R4：`disabled` 依赖「输入是否为空」，所以每次输入都要重算一次按钮态。
+      // 不重算的话，用户打一个字之后按钮仍是禁用的 —— 那就永远发不出去了。
+      updateActionButton(agentStore.getSnapshot());
     });
 
     grip.addEventListener("pointerdown", (event) => {
@@ -1310,7 +1417,17 @@ export default function createAiDrawer(elements) {
         if (created === false) onNotice("当前没有终端标签：先点「+」新建一个。", "warn");
       });
 
-      sendButton.addEventListener("click", () => send());
+      // TASK-FIX17-D R4：同一个按钮，按状态分流。
+      // `disabled` 不会在忙碌态置位（见 updateActionButton），所以「点它停止」总能落到；
+      // 但仍然再判一次 busy，避免在极短的状态抖动窗口里把停止误发成发送。
+      actionButton.addEventListener("click", () => {
+        const snapshot = agentStore.getSnapshot();
+        if (snapshot.status === "running" || snapshot.status === "awaiting") {
+          onStop();
+          return;
+        }
+        send();
+      });
       input.addEventListener("keydown", (event) => {
         if (event.key === "Escape") {
           closeModelMenu();
@@ -1319,10 +1436,9 @@ export default function createAiDrawer(elements) {
         }
         if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
         event.preventDefault();
+        // Enter 永远是「发送」：忙碌态下再开一轮由 app/agent-store 的 pendingRun 接管，
+        // 与原行为一致（V4-H §5.2），不因按钮合一而改发送语义。
         send();
-      });
-      stopButton.addEventListener("click", () => {
-        onStop();
       });
 
       // 点菜单外 / Esc 关菜单（模型 + 会话两个菜单）。
@@ -1361,9 +1477,14 @@ export default function createAiDrawer(elements) {
     },
     focusInput() {
       try {
-        input.focus();
+        // TASK-FIX17-D R1（问题 7）：**必须** preventScroll。
+        // 裸 focus() 会让浏览器把元素滚进可视区 —— 而 `.main` 曾被抽屉撑出
+        // 385px 横向滚动区（scrollWidth 2201 > clientWidth 1816），于是
+        // `.main.scrollLeft` 0→385，tabbar / 终端 / 文件面板整体左移。
+        // CSS 那边的 `overflow: clip` 是第一道修法，这里是第二道（双保险）。
+        input.focus({ preventScroll: true });
       } catch {
-        // 忽略。
+        // 老内核不认 options 也不认空对象：退化到赋值 activeElement 不划算，直接忽略。
       }
     },
     /** toast 的「去确认」：滚到对应审批卡并高亮一瞬。 */
@@ -1376,7 +1497,15 @@ export default function createAiDrawer(elements) {
       );
       const target = node || timeline.querySelector('[data-role="agent-approval"]');
       if (!target) return false;
-      target.scrollIntoView({ block: "center" });
+      // TASK-FIX17-D R1：**不碰 scrollIntoView**。
+      // scrollIntoView 会逐级滚动所有祖先滚动容器，包括 `.main`（横向）与
+      // `document.scrollingElement`——那正是问题 7 的另一条发生路径。
+      // 这里只滚时间线自身：算目标相对 timeline 的顶边，写 timeline.scrollTop。
+      const timelineRect = timeline.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const delta = targetRect.top - timelineRect.top;
+      const next = timeline.scrollTop + delta - (timeline.clientHeight - targetRect.height) / 2;
+      timeline.scrollTop = Math.max(0, next);
       target.setAttribute("data-highlight", "true");
       setTimeout(() => target.removeAttribute("data-highlight"), 1200);
       return true;
