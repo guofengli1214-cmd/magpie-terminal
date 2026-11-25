@@ -1593,6 +1593,91 @@ button[disabled] {
   word-break: break-word;
 }
 
+/* 设置页「关于 / 更新」block（TASK-FIX17-G R2）。
+   只新增这一段；颜色全部走现有变量（F 批规矩：不引入字面量）。 */
+.settings-about-row {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--term-fg);
+  word-break: break-all;
+}
+
+.settings-about-row a {
+  color: var(--term-accent);
+  text-underline-offset: 2px;
+}
+
+.settings-about-muted {
+  color: var(--term-muted);
+}
+
+.settings-block .settings-update-row {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-block [data-role="update-check"] {
+  flex: 0 0 auto;
+  padding: 2px 12px;
+  /* F 批定下的控件边界：--term-line-3 浅色 3.09:1 / 深色 4.73:1。 */
+  border: 1px solid var(--term-line-3);
+}
+
+.settings-block [data-role="update-check"]:focus-visible {
+  border-color: var(--term-focus);
+}
+
+[data-role="update-status"] {
+  flex: 1 1 220px;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--term-muted);
+  word-break: break-word;
+}
+
+[data-role="update-status"][data-tone="ok"] {
+  color: var(--term-ok);
+}
+
+[data-role="update-status"][data-tone="error"] {
+  color: var(--term-danger);
+}
+
+[data-role="update-status"][data-tone="info"] {
+  color: var(--term-muted);
+}
+
+[data-role="update-status"] a {
+  color: var(--term-accent);
+}
+
+.settings-howto {
+  font-size: 11.5px;
+  color: var(--term-muted);
+}
+
+.settings-howto summary {
+  width: fit-content;
+  cursor: pointer;
+  border-radius: var(--term-radius);
+}
+
+.settings-howto-text {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border: 1px dashed var(--term-border);
+  border-radius: var(--term-radius);
+  background: var(--term-bg);
+  color: var(--term-fg-2);
+  font-family: var(--term-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 确认卡（模态）：Esc 关闭、焦点陷阱由 JS 负责。 */
 
 [data-role="confirm-backdrop"] {

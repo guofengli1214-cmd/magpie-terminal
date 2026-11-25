@@ -14,6 +14,8 @@
 //   allowlist-mode / allowlist-add / allowlist-list / allowlist-item /
 //   allowlist-toggle / allowlist-remove / review-model-select / base-prompt /
 //   gateway-info / settings-save / settings-cancel / settings-status
+//   TASK-FIX17-G 新增：about-version / about-repository / about-install-kind /
+//   update-check / update-status / update-howto / update-howto-text
 
 const AUTONOMY_OPTIONS = [
   {
@@ -81,6 +83,15 @@ export default function createSettingsPanel(elements) {
   let logExportButton = null;
   let logClearButton = null;
   let logStatusLine = null;
+  // TASK-FIX17-G：关于/更新 block。只读 + 手动检查，不做自动下载安装。
+  let aboutVersion = null;
+  let aboutRepository = null;
+  let aboutInstallKind = null;
+  let updateButton = null;
+  let updateStatus = null;
+  let howtoPre = null;
+  let versionInfo = null;
+  let updateBusy = false;
 
   /** 开关的可视/可读状态唯一同步点（默认关）。 */
   function setShowEffect(value) {
@@ -360,6 +371,188 @@ export default function createSettingsPanel(elements) {
     await refreshLogStatus();
   }
 
+  /* ---------------- 关于 / 更新（TASK-FIX17-G R2） ---------------- */
+
+  /** 按安装方式给「如何更新」纯文本（不联网）。 */
+  function buildHowtoText(kind, name) {
+    const pluginName = typeof name === "string" && name.length > 0 ? name : "magpie-terminal";
+    if (kind === "local-path") {
+      // AC5：必须含 git pull 与重启提示，且这就是本机当前的装法。
+      return [
+        "这个插件是本地目录安装，git pull 后重启 magpie 即可。",
+        "",
+        "cd <插件目录>",
+        "git pull",
+        "# 然后完全退出并重新打开 magpie",
+      ].join("\n");
+    }
+    if (kind === "registry") {
+      return [
+        "在 magpie 插件页点更新，或运行：",
+        "",
+        `magpie plugin update ${pluginName}`,
+      ].join("\n");
+    }
+    return [
+      "无法判断安装方式。两种可能都列出来：",
+      "",
+      "# 本地目录安装",
+      "cd <插件目录> && git pull",
+      "# 然后完全退出并重新打开 magpie",
+      "",
+      "# 版本包安装（registry）",
+      `magpie plugin update ${pluginName}`,
+    ].join("\n");
+  }
+
+  /** 更新结果行：支持「一句话 + 一个链接」，tone 与设置页状态行同一套语义。 */
+  function setUpdateStatus(text, tone, link) {
+    if (!updateStatus) return;
+    updateStatus.textContent = "";
+    if (typeof text === "string" && text.length > 0) updateStatus.append(text);
+    if (link && typeof link.url === "string" && link.url.length > 0) {
+      if (updateStatus.textContent.length > 0) updateStatus.append(" ");
+      updateStatus.append(
+        el("a", { href: link.url, target: "_blank", rel: "noopener noreferrer" }, link.text || "查看发布页"),
+      );
+    }
+    if (tone) updateStatus.setAttribute("data-tone", tone);
+    else updateStatus.removeAttribute("data-tone");
+  }
+
+  function updateSupported() {
+    return Boolean(
+      versionInfo &&
+        versionInfo.updateSupported === true &&
+        typeof versionInfo.repository === "string" &&
+        versionInfo.repository.length > 0,
+    );
+  }
+
+  function syncUpdateButton() {
+    if (!updateButton) return;
+    const supported = updateSupported();
+    updateButton.disabled = !supported || updateBusy;
+    updateButton.textContent = updateBusy ? "检查中…" : "检查更新";
+    if (supported) updateButton.title = "";
+    else {
+      updateButton.title =
+        versionInfo && typeof versionInfo.repository === "string" && versionInfo.repository.length > 0
+          ? "当前安装方式无法检查更新"
+          : "未配置仓库地址，无法检查更新";
+    }
+  }
+
+  /** 渲染 /api/version 的结果。`info` 为 null 表示接口失败。 */
+  function renderAbout(info) {
+    versionInfo = info && typeof info === "object" ? info : null;
+    if (!aboutVersion || !aboutRepository || !aboutInstallKind || !howtoPre) return;
+
+    if (!versionInfo) {
+      aboutVersion.textContent = "当前版本：读取失败";
+      aboutRepository.textContent = "仓库：读取失败";
+      aboutInstallKind.textContent = "安装方式：无法判断（版本信息读取失败）。";
+      howtoPre.textContent = buildHowtoText("unknown", "magpie-terminal");
+      setUpdateStatus("版本信息读取失败，暂时无法检查更新。", "error");
+      syncUpdateButton();
+      return;
+    }
+
+    const version = typeof versionInfo.version === "string" && versionInfo.version.length > 0
+      ? versionInfo.version
+      : "未知";
+    const repository = typeof versionInfo.repository === "string" ? versionInfo.repository : null;
+    const kind = typeof versionInfo.installKind === "string" ? versionInfo.installKind : "unknown";
+    const name = typeof versionInfo.name === "string" ? versionInfo.name : "magpie-terminal";
+
+    aboutVersion.textContent = `当前版本：${version}`;
+    aboutRepository.textContent = "";
+    aboutRepository.append("仓库：");
+    if (repository) {
+      aboutRepository.append(
+        el("a", { href: repository, target: "_blank", rel: "noopener noreferrer" }, repository),
+      );
+    } else {
+      aboutRepository.append(el("span", { className: "settings-about-muted" }, "未配置仓库地址"));
+    }
+
+    // 安装方式用一句话人话解释；「如何更新」的折叠说明再给可执行命令。
+    if (kind === "local-path") {
+      aboutInstallKind.textContent =
+        "安装方式：本地路径。本地目录安装需要在仓库目录里 git pull 后重启 magpie。";
+    } else if (kind === "registry") {
+      aboutInstallKind.textContent =
+        `安装方式：版本包（registry）。可以在 magpie 插件页点更新，或运行 magpie plugin update ${name}。`;
+    } else {
+      aboutInstallKind.textContent = "安装方式：未知。读不到 magpie 的 plugins.json，无法判断。";
+    }
+
+    howtoPre.textContent = buildHowtoText(kind, name);
+
+    if (!updateSupported()) {
+      setUpdateStatus(
+        repository ? "当前安装方式无法检查更新。" : "未配置仓库地址，无法检查更新。",
+        "info",
+      );
+    } else {
+      setUpdateStatus("点「检查更新」向 GitHub 查询最近的发布版本。", "info");
+    }
+    syncUpdateButton();
+  }
+
+  /** 手动检查更新：失败照实显示原因，绝不把「查询失败」写成「已是最新」。 */
+  async function checkUpdate() {
+    if (updateBusy || !updateSupported()) return;
+    if (!api || typeof api.updateCheck !== "function") {
+      setUpdateStatus("这个版本的本地服务不支持检查更新。", "error");
+      return;
+    }
+    updateBusy = true;
+    syncUpdateButton();
+    setUpdateStatus("正在向 GitHub 查询…", "info");
+
+    let result;
+    try {
+      result = await api.updateCheck();
+    } catch (err) {
+      result = { ok: false, userText: err && err.message ? err.message : "网络错误" };
+    }
+
+    updateBusy = false;
+    syncUpdateButton();
+
+    if (!result || !result.ok) {
+      const reason =
+        result && (result.userText || result.code) ? result.userText || result.code : "未知原因";
+      setUpdateStatus(`检查失败：${reason}`, "error");
+      return;
+    }
+
+    const data = result.data && typeof result.data === "object" ? result.data : {};
+    const current = typeof data.current === "string" && data.current.length > 0
+      ? data.current
+      : versionInfo && versionInfo.version
+        ? versionInfo.version
+        : "未知";
+
+    if (typeof data.error === "string" && data.error.length > 0) {
+      setUpdateStatus(`检查失败：${data.error}`, "error");
+      return;
+    }
+    if (data.hasUpdate === true) {
+      setUpdateStatus(`发现新版本 ${data.latest || "?"}（当前 ${current}）`, "ok", {
+        url: data.url,
+        text: "查看发布页",
+      });
+      return;
+    }
+    if (typeof data.note === "string" && data.note.length > 0) {
+      setUpdateStatus(data.note, "info");
+      return;
+    }
+    setUpdateStatus(`已是最新版本（${current}）`, "ok");
+  }
+
   /* ---------------- 结构 ---------------- */
 
   function build() {
@@ -557,6 +750,54 @@ export default function createSettingsPanel(elements) {
     blockLogs.appendChild(logStatusLine);
     body.appendChild(blockLogs);
 
+    /* 8. 关于 / 更新（TASK-FIX17-G R2）：版本、仓库、安装方式、手动检查更新。
+       放在最后：前面是日常设置，这一块只在「想升级 / 报版本号」时看。
+       不提供自动下载安装：magpie 没有这个 API，写了只会把 plugins.json 弄脏。 */
+    const blockAbout = el("section", { className: "settings-block", "data-block": "about" });
+    blockAbout.appendChild(el("h3", { className: "settings-block-title" }, "关于 / 更新"));
+    blockAbout.appendChild(
+      el(
+        "p",
+        { className: "settings-block-hint" },
+        "只显示当前这份插件是怎么装的；检查更新只向 GitHub 查询发布版本，不会自动下载或安装。",
+      ),
+    );
+    aboutVersion = el(
+      "div",
+      { className: "settings-about-row", "data-role": "about-version" },
+      "当前版本：读取中…",
+    );
+    aboutRepository = el(
+      "div",
+      { className: "settings-about-row", "data-role": "about-repository" },
+      "仓库：读取中…",
+    );
+    aboutInstallKind = el(
+      "p",
+      { className: "settings-block-hint", "data-role": "about-install-kind" },
+      "安装方式：读取中…",
+    );
+    blockAbout.append(aboutVersion, aboutRepository, aboutInstallKind);
+
+    const updateRow = el("div", { className: "settings-row settings-update-row" });
+    updateButton = el("button", { type: "button", "data-role": "update-check" }, "检查更新");
+    updateButton.disabled = true;
+    updateButton.addEventListener("click", () => void checkUpdate());
+    updateStatus = el("span", {
+      "data-role": "update-status",
+      role: "status",
+      "aria-live": "polite",
+    });
+    updateRow.append(updateButton, updateStatus);
+    blockAbout.appendChild(updateRow);
+
+    const howto = el("details", { className: "settings-howto", "data-role": "update-howto" });
+    howto.appendChild(el("summary", {}, "如何更新"));
+    howtoPre = el("pre", { className: "settings-howto-text", "data-role": "update-howto-text" });
+    howto.appendChild(howtoPre);
+    blockAbout.appendChild(howto);
+    body.appendChild(blockAbout);
+
     modal.appendChild(body);
 
     const foot = el("div", { className: "settings-foot" });
@@ -602,7 +843,17 @@ export default function createSettingsPanel(elements) {
 
   async function load() {
     setStatus("正在读取当前设置…", "info");
-    const [configResult, modelsResult] = await Promise.all([api.config(), api.models()]);
+    const versionPromise =
+      api && typeof api.version === "function"
+        ? api.version()
+        : Promise.resolve({ ok: false, code: "UNSUPPORTED", userText: "这个版本的本地服务不支持版本信息" });
+    const [configResult, modelsResult, versionResult] = await Promise.all([
+      api.config(),
+      api.models(),
+      versionPromise,
+    ]);
+    // 关于/更新块与 config 无关：即使 config 读不到也要如实显示版本与更新指引。
+    renderAbout(versionResult && versionResult.ok ? versionResult.data || null : null);
     if (modelsResult.ok) {
       const payload = modelsResult.data || {};
       gateway = payload.gateway || null;

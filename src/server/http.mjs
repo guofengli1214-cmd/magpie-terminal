@@ -32,7 +32,7 @@ import {
 } from "../config/store.mjs";
 import { z } from "zod";
 import { RemoteRegistry, fingerprintForHost, listFiles, testHostConnection } from "../ssh/registry.mjs";
-import { stat } from "node:fs/promises";
+import { stat, readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { buildPolicy } from "./routes/policy.mjs";
 import { handleAiPost } from "./routes/ai.mjs";
@@ -42,6 +42,8 @@ import { attachWebSocket } from "./ws.mjs";
 import { LOG_FILE_NAME, LOG_ROTATED_NAME, createLogWriter, formatLogLine } from "./logger.mjs";
 import { redactText } from "./log-redact.mjs";
 import { readMagpieSettings, normalizeAccent } from "../config/magpie-settings.mjs";
+import { detectInstallKind } from "../config/install-kind.mjs";
+import { checkForUpdate, normalizeRepository } from "../config/update-check.mjs";
 import { TITLE_MAX, createSessionStore } from "../ai/sessions.mjs";
 import { detectShell, loadNodePty, LOCKED_NODE_PTY_VERSION } from "../pty/bridge.mjs";
 import { SessionManager } from "../pty/session.mjs";
@@ -49,6 +51,35 @@ import { detectShells, resolveShellById, resolveShellForRequest } from "../pty/s
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = "0.1.0";
+const PACKAGE_JSON_URL = new URL("../../package.json", import.meta.url);
+
+/**
+ * 读 package.json 的版本三件套（TASK-FIX17-G R1）。
+ *
+ * 只在 `startServer()` 里读一次：版本/仓库地址在进程生命周期内不会变，
+ * 而 `/api/version` 每次请求都读盘既无意义又会把「文件被临时改动」带进响应。
+ * 读不到时回落到内置常量，服务照常起（绝不因为 package.json 坏了 500）。
+ */
+async function readPackageMetadata() {
+  let data = null;
+  try {
+    data = JSON.parse(await readFile(PACKAGE_JSON_URL, "utf8"));
+  } catch {
+    data = null;
+  }
+  const source = data && typeof data === "object" ? data : {};
+  return {
+    version:
+      typeof source.version === "string" && source.version.trim().length > 0
+        ? source.version.trim()
+        : VERSION,
+    name:
+      typeof source.name === "string" && source.name.trim().length > 0
+        ? source.name.trim()
+        : "magpie-terminal",
+    repository: source.repository === undefined ? null : source.repository,
+  };
+}
 
 export const MAX_BODY_BYTES = 64 * 1024;
 
@@ -808,6 +839,24 @@ export async function startServer(options = {}) {
    */
   const logWriter = () => (log && log.writer ? log.writer : null);
   const token = options.token || generateToken();
+  // TASK-FIX17-G：版本信息与更新检查的注入点。
+  // `packageInfo` 让单测不必临时改 package.json；`updateCheck` 让单测不必真连 GitHub。
+  const packageInfo =
+    options.packageInfo && typeof options.packageInfo === "object"
+      ? {
+          version:
+            typeof options.packageInfo.version === "string" && options.packageInfo.version.length > 0
+              ? options.packageInfo.version
+              : VERSION,
+          name:
+            typeof options.packageInfo.name === "string" && options.packageInfo.name.length > 0
+              ? options.packageInfo.name
+              : "magpie-terminal",
+          repository: options.packageInfo.repository ?? null,
+        }
+      : await readPackageMetadata();
+  const updateCheckOptions =
+    options.updateCheck && typeof options.updateCheck === "object" ? options.updateCheck : {};
 
   const shell = detectShell({ shell: options.shell });
   const ptyLoad = loadNodePty();
@@ -1397,6 +1446,51 @@ export async function startServer(options = {}) {
           {},
           cors,
         );
+        return;
+      }
+
+      // GET /api/version（TASK-FIX17-G R1）：当前版本 / 仓库地址 / 安装方式。
+      // 安装方式每次现读 plugins.json（只读、可注入），用户换了装法不必重启服务。
+      if (req.method === "GET" && pathname === "/api/version") {
+        const repository = normalizeRepository(packageInfo.repository);
+        const installKind = await detectInstallKind();
+        writeJson(
+          res,
+          200,
+          {
+            version: packageInfo.version,
+            name: packageInfo.name,
+            repository: repository ? repository.url : null,
+            installKind,
+            // PRD R1：仓库存在且安装方式不是 unknown 才「支持检查」。
+            updateSupported: Boolean(repository) && installKind !== "unknown",
+          },
+          {},
+          cors,
+        );
+        return;
+      }
+
+      // GET /api/update/check（TASK-FIX17-G R1/R3）：GitHub releases/latest。
+      // 失败也回 200 + {hasUpdate:false, error}：这是「查询没成功」，不是服务坏了。
+      if (req.method === "GET" && pathname === "/api/update/check") {
+        const installKind = await detectInstallKind();
+        const result = await checkForUpdate({
+          ...updateCheckOptions,
+          repository: packageInfo.repository,
+          installKind,
+          currentVersion: packageInfo.version,
+        });
+        if (result.error) {
+          log({
+            level: "warn",
+            code: "UPDATE_CHECK_FAILED",
+            msg: "update check failed",
+            route: "GET /api/update/check",
+            reason: result.error,
+          });
+        }
+        writeJson(res, 200, result, {}, cors);
         return;
       }
 

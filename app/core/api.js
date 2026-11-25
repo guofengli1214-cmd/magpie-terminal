@@ -198,6 +198,23 @@ export default {
   shells() {
     return getJson("/api/shells");
   },
+
+  /**
+   * GET /api/version（TASK-FIX17-G R1）：
+   * `{version, name, repository, installKind, updateSupported}`。
+   * `repository` 是归一后的 https 地址，没配置时为 null。
+   */
+  version() {
+    return getJson("/api/version");
+  },
+  /**
+   * GET /api/update/check（TASK-FIX17-G R1/R3）：
+   * `{current, latest, hasUpdate, url, note?}`，失败时是
+   * `{hasUpdate:false, error:"<人话>"}`（HTTP 仍是 200，不是异常）。
+   */
+  updateCheck() {
+    return getJson("/api/update/check");
+  },
   /**
    * GET /api/theme：当前主题（TASK-FIX17-B R1）。
    *
