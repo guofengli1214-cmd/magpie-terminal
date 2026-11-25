@@ -61,8 +61,14 @@
   --term-bg: var(--magpie-bg);
   --term-fg: var(--magpie-fg);
   --term-fg-2: var(--magpie-fg-2);
-  --term-muted: var(--magpie-muted);
-  --term-dim: color-mix(in srgb, var(--magpie-muted) 82%, var(--magpie-bg));
+  /* TASK-FIX17-F（布局审查 F-07）：两档弱文字都必须过 4.5:1。
+     修前是 muted=原值、dim=muted 82% + 背景 18%：
+       浅色 muted #6b7280 在 #f4f4f6 上 4.40:1（差 0.1），dim 3.19:1；
+       深色 dim 也偏弱。往 `--magpie-fg` 方向混一点（不是往背景混）才能提对比度：
+       浅色 muted → #5d636f（5.49:1）、dim → #656b78（4.87:1）；
+       深色 muted → 8.02:1、dim → 7.38:1。dim 混得更少，仍然比 muted 弱一档。 */
+  --term-muted: color-mix(in srgb, var(--magpie-muted) 82%, var(--magpie-fg));
+  --term-dim: color-mix(in srgb, var(--magpie-muted) 92%, var(--magpie-fg));
 
   /* ---- 线条 ----------------------------------------------------------- */
   --term-border: var(--magpie-line);
@@ -221,6 +227,17 @@
   --mt-warn: #ffcc80;
   --mt-ok: #a5d6a7;
   --magpie-muted: #9aa4b0;
+
+  /* TASK-FIX17-F（F-01/F-02/F-03）：强调色作为**前景**压在深底上的对比度。
+     magpie 的 accent 是用户设置（本机 #52525b，中性深灰）：在浅色下配白底 7.7:1 没问题，
+     在深色下配 #1a1a1e 只剩 2.24:1；拿它当按钮底色时 accent-fg (#14142a) 只剩 2.34:1。
+     症状：rail 选中图标、文件面板「上传」文字、抽屉发送箭头、tab 的类型图标几乎看不见。
+     往 fg 方向混 58% → #acacb2（深底上 7.68:1；accent-fg 压在上面 7.99:1），
+     色相保留，只提亮度。
+     `--term-focus` 必须跟着走：焦点环原来直接用 magpie accent，深色下只有 2.24:1
+     （skill 的「焦点环、边框、图标等非文本元素 ≥ 3:1」过不了）。 */
+  --term-accent: color-mix(in srgb, var(--magpie-accent) 42%, var(--magpie-fg));
+  --term-focus: var(--term-accent);
 
   /* 深色 ANSI：原来的 `@media (prefers-color-scheme: dark)` 那一套，
      现在挂在 `is-dark` 上（这是个真类，不是空声明）。 */

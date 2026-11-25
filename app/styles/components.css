@@ -128,6 +128,15 @@ button[disabled] {
   font-weight: 600;
 }
 
+/* TASK-FIX17-F（F-08）：状态栏「立即重连」修前 68×23.3（高度 <24，
+   低于 skill 引用的 Web 目标尺寸下限）。只调高度与内边距，状态栏高度 26px 不变。 */
+[data-role="status-retry"] {
+  display: inline-grid;
+  place-items: center;
+  height: 24px;
+  padding: 0 10px;
+}
+
 [data-role="banner"] {
   margin: 4px var(--term-gap) 0;
   padding: 6px 10px;
@@ -915,14 +924,19 @@ button[disabled] {
   box-sizing: border-box;
   display: block;
   padding: 4px 8px;
-  border: 1px solid var(--term-line-2);
+  /* TASK-FIX17-F（F-05）：输入框边界必须 ≥3:1（skill：control boundaries need 3:1）。
+     修前 --term-line-2 在浅底只有 1.82:1、深底 2.61:1，输入框看起来“没有边”。
+     --term-line-3 浅底 3.09:1、深底 4.73:1。 */
+  border: 1px solid var(--term-line-3);
   border-radius: var(--term-radius-lg);
   background: var(--term-bg);
   transition: border-color 0.12s ease;
 }
 
 [data-role="ai-drawer"] .composer-box:focus-within {
-  border-color: var(--term-accent-line);
+  /* TASK-FIX17-F（F-06）：聚焦态必须比常态更显眼。原来 accent-line 在浅/深底
+     只有 2.5/1.9:1，比修好后的常态 3.09/4.73 还淡；焦点环直接用 accent。 */
+  border-color: var(--term-focus);
 }
 
 [data-role="ai-drawer"] [data-role="agent-input"] {
@@ -1302,10 +1316,16 @@ button[disabled] {
 }
 
 .settings-x {
+  /* TASK-FIX17-F（F-08）：Web 指针目标最小 24 CSS px（skill：Web 24 CSS px）。
+     修前高度只有 22.4px。改高度不改变头部的其它几何，眼睛不受影响。 */
+  height: 24px;
+  min-width: 24px;
+  display: grid;
+  place-items: center;
   padding: 0 8px;
   border: none;
   font-size: 16px;
-  line-height: 1.4;
+  line-height: 1;
   color: var(--term-muted);
 }
 
@@ -1371,6 +1391,13 @@ button[disabled] {
   white-space: normal;
 }
 
+/* TASK-FIX17-F（F-04）：选中卡的底色是 accent 32% 叠白（浅色下 #c8c8cb），
+   弱文字压在上面只有 2.9:1（skill：正文 ≥ 4.5:1）。未选中卡不变；
+   选中卡里的说明文字换 fg-2 → 5.18:1，标题/正文层级不受影响。 */
+.autonomy-card[data-selected="true"] .autonomy-desc {
+  color: var(--term-fg-2);
+}
+
 .allowlist-add-row {
   display: flex;
   gap: 6px;
@@ -1387,7 +1414,8 @@ button[disabled] {
   padding: 2px 8px;
   color: var(--term-fg);
   background: var(--term-bg);
-  border: 1px solid var(--term-border);
+  /* TASK-FIX17-F（F-05）：控件边界 ≥3:1（原 --term-border 浅色 1.16:1）。 */
+  border: 1px solid var(--term-line-3);
   border-radius: var(--term-radius);
 }
 
@@ -1400,7 +1428,8 @@ button[disabled] {
   font-size: 12px;
   color: var(--term-fg);
   background: var(--term-bg);
-  border: 1px solid var(--term-border);
+  /* TASK-FIX17-F（F-05）：同 allowlist-input。 */
+  border: 1px solid var(--term-line-3);
   border-radius: var(--term-radius);
 }
 
@@ -1487,7 +1516,8 @@ button[disabled] {
   padding: 6px 8px;
   color: var(--term-fg);
   background: var(--term-bg);
-  border: 1px solid var(--term-border);
+  /* TASK-FIX17-F（F-05）：多行输入框边界 ≥3:1。 */
+  border: 1px solid var(--term-line-3);
   border-radius: var(--term-radius);
 }
 
@@ -1824,7 +1854,9 @@ button[disabled] {
   box-sizing: border-box;
   color: var(--term-fg);
   background: var(--term-bg);
-  border: 1px solid var(--term-border);
+  /* TASK-FIX17-F（F-05）：同 .composer-box / .file-panel-path，
+     表单控件的边界是它唯一的可见标识，必须 ≥3:1。 */
+  border: 1px solid var(--term-line-3);
   border-radius: var(--term-radius);
 }
 
@@ -2060,7 +2092,8 @@ button[disabled] {
   padding: 3px 4px;
   color: var(--term-fg);
   background: var(--term-bg);
-  border: 1px solid var(--term-border);
+  /* TASK-FIX17-F（F-05）：下拉框边界 ≥3:1（原 --term-border 只有 1.16:1）。 */
+  border: 1px solid var(--term-line-3);
   border-radius: var(--term-radius);
 }
 
@@ -2235,7 +2268,9 @@ button[disabled] {
   min-width: 60px;
   height: 24px;
   padding: 0 7px;
-  border: 1px solid var(--term-line);
+  /* TASK-FIX17-F（F-05）：路径输入框的边界在浅色下修前是 #e3e3e8（1.16:1），
+     在深色下也是同一条线（1.15:1）—— 框看起来是“消失”的。line-3 是 3.09/4.73:1。 */
+  border: 1px solid var(--term-line-3);
   border-radius: 5px;
   background: var(--term-bg);
   color: var(--term-fg);
@@ -2244,8 +2279,10 @@ button[disabled] {
 }
 
 .file-panel-path:focus {
+  /* TASK-FIX17-F（F-06）：这条 :focus 的 outline:none 会盖掉全局 :focus-visible 环，
+     所以边框本身就是唯一的焦点指示器，必须高对比（accent 在两种主题下 7:1+）。 */
   outline: none;
-  border-color: var(--term-accent-line);
+  border-color: var(--term-focus);
 }
 
 /* TASK-FIX17-C R1：定位按钮（常显内联 SVG，三态）。
@@ -2780,7 +2817,8 @@ button[disabled] {
   box-sizing: border-box;
   resize: vertical;
   padding: 8px 10px;
-  border: 1px solid var(--term-line);
+  /* TASK-FIX17-F（F-05）：与路径框同一类控件，边界 ≥3:1。 */
+  border: 1px solid var(--term-line-3);
   border-radius: var(--term-radius);
   background: var(--term-bg);
   color: var(--term-fg);
@@ -2792,7 +2830,7 @@ button[disabled] {
 
 .file-panel-textarea:focus {
   outline: none;
-  border-color: var(--term-accent-line);
+  border-color: var(--term-focus);
 }
 
 .file-panel-modal-text {
@@ -2820,7 +2858,8 @@ button[disabled] {
   box-sizing: border-box;
   height: 28px;
   padding: 0 8px;
-  border: 1px solid var(--term-line);
+  /* TASK-FIX17-F（F-05）：同上。 */
+  border: 1px solid var(--term-line-3);
   border-radius: var(--term-radius);
   background: var(--term-bg);
   color: var(--term-fg);
@@ -2829,7 +2868,7 @@ button[disabled] {
 
 .file-panel-input:focus {
   outline: none;
-  border-color: var(--term-accent-line);
+  border-color: var(--term-focus);
 }
 
 .file-panel-check {
