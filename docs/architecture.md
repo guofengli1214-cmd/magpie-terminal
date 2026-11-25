@@ -157,6 +157,7 @@ UI(AI 栏)            src/server           src/ai           网关 3425       sr
 - 关掉标签 → `kill()` PTY → 该会话的数据一起消失；退出 magpie → 全部丢失。
 - 因此「会话不跨 magpie 重启保留」是设计选择，不是缺陷（见 README 的非目标）。
 - 命令历史（T3 范围）如果要落盘，位置与格式**待定**，不能默认写进 magpie 的配置目录。
+- **TASK-FIX17-L1 新增的唯一落盘位置**：用户在设置页指定的 `downloadDir`（存在 `~/.config/magpie-terminal/config.json` 的 `downloadDir` 字段）。下载文件与导出日志只往这个目录写，文件名撞了就退到 `name (1).ext`，绝不覆盖已有文件。没设置时一律走浏览器默认下载目录（服务端不落盘）。
 
 ## 7. 默认 shell 与探测顺序
 

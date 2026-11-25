@@ -28,6 +28,8 @@ import {
   writeFileAtomic,
   writeStreamAtomic,
 } from "../../fs/local.mjs";
+import { saveLocalFile, saveRemoteFile } from "../../fs/export.mjs";
+import { isPathInside, revealPath } from "../../fs/reveal.mjs";
 import {
   listRemoteDirectory,
   readRemoteFile,
@@ -50,6 +52,14 @@ export function statusOf(code) {
     case "NOT_FOUND":
     case "HOST_NOT_FOUND":
       return 404;
+    case "HOST_UNREACHABLE":
+      // 远端连不上：是我们"这边"没办法，不是参数错。
+      return 502;
+    case "TRANSFER_FAILED":
+    case "TOO_MANY_DUPLICATES":
+    case "LOGS_EXPORT_FAILED":
+      // 磁盘 / 传输层面的失败：500（不带 stack，不泄路径）。
+      return 500;
     case "ALREADY_EXISTS":
     case "TARGET_EXISTS":
     case "DIR_NOT_EMPTY":
@@ -142,6 +152,115 @@ function rawBodyStream(req) {
 }
 
 /**
+ * 当前生效的下载目录（由 http.mjs 注入的惰性读取器）。
+ *
+ * 惰性而不是启动时快照：设置页刚改完目录，下一次下载就要落进新目录，
+ * 不需要重启服务（R4 的「服务端决定落盘与否」）。
+ *
+ * @param {object} ctx
+ * @returns {Promise<string|null>}
+ */
+async function resolveDownloadDir(ctx) {
+  if (typeof ctx.readDownloadDir !== "function") return null;
+  try {
+    const value = await ctx.readDownloadDir();
+    return typeof value === "string" && value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 日志：只记可以脱敏后的字节数与文件名，**绝不记完整路径**。 */
+function logEvent(ctx, entry) {
+  if (typeof ctx.log !== "function") return;
+  try {
+    ctx.log(entry);
+  } catch {
+    // 日志是旁路：记不下来也不影响操作本身。
+  }
+}
+
+/** `POST /api/fs/save`：源文件复制到 downloadDir（R2）。 */
+async function handleSave(req, res, cors, readBody, ctx) {
+  const body = parseJson(await readBody(req, res));
+  if (res.writableEnded) return true;
+  if (!body) {
+    writeJson(res, 400, { code: "BAD_BODY", userText: "请求体必须是 JSON 对象（{path}）。" }, cors);
+    return true;
+  }
+  const dir = await resolveDownloadDir(ctx);
+  if (!dir) {
+    // **200 不是错误**：前端拿这个 code 回落成原来的浏览器下载（AC5）。
+    writeJson(
+      res,
+      200,
+      { ok: false, code: "NO_DOWNLOAD_DIR", userText: "还没有设置下载目录" },
+      cors,
+    );
+    return true;
+  }
+  try {
+    const source = guardPath(body.path, { label: "源文件路径" });
+    const result = await saveLocalFile(source, dir, ctx.exportDeps || {});
+    logEvent(ctx, {
+      level: "info",
+      code: "EXPORT_SAVED",
+      msg: "file saved to download dir",
+      route: "POST /api/fs/save",
+      bytes: result.bytes,
+      name: result.name,
+    });
+    writeJson(res, 200, { ok: true, savedPath: result.savedPath, bytes: result.bytes, name: result.name }, cors);
+  } catch (err) {
+    sendError(res, cors, err);
+  }
+  return true;
+}
+
+/** `POST /api/fs/reveal`：在文件管理器里定位到下载目录里的那个文件（R6）。 */
+async function handleReveal(req, res, cors, readBody, ctx) {
+  const body = parseJson(await readBody(req, res));
+  if (res.writableEnded) return true;
+  if (!body) {
+    writeJson(res, 400, { code: "BAD_BODY", userText: "请求体必须是 JSON 对象（{path}）。" }, cors);
+    return true;
+  }
+  try {
+    const target = guardPath(body.path, { label: "路径" });
+    const dir = await resolveDownloadDir(ctx);
+    // 未设置下载目录时任何路径都不在范围内：同样回 400，不给「猜路径」的口子。
+    if (!dir || !isPathInside(dir, target)) {
+      writeJson(
+        res,
+        400,
+        { code: "REVEAL_OUT_OF_SCOPE", userText: "只能打开下载目录里的文件或文件夹。" },
+        cors,
+      );
+      return true;
+    }
+    const info = await statPath(target);
+    const revealed = revealPath(info.path, {
+      spawnImpl: ctx.revealSpawn,
+      isDirectory: info.type === "dir",
+    });
+    logEvent(ctx, {
+      level: "info",
+      code: "REVEAL_OPENED",
+      msg: "download folder revealed",
+      route: "POST /api/fs/reveal",
+      // 只记 basename（完整路径不进日志）。
+      name: baseName(info.path),
+      isDirectory: info.type === "dir",
+      command: revealed.command,
+    });
+    writeJson(res, 200, { ok: true, revealed: true }, cors);
+  } catch (err) {
+    sendError(res, cors, err);
+  }
+  return true;
+}
+
+/**
  * 处理 `/api/fs/*`。返回 true 表示已经处理（响应已写）。
  *
  * @param {{req, res, url, cors, readBody}} ctx
@@ -149,6 +268,16 @@ function rawBodyStream(req) {
 export async function handleLocalFs(ctx) {
   const { req, res, url, cors, readBody } = ctx;
   const action = url.pathname.slice("/api/fs".length).replace(/^\//, "");
+
+  // TASK-FIX17-L1 R2 / R6：下载落盘与「打开所在文件夹」。
+  // 放在最前面：这两个 action 与目录列表无关，不必走到后面的分支。
+  if (req.method === "POST" && action === "save") {
+    return handleSave(req, res, cors, readBody, ctx);
+  }
+
+  if (req.method === "POST" && action === "reveal") {
+    return handleReveal(req, res, cors, readBody, ctx);
+  }
 
   if (req.method === "GET" && (action === "" || action === "list")) {
     try {
@@ -426,6 +555,46 @@ export async function handleRemoteFs(ctx) {
   const { req, res, url, cors, readBody, hostId } = ctx;
   const prefix = `/api/hosts/${hostId}/fs`;
   const action = url.pathname.slice(prefix.length).replace(/^\//, "");
+
+  // TASK-FIX17-L1 R3：远程文件保存到 downloadDir（`.part` → rename）。
+  if (req.method === "POST" && action === "save") {
+    const body = parseJson(await readBody(req, res));
+    if (res.writableEnded) return true;
+    if (!body) {
+      writeJson(res, 400, { code: "BAD_BODY", userText: "请求体必须是 JSON 对象（{path}）。" }, cors);
+      return true;
+    }
+    const dir = await resolveDownloadDir(ctx);
+    if (!dir) {
+      // 与本地同形：200 + ok:false，前端据此回落浏览器下载。
+      writeJson(
+        res,
+        200,
+        { ok: false, code: "NO_DOWNLOAD_DIR", userText: "还没有设置下载目录" },
+        cors,
+      );
+      return true;
+    }
+    if (typeof body.path !== "string" || body.path.length === 0 || body.path.length > 4096) {
+      writeJson(res, 400, { code: "INVALID_PATH", userText: "远端路径不合法。" }, cors);
+      return true;
+    }
+    try {
+      const result = await saveRemoteFile(hostId, body.path, dir, ctx.exportDeps || {});
+      logEvent(ctx, {
+        level: "info",
+        code: "EXPORT_SAVED",
+        msg: "remote file saved to download dir",
+        route: "POST /api/hosts/:id/fs/save",
+        bytes: result.bytes,
+        name: result.name,
+      });
+      writeJson(res, 200, { ok: true, savedPath: result.savedPath, bytes: result.bytes, name: result.name }, cors);
+    } catch (err) {
+      sendError(res, cors, err);
+    }
+    return true;
+  }
 
   if (req.method === "GET" && (action === "" || action === "list")) {
     try {

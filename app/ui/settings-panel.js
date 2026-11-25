@@ -67,6 +67,14 @@ export default function createSettingsPanel(elements) {
   let backdrop = null;
   let statusTimer = null;
   let focusBefore = null;
+  /**
+   * 状态行被写过的次数（TASK-FIX17-L1 自查发现）。
+   *
+   * `load()` 是异步的，结尾会把状态行清空。用户手快（设置页一打开就点「导出日志」）
+   * 时，`load()` 可能在导出之后才回来 —— 那句「已导出到 C:\…」会被凭空抹掉，
+   * 用户以为没成功。所以清空只能是「这期间没有任何人写过状态行」时才做。
+   */
+  let statusVersion = 0;
 
   let autonomyGroup = null;
   let allowlistInput = null;
@@ -79,10 +87,18 @@ export default function createSettingsPanel(elements) {
   let saveButton = null;
   let effectToggle = null;
   let showApprovalEffect = false;
+  // TASK-FIX17-L1 R4：下载与导出目录（属于配置字段，跟其它字段一起 PUT）。
+  let downloadDirInput = null;
+  let downloadDirDefaultButton = null;
+  let downloadDirHint = null;
+  let downloadDirDefault = null;
   // TASK-FIX17-E：日志 block 的两个按钮与状态行（不是表单字段，不参与保存）。
   let logExportButton = null;
   let logClearButton = null;
   let logStatusLine = null;
+  // TASK-FIX17-L1：日志导出到目录后回显路径 + 「打开所在文件夹」。
+  let logRevealButton = null;
+  let lastExportedPath = null;
   // TASK-FIX17-G：关于/更新 block。只读 + 手动检查，不做自动下载安装。
   let aboutVersion = null;
   let aboutRepository = null;
@@ -108,6 +124,7 @@ export default function createSettingsPanel(elements) {
   /* ---------------- 状态行 ---------------- */
 
   function setStatus(text, tone) {
+    statusVersion += 1;
     if (!statusLine) return;
     statusLine.textContent = text || "";
     if (tone) statusLine.setAttribute("data-tone", tone);
@@ -316,17 +333,32 @@ export default function createSettingsPanel(elements) {
   /**
    * 导出日志。
    *
-   * 走「先 fetch 拿 blob、再 `<a download>` 触发」而不是把 URL 丢给
-   * `location.href`：导出接口要带 token 头，Navigation 请求发不了自定义头，
-   * 直接跳过去只会得到一个 403 页面（同样模式见 file-panel 的下载）。
+   * TASK-FIX17-L1 R4/R5：先调 `POST /api/logs/export-to-dir`把日志写进下载目录；
+   * 未设目录（400 `NO_DOWNLOAD_DIR`）才回落原来的「fetch 拿 blob + `<a download>`」。
+   *
+   * 为什么回落而不是报错：本卡不能把已经有导出能力的人弄丢——没设目录时的
+   * 行为必须与改前逐字一致。
    */
   async function exportLogs() {
+    if (logExportButton) logExportButton.disabled = true;
+    setStatus("正在导出日志…", "info");
+
+    const toDir = await exportLogsToDir();
+    if (toDir === "saved") {
+      if (logExportButton) logExportButton.disabled = false;
+      await refreshLogStatus();
+      return;
+    }
+    if (toDir === "failed") {
+      if (logExportButton) logExportButton.disabled = false;
+      return;
+    }
+
     if (!api || typeof api.logsExport !== "function") {
+      if (logExportButton) logExportButton.disabled = false;
       setStatus("这个版本的本地服务不支持导出日志。", "error");
       return;
     }
-    if (logExportButton) logExportButton.disabled = true;
-    setStatus("正在导出日志…", "info");
     const result = await api.logsExport();
     if (logExportButton) logExportButton.disabled = false;
     if (!result.ok) {
@@ -349,6 +381,58 @@ export default function createSettingsPanel(elements) {
     await refreshLogStatus();
   }
 
+  /**
+   * 导出到下载目录。
+   *
+   * @returns {Promise<"saved"|"fallback"|"failed">}
+   *   `saved` = 已落盘；`fallback` = 没设目录 / 服务端太旧，调用方走 blob 下载；
+   *   `failed` = 已给用户报错，调用方不要再走第二条路径。
+   */
+  async function exportLogsToDir() {
+    if (!api || typeof api.logsExportToDir !== "function") return "fallback";
+    const result = await api.logsExportToDir();
+    if (!result.ok) {
+      if (result.code === "NO_DOWNLOAD_DIR" || result.code === "NOT_FOUND" || result.code === "NETWORK") {
+        return "fallback";
+      }
+      setStatus(result.userText || "导出失败", "error");
+      return "failed";
+    }
+    const data = result.data || {};
+    if (data.ok === true && typeof data.savedPath === "string" && data.savedPath.length > 0) {
+      lastExportedPath = data.savedPath;
+      if (logRevealButton) logRevealButton.hidden = false;
+      // AC7：提示里必须是完整路径（用户要能直接照着去找）。
+      setStatus(`已导出到 ${data.savedPath}`, "ok");
+      return "saved";
+    }
+    if (data.code === "NO_DOWNLOAD_DIR") return "fallback";
+    setStatus(data.userText || "导出失败", "error");
+    return "failed";
+  }
+
+  /** 调 `/api/fs/reveal` 打开刚导出的日志所在文件夹。 */
+  async function revealExported() {
+    if (!lastExportedPath) return;
+    if (!api || typeof api.revealPath !== "function") {
+      setStatus("这个版本的本地服务不支持打开文件夹。", "error");
+      return;
+    }
+    const result = await api.revealPath(lastExportedPath);
+    if (!result.ok) {
+      setStatus(result.userText || "打不开文件夹。", "error");
+      return;
+    }
+    setStatus(`已打开所在文件夹：${dirOf(lastExportedPath)}`, "ok");
+  }
+
+  /** 取路径里的目录部分（Windows / POSIX 分隔符都算）。 */
+  function dirOf(targetPath) {
+    const text = String(targetPath || "");
+    const index = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+    return index > 0 ? text.slice(0, index) : "";
+  }
+
   /** 清空日志。二次确认：日志删了就找不回来（排查现场通常只有一次机会）。 */
   async function clearLogs() {
     if (!api || typeof api.logsClear !== "function") {
@@ -369,6 +453,36 @@ export default function createSettingsPanel(elements) {
     }
     setStatus("日志已清空", "ok");
     await refreshLogStatus();
+  }
+
+  /**
+   * 渲染下载目录 block（TASK-FIX17-L1 R4）：当前值 + 「用默认目录」的占位符。
+   *
+   * `downloadDirDefault` 来自 GET /api/config（服务端用 `os.homedir()` 算），
+   * 前端不自己拼路径：前端拿不到家目录，拼出来的只会是写死用户名。
+   */
+  function renderDownloadDir(config) {
+    if (!downloadDirInput) return;
+    const payload = config && typeof config === "object" ? config : {};
+    downloadDirDefault =
+      typeof payload.downloadDirDefault === "string" && payload.downloadDirDefault.length > 0
+        ? payload.downloadDirDefault
+        : null;
+    downloadDirInput.value = typeof payload.downloadDir === "string" ? payload.downloadDir : "";
+    downloadDirInput.placeholder = downloadDirDefault || "留空则用浏览器默认下载目录";
+    if (downloadDirDefaultButton) downloadDirDefaultButton.disabled = !downloadDirDefault;
+    if (downloadDirHint) {
+      downloadDirHint.textContent = downloadDirDefault
+        ? `留空时不会自动建目录；点「用默认目录」会填入 ${downloadDirDefault}（保存后生效）。`
+        : "留空则每次下载都交给浏览器。";
+    }
+  }
+
+  /** 把默认目录填进输入框（不自动保存：用户还要自己点保存）。 */
+  function fillDefaultDownloadDir() {
+    if (!downloadDirInput || !downloadDirDefault) return;
+    downloadDirInput.value = downloadDirDefault;
+    downloadDirInput.focus();
   }
 
   /* ---------------- 关于 / 更新（TASK-FIX17-G R2） ---------------- */
@@ -704,7 +818,47 @@ export default function createSettingsPanel(elements) {
     blockPrompt.appendChild(basePromptInput);
     body.appendChild(blockPrompt);
 
-    /* 5. AI 网关 */
+    /* 5. 下载与导出目录（TASK-FIX17-L1 R4）
+       放在「AI 网关」之前：它属于日常会改的设置，而不是只读的网关信息。
+       持久化在 config.json 的 downloadDir；留空 = null = 回落浏览器下载。 */
+    const blockDownloads = el("section", { className: "settings-block", "data-block": "downloads" });
+    blockDownloads.appendChild(el("h3", { className: "settings-block-title" }, "下载与导出"));
+    blockDownloads.appendChild(
+      el(
+        "p",
+        { className: "settings-block-hint" },
+        "下载的文件、导出的日志都会存到这个目录。留空则用浏览器默认下载目录。",
+      ),
+    );
+    const downloadRow = el("div", { className: "settings-row settings-download-row" });
+    downloadDirInput = el("input", {
+      type: "text",
+      "data-role": "download-dir",
+      className: "settings-download-input",
+      placeholder: "例如 C:\\Users\\你\\Downloads\\magpie-terminal",
+      autocomplete: "off",
+      spellcheck: "false",
+      maxlength: "512",
+      "aria-label": "下载与导出目录",
+    });
+    downloadDirDefaultButton = el(
+      "button",
+      { type: "button", "data-role": "download-dir-default", className: "settings-download-default" },
+      "用默认目录",
+    );
+    downloadDirDefaultButton.disabled = true;
+    downloadDirDefaultButton.addEventListener("click", () => fillDefaultDownloadDir());
+    downloadRow.append(downloadDirInput, downloadDirDefaultButton);
+    blockDownloads.appendChild(downloadRow);
+    downloadDirHint = el(
+      "p",
+      { className: "settings-block-hint", "data-role": "download-dir-hint" },
+      "留空则每次下载都交给浏览器。",
+    );
+    blockDownloads.appendChild(downloadDirHint);
+    body.appendChild(blockDownloads);
+
+    /* 6. AI 网关 */
     const blockGateway = el("section", { className: "settings-block", "data-block": "gateway" });
     blockGateway.appendChild(el("h3", { className: "settings-block-title" }, "AI 网关"));
     blockGateway.appendChild(
@@ -740,7 +894,14 @@ export default function createSettingsPanel(elements) {
       "清空日志",
     );
     logClearButton.addEventListener("click", () => void clearLogs());
-    logRow.append(logExportButton, logClearButton);
+    // TASK-FIX17-L1 R4：导出到目录后才有意义（未导出时隐藏）。
+    logRevealButton = el(
+      "button",
+      { type: "button", "data-role": "logs-reveal", hidden: true },
+      "打开所在文件夹",
+    );
+    logRevealButton.addEventListener("click", () => void revealExported());
+    logRow.append(logExportButton, logClearButton, logRevealButton);
     blockLogs.appendChild(logRow);
     logStatusLine = el(
       "p",
@@ -842,6 +1003,7 @@ export default function createSettingsPanel(elements) {
   /* ---------------- 打开 / 关闭 ---------------- */
 
   async function load() {
+    const versionAtStart = statusVersion;
     setStatus("正在读取当前设置…", "info");
     const versionPromise =
       api && typeof api.version === "function"
@@ -870,6 +1032,7 @@ export default function createSettingsPanel(elements) {
       renderReviewModels(null);
       basePromptInput.value = "";
       setShowEffect(false);
+      renderDownloadDir(null);
       renderGateway();
       // 配置读不到也要把日志状态拉回来：这两条链路互不依赖（一个是 config.json，
       // 一个是日志文件），一起失败时用户至少还能导出日志去查为什么。
@@ -889,8 +1052,10 @@ export default function createSettingsPanel(elements) {
     renderReviewModels(typeof config.reviewModel === "string" ? config.reviewModel : null);
     basePromptInput.value = typeof config.basePrompt === "string" ? config.basePrompt : "";
     setShowEffect(config.showApprovalEffect === true);
+    renderDownloadDir(config);
     renderGateway();
-    setStatus("", null);
+    // 这期间没有更新的状态（比如用户已经点了「导出日志」）才清空。
+    if (statusVersion === versionAtStart + 1) setStatus("", null);
     // 日志 block 的状态单独拉：它读的是文件 stat，和 config/models 无关。
     await refreshLogStatus();
   }
@@ -908,6 +1073,11 @@ export default function createSettingsPanel(elements) {
       reviewModel: selectedReviewModel(),
       basePrompt: basePromptInput.value.trim().length > 0 ? basePromptInput.value : null,
       showApprovalEffect,
+      // TASK-FIX17-L1 R1：空串交给服务端归一成 null（这里 trim 后为空就送 null，
+      // 语义更直接："没填" = 用浏览器默认目录）。
+      downloadDir: downloadDirInput && downloadDirInput.value.trim().length > 0
+        ? downloadDirInput.value.trim()
+        : null,
     };
     const result = await api.saveConfig(patch);
     if (saveButton) saveButton.disabled = false;

@@ -40,6 +40,8 @@ export const KNOWN_FIELDS = Object.freeze([
   "defaultShell",
   // TASK-V4-H §6：确认卡上常显 AI 的效果评估（默认关）。
   "showApprovalEffect",
+  // TASK-FIX17-L1 R1：下载 / 导出目录（绝对路径；null = 用浏览器默认下载）。
+  "downloadDir",
 ]);
 
 /** 自动执行档位（PROTOCOL §1）。 */
@@ -53,6 +55,14 @@ export const ALLOWLIST_PATTERN_MAX = 500;
 export const REVIEW_MODEL_MAX = 200;
 /** basePrompt 长度上限（PROTOCOL §1）。 */
 export const BASE_PROMPT_MAX = 8000;
+
+/**
+ * 下载目录长度上限（TASK-FIX17-L1 R1）。
+ *
+ * 512 与 `ALLOWLIST_PATTERN_MAX` 同级：Windows 上 MAX_PATH 是 260，长路径前缀
+ * `\\?\` 下能到 32767，但 512 已经覆盖任何真实下载目录，再长只会是粘贴事故。
+ */
+export const DOWNLOAD_DIR_MAX = 512;
 
 /** 主机认证方式（TASK-V2-B §2.2）。 */
 export const AUTH_TYPES = Object.freeze(["password", "privateKey"]);
@@ -73,6 +83,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   defaultShell: null,
   // TASK-V4-H §6：确认卡上是否常显「执行后会发生什么」，默认关。
   showApprovalEffect: false,
+  // TASK-FIX17-L1 R1：null = 未设置 → 下载/导出回落浏览器默认目录。
+  downloadDir: null,
 });
 
 /**
@@ -172,6 +184,42 @@ async function readJsonMaybe(file) {
   return parsed;
 }
 
+/**
+ * 归一化下载目录（TASK-FIX17-L1 R1）：trim → 空白变 null → 去尾随分隔符。
+ *
+ * 保留 `\` 原样（Windows 路径要能直接交给 explorer），盘根 `C:\` 与 POSIX 根 `/`
+ * 末尾的分隔符**不**去掉（去掉就成了 `C:` = 当前盘当前目录，语义完全变了）。
+ * 相对路径一律 null：调用方（validate）负责报错，这里只做「能不能用」的判断。
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+export function normalizeDownloadDir(value) {
+  if (typeof value !== "string") return null;
+  let text = value.trim();
+  if (text.length === 0) return null;
+  if (text.length > DOWNLOAD_DIR_MAX) return null;
+  if (!path.isAbsolute(text)) return null;
+  if (/^[A-Za-z]:[\\/]$/.test(text)) return text; // C:\ / C:/
+  if (text === "/" || text === "\\") return text;
+  text = text.replace(/[\\/]+$/, "");
+  // `C:\\` 去尾后是 `C:`：补回分隔符，绝不能把盘根写成当前盘当前目录。
+  if (/^[A-Za-z]:$/.test(text)) return `${text}\\`;
+  return text.length > 0 ? text : null;
+}
+
+/**
+ * 「没设目录时」的默认建议值（GET /api/config 的 `downloadDirDefault`）。
+ *
+ * 用 `os.homedir()` 现算，**不写死用户名**：换机器 / 换账户后仍然是本机的
+ * `<家目录>\Downloads\magpie-terminal`。
+ *
+ * @returns {string}
+ */
+export function defaultDownloadDir() {
+  return path.join(os.homedir(), "Downloads", "magpie-terminal");
+}
+
 /** 白名单条目是否合法（PROTOCOL §1）。非法条目整份白名单都算非法。 */
 export function isValidAllowlistEntry(entry) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
@@ -246,6 +294,28 @@ export function validateConfigPatch(patch) {
     }
   }
 
+  // TASK-FIX17-L1 R1：downloadDir 只收绝对路径或 null。
+  // 空串 / 纯空白**不是**错误（设置页清空输入框就是它），归一化成 null。
+  if (has("downloadDir")) {
+    const value = patch.downloadDir;
+    if (value !== null && typeof value !== "string") {
+      return { code: "INVALID_DOWNLOAD_DIR", userText: "下载目录必须是绝对路径或者留空。" };
+    }
+    if (typeof value === "string") {
+      const text = value.trim();
+      if (text.length > DOWNLOAD_DIR_MAX) {
+        return {
+          code: "INVALID_DOWNLOAD_DIR",
+          userText: `下载目录最长 ${DOWNLOAD_DIR_MAX} 个字符（当前 ${text.length} 个）。`,
+        };
+      }
+      // 非空但不是绝对路径 → 400（空串/空白在上一条已经放行，会归一成 null）。
+      if (text.length > 0 && !path.isAbsolute(text)) {
+        return { code: "INVALID_DOWNLOAD_DIR", userText: "下载目录必须是绝对路径或者留空。" };
+      }
+    }
+  }
+
   // TASK-V4-H §6：boolean，非法类型 400 INVALID_SHOW_EFFECT。
   if (has("showApprovalEffect")) {
     if (typeof patch.showApprovalEffect !== "boolean") {
@@ -308,6 +378,11 @@ function normalize(config) {
   // showApprovalEffect：非 boolean 一律回落 false（默认关）。
   if (typeof next.showApprovalEffect !== "boolean") next.showApprovalEffect = false;
 
+  // downloadDir：非法值（相对路径 / 超长 / 非字符串）一律回落 null，不抛错。
+  // 这里与 validateConfigPatch 是两道关：手改 config.json 写进相对路径时，
+  // 读到内存里的值也必须是「未设置」，不能把相对路径当 cwd 用。
+  next.downloadDir = normalizeDownloadDir(next.downloadDir);
+
   return next;
 }
 
@@ -323,6 +398,7 @@ export function publicConfig(config) {
     basePrompt: normalized.basePrompt,
     defaultShell: normalized.defaultShell,
     showApprovalEffect: normalized.showApprovalEffect === true,
+    downloadDir: normalized.downloadDir,
   };
 }
 

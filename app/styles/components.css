@@ -3815,3 +3815,91 @@ html[data-files-open="true"] [data-role="ai-handle"] {
 [data-role="agent-summary-md"] a:hover {
   color: var(--term-fg);
 }
+
+/* =====================================================================
+ * 下载与导出目录（TASK-FIX17-L1 R4）—— 只新增，不改上面任何既有规则。
+ *
+ * 颜色全部走既有 --term-* 变量（F 批规矩：不引入颜色字面量）。
+ * ===================================================================== */
+
+.settings-block[data-block="downloads"] .settings-download-row {
+  gap: 6px;
+  align-items: center;
+}
+
+.settings-block [data-role="download-dir"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  font-family: var(--term-mono);
+  padding: 2px 8px;
+  color: var(--term-fg);
+  background: var(--term-bg);
+  /* 与 allowlist-input 同一档边界（≥3:1）。 */
+  border: 1px solid var(--term-line-3);
+  border-radius: var(--term-radius);
+}
+
+.settings-block [data-role="download-dir-default"] {
+  flex: 0 0 auto;
+  padding: 2px 12px;
+}
+
+.settings-block [data-role="download-dir-default"]:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.settings-block [data-role="download-dir-hint"] {
+  font-family: var(--term-mono);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+/* 文件面板底部的「已保存到 … / 打开所在文件夹」（只在下载到目录之后出现）。 */
+.file-panel-saved-hint {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px 3px 9px;
+  border-top: 1px solid var(--term-line);
+  background: var(--term-accent-soft);
+  min-width: 0;
+}
+
+.file-panel-saved-hint[hidden] {
+  display: none;
+}
+
+.file-panel-saved-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--term-mono);
+  font-size: 10.5px;
+  color: var(--term-fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-panel-saved-reveal {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 10.5px;
+  color: var(--term-fg);
+  background: var(--term-panel-2);
+  border: 1px solid var(--term-line-3);
+  border-radius: var(--term-radius);
+  cursor: pointer;
+}
+
+.file-panel-saved-reveal:hover,
+.file-panel-saved-reveal:focus-visible {
+  background: var(--term-raise);
+  color: var(--term-fg-2);
+}

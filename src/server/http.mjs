@@ -19,6 +19,7 @@ import { DEFAULT_MODEL, gatewayBaseUrl, probeGateway } from "../ai/gateway.mjs";
 import {
   KNOWN_FIELDS,
   addHost,
+  defaultDownloadDir,
   getHostRecord,
   listHosts,
   publicConfig,
@@ -41,6 +42,7 @@ import { isStaticPath, readAppFile, sendStatic } from "./static.mjs";
 import { attachWebSocket } from "./ws.mjs";
 import { LOG_FILE_NAME, LOG_ROTATED_NAME, createLogWriter, formatLogLine } from "./logger.mjs";
 import { redactText } from "./log-redact.mjs";
+import { saveTextToDir } from "../fs/export.mjs";
 import { readMagpieSettings, normalizeAccent } from "../config/magpie-settings.mjs";
 import { detectInstallKind } from "../config/install-kind.mjs";
 import { checkForUpdate, normalizeRepository } from "../config/update-check.mjs";
@@ -277,12 +279,31 @@ function writeAttachment(res, body, filename, cors = {}) {
 }
 
 /** 导出文件名：`show-terminal-logs-<YYYYMMDD-HHmmss>.log`（卡片逐字要求）。 */
-export function exportLogFilename(at = new Date()) {
-  const pad = (value) => String(value).padStart(2, "0");
+export function exportLogFilename(at = new Date()) {  const pad = (value) => String(value).padStart(2, "0");
   const stamp =
     `${at.getFullYear()}${pad(at.getMonth() + 1)}${pad(at.getDate())}` +
     `-${pad(at.getHours())}${pad(at.getMinutes())}${pad(at.getSeconds())}`;
   return `show-terminal-logs-${stamp}.log`;
+}
+
+/**
+ * GET / PUT `/api/config` 的响应体（TASK-FIX17-L1 R1）。
+ *
+ * `downloadDirDefault` 每次现算（`os.homedir()`）：不写死用户名，也不缓存 ——
+ * 换账户 / 改家目录后下一次 GET 就该是新值。
+ */
+function publicConfigPayload(view) {
+  return {
+    model: view.model || DEFAULT_MODEL,
+    autonomy: view.autonomy,
+    allowlist: view.allowlist,
+    reviewModel: view.reviewModel,
+    basePrompt: view.basePrompt,
+    defaultShell: view.defaultShell,
+    showApprovalEffect: view.showApprovalEffect === true,
+    downloadDir: view.downloadDir,
+    downloadDirDefault: defaultDownloadDir(),
+  };
 }
 
 function writeForbidden(res, cors = {}) {
@@ -838,6 +859,22 @@ export async function startServer(options = {}) {
    * 否则跑一遍单测就会在用户真实日志目录里凭空造文件。
    */
   const logWriter = () => (log && log.writer ? log.writer : null);
+  /**
+   * 当前下载目录（TASK-FIX17-L1 R1/R2）：每次请求现读配置文件。
+   *
+   * 不做进程内缓存：`PUT /api/config` 改完目录、下一次下载就得落在新目录；
+   * 缓存反而会让「改了没生效」成为默认行为。读一份小 JSON 的开销可以忽略。
+   *
+   * @returns {Promise<string|null>}
+   */
+  const readDownloadDir = async () => {
+    try {
+      const { config } = await readConfig();
+      return publicConfig(config).downloadDir;
+    } catch {
+      return null;
+    }
+  };
   const token = options.token || generateToken();
   // TASK-FIX17-G：版本信息与更新检查的注入点。
   // `packageInfo` 让单测不必临时改 package.json；`updateCheck` 让单测不必真连 GitHub。
@@ -1572,23 +1609,7 @@ export async function startServer(options = {}) {
       // GET /api/config：只暴露已知字段；文件缺失/损坏时返回默认值。
       if (req.method === "GET" && pathname === "/api/config") {
         const { config } = await readConfig();
-        const view = publicConfig(config);
-        const model = view.model || DEFAULT_MODEL;
-        writeJson(
-          res,
-          200,
-          {
-            model,
-            autonomy: view.autonomy,
-            allowlist: view.allowlist,
-            reviewModel: view.reviewModel,
-            basePrompt: view.basePrompt,
-            defaultShell: view.defaultShell,
-            showApprovalEffect: view.showApprovalEffect === true,
-          },
-          {},
-          cors,
-        );
+        writeJson(res, 200, publicConfigPayload(publicConfig(config)), {}, cors);
         return;
       }
 
@@ -1683,21 +1704,7 @@ export async function startServer(options = {}) {
           return;
         }
         const view = publicConfig(saved);
-        writeJson(
-          res,
-          200,
-          {
-            model: view.model || DEFAULT_MODEL,
-            autonomy: view.autonomy,
-            allowlist: view.allowlist,
-            reviewModel: view.reviewModel,
-            basePrompt: view.basePrompt,
-            defaultShell: view.defaultShell,
-            showApprovalEffect: view.showApprovalEffect === true,
-          },
-          {},
-          cors,
-        );
+        writeJson(res, 200, publicConfigPayload(view), {}, cors);
         return;
       }
 
@@ -1762,7 +1769,18 @@ export async function startServer(options = {}) {
        * token 已在上面的 isApi 分支里验过了。
        * --------------------------------------------------------- */
       if (pathname === "/api/fs" || pathname.startsWith("/api/fs/")) {
-        const handled = await handleLocalFs({ req, res, url, cors, readBody });
+        const handled = await handleLocalFs({
+          req,
+          res,
+          url,
+          cors,
+          readBody,
+          // TASK-FIX17-L1：save / reveal 要用到；其它 action 不看这两个字段。
+          readDownloadDir,
+          log,
+          revealSpawn: options.revealSpawn,
+          exportDeps: options.exportDeps,
+        });
         if (handled) return;
       }
 
@@ -1779,6 +1797,9 @@ export async function startServer(options = {}) {
           cors,
           readBody,
           hostId: decodeURIComponent(remoteFsMatch[1]),
+          readDownloadDir,
+          log,
+          exportDeps: options.exportDeps,
         });
         if (handled) return;
       }
@@ -1817,6 +1838,63 @@ export async function startServer(options = {}) {
           route: "GET /api/logs/export",
           bytes: Buffer.byteLength(body),
         });
+        return;
+      }
+
+      /* TASK-FIX17-L1 R5：导出日志到 downloadDir。
+       * 与上面的 `GET /api/logs/export` **同源**（同一个 writer.readAll() +
+       * 同一次 redactText），区别只是「写到目录」而不是「作为附件回给浏览器」。
+       * 未设置目录 → 400（前端据此回落 blob 下载）；写失败 → 500，不带 stack。 */
+      if (pathname === "/api/logs/export-to-dir" && req.method === "POST") {
+        await readBody(req, res);
+        if (res.writableEnded) return;
+        const dir = await readDownloadDir();
+        if (!dir) {
+          writeJson(res, 400, { code: "NO_DOWNLOAD_DIR", userText: "还没有设置下载目录" }, {}, cors);
+          return;
+        }
+        const writer = logWriter();
+        const body = writer ? redactText(writer.readAll()) : "";
+        try {
+          const result = await saveTextToDir(
+            body,
+            dir,
+            exportLogFilename(),
+            options.exportDeps || {},
+          );
+          log({
+            level: "info",
+            code: "LOGS_EXPORTED_TO_DIR",
+            msg: "logs exported to download dir",
+            route: "POST /api/logs/export-to-dir",
+            // 只记字节数与文件名（完整路径不进日志）。
+            bytes: result.bytes,
+            name: result.name,
+          });
+          writeJson(
+            res,
+            200,
+            { ok: true, savedPath: result.savedPath, bytes: result.bytes, name: result.name },
+            {},
+            cors,
+          );
+        } catch (err) {
+          // 不泄 stack / 路径：只把服务端的 reason 记到日志（脱敏后），响应只给人话。
+          log({
+            level: "error",
+            code: "LOGS_EXPORT_FAILED",
+            msg: "logs export to dir failed",
+            route: "POST /api/logs/export-to-dir",
+            reason: err && typeof err.reason === "string" ? err.reason : "E_WRITE",
+          });
+          writeJson(
+            res,
+            500,
+            { code: "LOGS_EXPORT_FAILED", userText: "日志没写进下载目录（目录不可写或磁盘满）。" },
+            {},
+            cors,
+          );
+        }
         return;
       }
 

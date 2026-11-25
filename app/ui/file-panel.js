@@ -546,6 +546,11 @@ export default function createFilePanel(elements) {
   let grid = null;
   let statusLine = null;
   let uploadHost = null;
+  // TASK-FIX17-L1 R4：下载到目录后的回显行（完整路径 + 打开所在文件夹）。
+  let savedHint = null;
+  let savedHintPath = null;
+  let savedReveal = null;
+  let lastSavedPath = null;
   let backdrop = null;
   let modal = null;
   let unsubscribe = null;
@@ -654,6 +659,8 @@ export default function createFilePanel(elements) {
   async function load(pathValue, opts = {}) {
     if (state.busy) return;
     state.busy = true;
+    // 换目录后上一轮的「已保存到 …」不再跟当前视野相关，收起来。
+    if (savedHint) savedHint.hidden = true;
     renderGridMessage("正在读取目录…");
     const wanted = typeof pathValue === "string" && pathValue.length > 0 ? pathValue : state.path || ".";
     const result = await api.fsList(target(), wanted);
@@ -1596,10 +1603,58 @@ export default function createFilePanel(elements) {
   }
 
   /**
-   * 下载一个文件。返回 `{ok, size?}` / `{ok:false, code, userText}`，
+   * 下载一个文件。返回 `{ok, mode?, size?}` / `{ok:false, code, userText}`，
    * 供单个下载与批量下载共用（批量需要知道哪一条失败、失败原因）。
+   *
+   * TASK-FIX17-L1 R4：先问服务端能不能直接存进「下载目录」；
+   * `NO_DOWNLOAD_DIR` 时**逐字保留**原来的 `<a download>` 行为（AC5 探针就断言这个）。
    */
   async function downloadFile(entry, opts = {}) {
+    const saved = await saveToDownloadDir(entry, opts);
+    if (saved) return saved;
+    return legacyDownload(entry, opts);
+  }
+
+  /**
+   * 尝试由服务端落盘。
+   *
+   * @returns {Promise<object|null>} null = 「本机没设下载目录 / 服务端太旧」→ 调用方回落旧下载
+   */
+  async function saveToDownloadDir(entry, opts = {}) {
+    if (!api || typeof api.fsSave !== "function") return null;
+    const result = await api.fsSave(target(), entry.path);
+    if (result.ok) {
+      const data = result.data || {};
+      if (data.ok === true && typeof data.savedPath === "string" && data.savedPath.length > 0) {
+        if (!opts.quiet) {
+          onNotice(`已保存到 ${data.savedPath}`, "ok");
+          showSavedHint(data.savedPath);
+        }
+        return {
+          ok: true,
+          mode: "saved",
+          savedPath: data.savedPath,
+          name: typeof data.name === "string" && data.name.length > 0 ? data.name : entry.name,
+          size: Number.isFinite(data.bytes) ? data.bytes : undefined,
+        };
+      }
+      if (data.code === "NO_DOWNLOAD_DIR") return null;
+      const userText = data.userText || "保存失败。";
+      if (!opts.quiet) onNotice(userText, "error");
+      return { ok: false, code: data.code || "SAVE_FAILED", userText };
+    }
+    // 没设目录 / 服务端还没这个接口 / 网络断：都交给旧路径再试一次，
+    // 绝不能让「升级前的服务端」把下载变成完全不可用。
+    if (result.code === "NO_DOWNLOAD_DIR" || result.code === "NOT_FOUND" || result.code === "NETWORK") {
+      return null;
+    }
+    const userText = result.userText || "保存失败。";
+    if (!opts.quiet) onNotice(userText, "error");
+    return { ok: false, code: result.code, userText };
+  }
+
+  /** 旧行为：fetch → blob → `<a download>`（TASK-FIX17-L1 之前就是这个）。 */
+  async function legacyDownload(entry, opts = {}) {
     const url = api.fsDownloadUrl(target(), entry.path);
     try {
       const headers = api.fsAuthHeader();
@@ -1625,12 +1680,43 @@ export default function createFilePanel(elements) {
       anchor.remove();
       setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
       if (!opts.quiet) onNotice(`已下载 ${entry.name}（${formatSize(blob.size)}）`, "ok");
-      return { ok: true, size: blob.size };
+      return { ok: true, mode: "browser", size: blob.size };
     } catch (err) {
       const userText = `下载失败：${err && err.message ? err.message : "网络错误"}`;
       if (!opts.quiet) onNotice(userText, "error");
       return { ok: false, code: "NETWORK", userText };
     }
+  }
+
+  /** 取路径里的目录部分（Windows / POSIX 分隔符都算）。 */
+  function dirOfEditorial(targetPath) {
+    const text = String(targetPath || "");
+    const index = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+    return index > 0 ? text.slice(0, index) : "";
+  }
+
+  /** 面板底部那行「已保存到 … / 打开所在文件夹」（TASK-FIX17-L1 R4）。 */
+  function showSavedHint(savedPath) {
+    lastSavedPath = savedPath;
+    if (!savedHint) return;
+    savedHint.hidden = false;
+    if (savedHintPath) savedHintPath.textContent = `已保存到 ${savedPath}`;
+  }
+
+  /** 调 `/api/fs/reveal`；失败只提示，不影响文件已经落盘这件事。 */
+  async function revealSaved() {
+    const targetPath = lastSavedPath;
+    if (!targetPath) return;
+    if (!api || typeof api.revealPath !== "function") {
+      onNotice("这个版本的本地服务不支持打开文件夹。", "warn");
+      return;
+    }
+    const result = await api.revealPath(targetPath);
+    if (!result.ok) {
+      onNotice(result.userText || "打不开文件夹。", "warn");
+      return;
+    }
+    onNotice(`已打开所在文件夹：${dirOfEditorial(targetPath)}`, "ok");
   }
 
   /* ------------------ 多选与批量操作（TASK-FIX17-C R2） ------------------ */
@@ -1841,7 +1927,11 @@ export default function createFilePanel(elements) {
   }
 
   /**
-   * 批量下载：逐项 `download`，浏览器逐个弹下载。
+   * 批量下载：逐项 `downloadFile`。
+   *
+   * 两种落盘方式共存（TASK-FIX17-L1 R4）：
+   *   - 设了下载目录 → 全部存进该目录，结束时汇总「已保存 N 个文件到 <目录>」；
+   *   - 没设目录 → 整体回落旧行为（浏览器逐个弹下载）。
    *
    * 两条已知限制（写在这里，免得下次当成 bug 去修）：
    *   1. 浏览器可能拦多次下载（站点的「允许自动下载多个文件」），那是浏览器行为；
@@ -1859,12 +1949,26 @@ export default function createFilePanel(elements) {
     }
     setBatchBusy(true);
     const failed = [];
+    const savedPaths = [];
+    let browserCount = 0;
     for (const entry of files) {
       const result = await downloadFile(entry, { quiet: true });
-      if (!result.ok) failed.push({ name: entry.name, userText: result.userText });
+      if (!result.ok) {
+        failed.push({ name: entry.name, userText: result.userText });
+      } else if (result.mode === "saved" && typeof result.savedPath === "string") {
+        savedPaths.push(result.savedPath);
+      } else {
+        browserCount += 1;
+      }
     }
     setBatchBusy(false);
-    const parts = [`已开始下载 ${files.length - failed.length} 个文件`];
+    const parts = [];
+    if (savedPaths.length > 0) {
+      // AC6：汇总文案里必须带目录，用户不用去猜文件去哪了。
+      parts.push(`已保存 ${savedPaths.length} 个文件到 ${dirOfEditorial(savedPaths[0])}`);
+      showSavedHint(savedPaths[0]);
+    }
+    if (browserCount > 0) parts.push(`已开始下载 ${browserCount} 个文件`);
     if (skipped > 0) parts.push(`${skipped} 个目录不支持下载`);
     if (failed.length > 0) parts.push(`${failed.length} 个失败：${failed[0].userText}`);
     onNotice(parts.join(" · "), failed.length > 0 ? "warn" : "ok");
@@ -2248,6 +2352,24 @@ export default function createFilePanel(elements) {
 
     statusLine = el("div", { className: "file-panel-status", "data-role": "file-panel-status" });
     root.appendChild(statusLine);
+
+    // TASK-FIX17-L1 R4：下载到目录后在这里回显完整路径 + 「打开所在文件夹」。
+    // 放在状态行下面而不是状态行里：状态栏（`status-bar.js`）不在本卡白名单内，
+    // 而且它是全局面包屑，塞一个只在文件面板有意义的按钮会串味。
+    savedHint = el("div", {
+      className: "file-panel-saved-hint",
+      "data-role": "files-saved-hint",
+      hidden: true,
+    });
+    savedHintPath = el("span", { className: "file-panel-saved-path", "data-role": "files-saved-path" });
+    savedReveal = el(
+      "button",
+      { type: "button", className: "file-panel-saved-reveal", "data-role": "files-reveal" },
+      "打开所在文件夹",
+    );
+    savedReveal.addEventListener("click", () => void revealSaved());
+    savedHint.append(savedHintPath, savedReveal);
+    root.appendChild(savedHint);
 
     // TASK-FIX-UI-REST §6.3：动作菜单（面板级浮层，挂在 .file-panel 根上）。
     ensureActionMenu();

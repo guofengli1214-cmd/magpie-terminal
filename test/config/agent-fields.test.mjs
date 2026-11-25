@@ -108,7 +108,8 @@ test("DEFAULT_CONFIG 带上 agent 四字段 + defaultShell + showApprovalEffect 
   assert.equal(DEFAULT_CONFIG.showApprovalEffect, false);
 });
 
-test("KNOWN_FIELDS 是 model + 四个 agent 字段 + defaultShell + showApprovalEffect", () => {
+// TASK-FIX17-L1 R1：downloadDir（下载 / 导出目录）也进了已知字段。
+test("KNOWN_FIELDS 是 model + 四个 agent 字段 + defaultShell + showApprovalEffect + downloadDir", () => {
   assert.deepEqual([...KNOWN_FIELDS], [
     "model",
     "autonomy",
@@ -117,6 +118,7 @@ test("KNOWN_FIELDS 是 model + 四个 agent 字段 + defaultShell + showApproval
     "basePrompt",
     "defaultShell",
     "showApprovalEffect",
+    "downloadDir",
   ]);
 });
 

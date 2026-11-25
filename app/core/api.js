@@ -256,8 +256,7 @@ export default {
     return del("/api/logs");
   },
   /**
-   * GET /api/logs/export：返回 `{ok, response, filename}` / `{ok:false, code, userText}`。
-   *
+   * GET /api/logs/export：返回 `{ok, response, filename}` / `{ok:false, code, userText}`。   *
    * 为什么不直接在这里 `createObjectURL`：触发下载要用到 DOM，而 api.js
    * 在单测里是裸 Node（只有 `document.querySelector` 桩），把 DOM 操作留在 UI 层
    * 才能让这一层保持可单测。
@@ -294,6 +293,16 @@ export default {
       response,
       filename: match ? match[1] : "show-terminal-logs.log",
     };
+  },
+
+  /**
+   * POST /api/logs/export-to-dir（TASK-FIX17-L1 R5）：把日志写进下载目录。
+   *
+   * 成功 → `{ok:true, data:{savedPath, bytes, name}}`；
+   * 未设置目录 → `{ok:false, code:"NO_DOWNLOAD_DIR"}`（调用方据此回落 blob 下载）。
+   */
+  logsExportToDir() {
+    return sendJson("/api/logs/export-to-dir", "POST", {});
   },
 
   /* ---- AI 会话（TASK-V4-H §5.4） ---- */
@@ -390,6 +399,23 @@ export default {
     const payload = { items };
     if (opts.overwrite === true) payload.overwrite = true;
     return sendJson(fsEndpoint(target, "move"), "POST", payload);
+  },
+  /**
+   * POST `/api/fs/save` 或 `/api/hosts/:id/fs/save`（TASK-FIX17-L1 R2 / R3）。
+   *
+   * 服务端决定是否落盘：未设置下载目录时回 **200** `{ok:false, code:"NO_DOWNLOAD_DIR"}`
+   * （不是错误），调用方据此回落成原来的 `<a download>`。
+   * 成功时 `data = {ok:true, savedPath, bytes, name}`。
+   */
+  fsSave(target, path) {
+    return sendJson(fsEndpoint(target, "save"), "POST", { path });
+  },
+  /**
+   * POST /api/fs/reveal（TASK-FIX17-L1 R6）：在文件管理器里定位到下载目录里的文件。
+   * 路径不在下载目录内 → 400 `REVEAL_OUT_OF_SCOPE`。
+   */
+  revealPath(path) {
+    return sendJson("/api/fs/reveal", "POST", { path });
   },
   /** 写文本（原始 body，不是 JSON）。 */
   fsWrite(target, path, text) {

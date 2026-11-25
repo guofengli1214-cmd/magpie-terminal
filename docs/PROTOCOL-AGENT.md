@@ -24,6 +24,7 @@ export const KNOWN_FIELDS = Object.freeze([
 | `allowlist` | `Array<{pattern: string, mode: "prefix"\|"exact", enabled: boolean}>` | `[]` | 用户白名单，最多 200 条 |
 | `reviewModel` | `string \| null` | `null` | 第二 AI 审阅用的模型；`null` = 跟对话模型同款；`""`（空串）= 关闭审阅 |
 | `basePrompt` | `string \| null` | `null` | 用户自定义基础提示词；`null` = 用内置默认 |
+| `downloadDir` | `string \| null` | `null` | **TASK-FIX17-L1**：下载 / 导出落盘目录；只收绝对路径（≤512 字符），空串与纯空白归一成 `null`（= 回落浏览器默认下载目录） |
 
 **校验规则（服务端必须实现，返回 400 + code）：**
 
@@ -31,6 +32,7 @@ export const KNOWN_FIELDS = Object.freeze([
 - `allowlist` 不是数组或超 200 条 → `INVALID_ALLOWLIST`；每条 `pattern` 必须是 1–500 字符的字符串且不含换行，`mode` 必须是 `prefix` 或 `exact` → `INVALID_ALLOWLIST`
 - `reviewModel` 不是 `string|null` 或长度 > 200 → `INVALID_REVIEW_MODEL`
 - `basePrompt` 不是 `string|null` 或长度 > 8000 → `INVALID_BASE_PROMPT`
+- `downloadDir` 不是 `string|null`、或 trim 后非空但不是绝对路径、或超过 512 字符 → `INVALID_DOWNLOAD_DIR`（空串/纯空白**不是**错误，归一成 `null`）
 
 `DEFAULT_CONFIG` 要带上这四项的默认值。`normalize()` 遇到非法值一律回落默认（不抛错）。
 
