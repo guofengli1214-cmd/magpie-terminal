@@ -29,6 +29,7 @@
 // 第 1 级与第 2 级任何档位、任何白名单都不能绕过 —— 这是 AC1 / AC6 的锁。
 
 import { classify } from "../policy/classify.mjs";
+import { builtinRulesFrom } from "../policy/allowlist.mjs";
 import { blacklistReason, catastrophicReason } from "../policy/forbidden.mjs";
 import { extractDestructiveTargets, guardTargets, targetFacts } from "../policy/destructive-targets.mjs";
 import { sensitiveReadTarget } from "../policy/sensitive.mjs";
@@ -135,7 +136,11 @@ export async function judge({ command, config, cwd, model, review, log, history,
   }
 
   // 4. 内置只读白名单。
-  const builtin = classify(text);
+  //    TASK-FIX17-I R2：清单来自配置（`builtinAllowlist`，设置页可增/删/改）。
+  //    缺字段 → `builtinRulesFrom` 返回默认
+  //    `DEFAULT_ALLOWLIST`，所以老配置与以前逐字一致。
+  //    **黑名单 / 危险参数表 / 参数级允许集仍然硬编码**（由 classify 内部保证）。
+  const builtin = classify(text, { allowlist: builtinRulesFrom(conf.builtinAllowlist) });
   if (builtin && builtin.decision === "auto") {
     return result(
       "auto",

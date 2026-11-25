@@ -1610,6 +1610,100 @@ button[disabled] {
   color: var(--term-danger);
 }
 
+/* ---- 内置只读白名单（TASK-FIX17-I R3）----
+   只在本段内新增；颜色一律用 --term-* 变量，不写字面量。 */
+
+.builtin-allowlist-add-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.builtin-allowlist-add-row [data-role="builtin-input"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 清单自身滚动：内置条目有 60+ 条，撑高整个设置模态会让下面的
+   审阅模型 / 下载目录 / 保存按钮全部跑出视口（PRD R3 明确要求）。 */
+[data-role="builtin-allowlist-list"] {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.builtin-allowlist-empty {
+  font-size: 11.5px;
+  color: var(--term-muted);
+}
+
+[data-role="builtin-allowlist-item"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  border: 1px solid var(--term-border);
+  border-radius: var(--term-radius);
+  min-width: 0;
+}
+
+[data-role="builtin-allowlist-item"] .builtin-allowlist-rule {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--term-mono);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-role="builtin-allowlist-item"] .builtin-edit-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--term-mono);
+  font-size: 11.5px;
+}
+
+[data-role="builtin-allowlist-item"] .builtin-allowlist-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+}
+
+[data-role="builtin-allowlist-item"] .builtin-allowlist-actions button {
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+[data-role="builtin-allowlist-item"] [data-role="builtin-remove"] {
+  border-color: var(--term-danger);
+  color: var(--term-danger);
+}
+
+.builtin-allowlist-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.builtin-allowlist-count {
+  font-size: 11.5px;
+  color: var(--term-muted);
+}
+
+.settings-block [data-role="builtin-allowlist-status"] {
+  min-height: 16px;
+  margin: 4px 0 0;
+}
+
+.settings-block [data-role="builtin-allowlist-status"][data-tone="error"] {
+  color: var(--term-danger);
+}
+
 .settings-block [data-role="base-prompt"] {
   width: 100%;
   box-sizing: border-box;

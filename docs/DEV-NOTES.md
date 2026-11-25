@@ -66,3 +66,25 @@
 `2026-11-25` 之前的 `2>&1` 误报就是这条链的副作用：`splitSegments` 见到 `>` 就返回
 `hit:"redirect"` → 跳过审阅 → 卡片只能写「审阅不可用」。现在无害重定向先剥离再判
 （`.trellis/spec/backend/security-model.md` 5.4.2）。
+
+## 派 pi / 子 agent 时禁止 heredoc
+
+`python - << 'PY'`、`bash << EOF` 这类 heredoc 在 agent 的 bash 工具里会失效：脚本没被喂进去，
+python 转而读 stdin 挂住，进程白烧 CPU（实测累计 7052 秒 CPU、卡住近 3 小时，日志 3 小时只长了
+300KB）。要跑脚本一律先写到文件再执行。排查时看子进程 CPU 是否空转，按父链 Stop-Process 清掉
+卡住的中间进程、保留 agent 主进程即可恢复。
+
+## 全量 node --test 偶发卡在 test/pty/session.test.mjs
+
+现象：全量跑时报 `✖ test\pty\session.test.mjs (376184ms / 395284ms) 'test failed'`，
+tests 1406 / pass 1405 / fail 1，整轮 380~400 秒。单跑
+`node --test --test-reporter=spec test/pty/session.test.mjs` 约 19–20 秒、10/10 全过。
+
+真因：pty 测试起的真实 `bash --rcfile <Temp\magpie-term-rc-XXXX\rc.sh> -i` 子进程成了孤儿，
+继承了外层管道（如 `| tail`）→ 永不 EOF → 整轮卡住。不是代码缺陷。
+
+处置：先单跑该文件确认；单跑全过就判环境偶发，不要反复重跑全量。清孤儿必须带
+-Filter "Name='bash.exe'"，否则 PowerShell 会匹配到自己那条命令把自己杀掉，命令形如：
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='bash.exe'\" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*magpie-term-rc*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+
+注意：`node --test <目录>` 在 node 24 会报 Cannot find module，只能传文件路径或依赖默认 glob。

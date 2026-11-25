@@ -119,9 +119,13 @@ Origin === "http://localhost:3480"
 | `\| sh`、`\| bash`、`\| python`、`\| node`、`eval`、`source`、`.` | 视为黑名单 → 确认 | 把「一段文本」变成「一次代码执行」，等价于任意命令 |
 | 引号不配对、结尾是 `\` | 视为「切不开」→ 确认 | 说明分词器没读懂这条命令，不能假设它无害 |
 
-### 3.3 只读白名单（可自动执行）
+### 3.3 只读白名单（可自动执行，可配置放行范围）
 
 分两层：**命令头**判定（默认只看头）+ **参数级允许集**（对参数能改语义的命令，见 3.4）。入榜条件是「这条命令在任何被允许的参数下都不会写盘 / 不会改环境 / 不会外发」；做不到这一点的命令要么按允许集收紧（`curl`、`git`、`rg`、`wc`），要么整条移出白名单（`find`）。
+
+**这份清单现在是可配置的（TASK-FIX17-I）**：设置页「内置只读白名单」默认显示下面全部条目，用户可以增 / 删 / 改 / 恢复默认，落盘为 `config.builtinAllowlist`（`string[]`，元素形如 `free` 或 `docker volume ls`，空数组合法 = 所有命令都要确认）。默认值出自 `src/policy/allowlist.mjs` 的 `DEFAULT_BUILTIN_ALLOWLIST`（唯一数据源），判级时由 `builtinRulesFrom()` 变回 `{heads, subcommands}`。
+
+> **可配置的只是「放行范围」，不是「安全判据」。** 下面三样**永远硬编码、用户改不了**（见 3.3.1）。
 
 | 类别 | 命令头示例 | 备注 |
 |---|---|---|
@@ -145,6 +149,18 @@ Origin === "http://localhost:3480"
 - `git branch -D` 不单列白名单条目：`git branch` 的只读性依赖参数，因此 `git` 只放 `status/log/diff/show` 四个子命令，`branch` 仅在无位置参数且参数落在只读允许集内时放行（参数级判断，见 3.4）。
 - 同理，`git remote` / `git tag` 只有在**无位置参数**时才只读：`git remote add origin <url>`、`git tag v1.0` 都是写仓库，靠参数级允许集的 `positional:"deny"` 拦住。
 - `ps` / `tasklist` / `lsof` 也不进白名单：命令头只读没错，但输出里常带其它进程的明文口令，属信息泄露（与 `cat .env` 同类），见第 3.3 节表格备注。
+
+#### 3.3.1 不可配置的三样（用户配置的是放行范围，不是安全判据）
+
+| 不可配置项 | 位置 | 行为 |
+|---|---|---|
+| 黑名单 `DENY_HEADS` / `DENY_SUBCOMMANDS`（`rm`/`mv`/`del`/`cp`/`sudo`、`npm i`、`git push`/`reset`） | `src/policy/allowlist.mjs` | `classify()` 的 deny 分支在 allow 之前。用户把 `rm` 加进清单，`rm -rf x` 仍 `confirm`，`hit` 仍是 `deny:rm` |
+| 危险参数表 `DANGEROUS_ARGUMENTS`（`find -delete`/`-fprint` 系列、`git --output`） | 同上 | 命令头在清单里也照样 confirm |
+| 参数级允许集 `PARAM_ALLOWLIST`（`curl` 必须 `-I`、`git branch`/`remote`/`tag` 位置参数禁） | 同上 | 加了清单也绕不过参数关 |
+
+**理由**：用户想控制的是「哪些只读命令可以不问我」，那是偏好；「什么算危险」是判据 —— 交给用户配等于让他自己拆自己的护栏（一张误配的白名单就能把 `rm -rf ~` 变成自动执行）。
+
+实测锁（`test/policy/builtin-allowlist.test.mjs`，6 条）：把 `rm`/`find`/`curl`/`git` 逐个加进清单后，`rm -rf x` / `find . -delete` / `curl -o out http://x` / `git push` 仍 `confirm`；`builtinAllowlist: []` 时 `ls`/`cat`/`git status` 全 `confirm` 且 `rm` 仍 `deny:rm`；危险参数表不因清单变化而放宽。
 
 ### 3.4 参数级校验：用允许集，不用危险参数黑名单（2026-11-22 实测教训）
 

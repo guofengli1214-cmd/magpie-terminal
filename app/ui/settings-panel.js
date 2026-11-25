@@ -18,6 +18,11 @@
 //   review-reasoning-hint（「这个模型不支持推理强度」的说明行）
 //   TASK-FIX17-G 新增：about-version / about-repository / about-install-kind /
 //   update-check / update-status / update-howto / update-howto-text
+//   TASK-FIX17-I 新增：builtin-allowlist-list / builtin-allowlist-item /
+//   builtin-allowlist-rule / builtin-input / builtin-add / builtin-edit /
+//   builtin-remove / builtin-save-edit / builtin-cancel-edit / builtin-edit-input /
+//   builtin-reset / builtin-allowlist-count / builtin-allowlist-status /
+//   builtin-allowlist-empty
 
 const AUTONOMY_OPTIONS = [
   {
@@ -108,6 +113,20 @@ export default function createSettingsPanel(elements) {
   let allowlistInput = null;
   let allowlistMode = null;
   let allowlistList = null;
+  // TASK-FIX17-I R3：内置只读白名单（与用户白名单平行的一组状态）。
+  // `builtinAllowlist` 是页内副本，`builtinDefaults` 是服务端下发的默认清单，
+  // `builtinDirty` 只表示「用户真的动过」—— 没动过就不往回写，
+  // 否则老配置（缺字段）第一次打开设置页就被静默改写了。
+  let builtinAllowlist = [];
+  let builtinDefaults = [];
+  let builtinDirty = false;
+  let builtinEditing = null;
+  let builtinInput = null;
+  let builtinList = null;
+  let builtinCountLine = null;
+  let builtinStatusLine = null;
+  /** 内置白名单状态行被写过的次数（见 `setBuiltinStatus` 的说明）。 */
+  let builtinStatusVersion = 0;
   let reviewSelect = null;
   // TASK-FIX17-L4 R5：审阅模型的推理强度。
   let reviewReasoningSelect = null;
@@ -276,6 +295,194 @@ export default function createSettingsPanel(elements) {
     allowlistInput.value = "";
     renderAllowlist();
     setStatus("", null);
+  }
+
+  /* ---------------- 内置只读白名单（TASK-FIX17-I R3） ---------------- */
+
+  /**
+   * 与服务端 `checkBuiltinAllowlistEntry`（src/config/store.mjs）**同口径**的前端预校验。
+   *
+   * 为什么前端也要有一份：服务端仍会再校验一次（前端可绕过），这里只为了
+   * 「输错了立刻告诉我」—— 拖到点保存才报错太晚。两份规则必须一致：
+   * 字符集 `[A-Za-z0-9_.:+/@-]`、单词间单空格、≤ 64 字符、≤ 3 段。
+   *
+   * @returns {{ok:boolean, text?:string, error?:string}}
+   */
+  function checkBuiltinRule(raw) {
+    if (typeof raw !== "string") return { ok: false, error: "规则必须是一段文本。" };
+    const text = raw.trim();
+    if (text.length === 0) return { ok: false, error: "规则不能是空的，例如 free 或 docker volume ls。" };
+    if (text.length > 64) return { ok: false, error: `每条规则最长 64 个字符（这条 ${text.length} 个）。` };
+    if (/[\u0000-\u001f\u007f]/.test(text)) return { ok: false, error: "规则里不能混入换行或制表符。" };
+    if (/\s{2,}/.test(text)) return { ok: false, error: "单词之间只能有一个空格。" };
+    const parts = text.split(" ");
+    if (parts.length > 3) return { ok: false, error: "一条规则最多 3 段（命令头 + 最多两个只读子命令词）。" };
+    for (const part of parts) {
+      if (!/^[A-Za-z0-9_.:+/@-]+$/.test(part)) {
+        return { ok: false, error: `「${part}」里有不允许的字符：只能使用字母、数字和 _ . : + / @ -。` };
+      }
+    }
+    return { ok: true, text };
+  }
+
+  /** 内置白名单的页内状态行（与底部全局状态行分开，因为要就地报错）。
+   *
+   * `builtinStatusVersion` 是与 `statusVersion` 同一套防抖制度：`load()` 是异步的，
+   * 结尾会清空状态行。用户手快（一打开就去点了删除/恢复默认）时，`load()` 可能
+   * 在这些操作之后才回来 —— 那句「已删除，点底部保存后生效」会被凭空抹掉。
+   * 所以清空只能是「这期间没有任何人写过状态行」时才做。
+   */
+  function setBuiltinStatus(text, tone) {
+    builtinStatusVersion += 1;
+    if (!builtinStatusLine) return;
+    builtinStatusLine.textContent = text || "";
+    if (tone) builtinStatusLine.setAttribute("data-tone", tone);
+    else builtinStatusLine.removeAttribute("data-tone");
+  }
+
+  function markBuiltinDirty() {
+    builtinDirty = true;
+    renderBuiltinAllowlist();
+  }
+
+  /**
+   * 渲染内置清单（每行 = 一条规则 + 编辑 / 删除）。
+   *
+   * 编辑态存的是**索引**（`builtinEditing`）：重渲染时按索引把那一行换成
+   * input + 保存 / 取消，不另开弹层（PRD R3：「把那一行变成 input」）。
+   */
+  function renderBuiltinAllowlist() {
+    if (!builtinList) return;
+    builtinList.textContent = "";
+    if (builtinAllowlist.length === 0) {
+      builtinList.appendChild(
+        el(
+          "div",
+          { className: "builtin-allowlist-empty", "data-role": "builtin-allowlist-empty" },
+          "清单是空的：所有命令都会先问你。",
+        ),
+      );
+    }
+    builtinAllowlist.forEach((rule, index) => {
+      const item = el("div", {
+        "data-role": "builtin-allowlist-item",
+        "data-index": String(index),
+        className: "builtin-allowlist-item",
+      });
+      if (builtinEditing === index) {
+        const input = el("input", {
+          type: "text",
+          "data-role": "builtin-edit-input",
+          className: "builtin-edit-input",
+          value: rule,
+          autocomplete: "off",
+          spellcheck: "false",
+          maxlength: "64",
+          "aria-label": "编辑规则",
+        });
+        const commit = () => {
+          const checked = checkBuiltinRule(input.value);
+          if (!checked.ok) {
+            setBuiltinStatus(checked.error, "error");
+            return;
+          }
+          const others = builtinAllowlist.filter((_, i) => i !== index);
+          if (others.includes(checked.text)) {
+            setBuiltinStatus(`「${checked.text}」已经在清单里了。`, "error");
+            return;
+          }
+          builtinAllowlist[index] = checked.text;
+          builtinEditing = null;
+          setBuiltinStatus("已修改，点底部「保存」后生效。", "info");
+          markBuiltinDirty();
+        };
+        input.addEventListener("keydown", (event) => {
+          if (event.isComposing) return;
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            builtinEditing = null;
+            setBuiltinStatus("", null);
+            renderBuiltinAllowlist();
+          }
+        });
+        const actions = el("div", { className: "builtin-allowlist-actions" });
+        const saveEdit = el("button", { type: "button", "data-role": "builtin-save-edit" }, "保存");
+        saveEdit.addEventListener("click", commit);
+        const cancelEdit = el("button", { type: "button", "data-role": "builtin-cancel-edit" }, "取消");
+        cancelEdit.addEventListener("click", () => {
+          builtinEditing = null;
+          setBuiltinStatus("", null);
+          renderBuiltinAllowlist();
+        });
+        actions.append(saveEdit, cancelEdit);
+        item.append(input, actions);
+        builtinList.appendChild(item);
+        return;
+      }
+
+      item.appendChild(el("code", { className: "builtin-allowlist-rule", "data-role": "builtin-allowlist-rule" }, rule));
+      const actions = el("div", { className: "builtin-allowlist-actions" });
+      const edit = el("button", { type: "button", "data-role": "builtin-edit" }, "编辑");
+      edit.addEventListener("click", () => {
+        builtinEditing = index;
+        setBuiltinStatus("", null);
+        renderBuiltinAllowlist();
+        const input = builtinList.querySelector('[data-role="builtin-edit-input"]');
+        if (input && typeof input.focus === "function") input.focus();
+      });
+      const remove = el("button", { type: "button", "data-role": "builtin-remove" }, "删除");
+      remove.addEventListener("click", () => {
+        // 先退出编辑态再改数组：否则 `builtinEditing` 会指到错的一行。
+        const wasEditing = builtinEditing;
+        builtinAllowlist.splice(index, 1);
+        if (wasEditing !== null && wasEditing !== undefined) {
+          if (wasEditing === index) builtinEditing = null;
+          else if (wasEditing > index) builtinEditing = wasEditing - 1;
+        }
+        setBuiltinStatus("已删除，点底部「保存」后生效。", "info");
+        markBuiltinDirty();
+      });
+      actions.append(edit, remove);
+      item.appendChild(actions);
+      builtinList.appendChild(item);
+    });
+    if (builtinCountLine) {
+      const total = builtinAllowlist.length;
+      builtinCountLine.textContent = `共 ${total} 条`;
+    }
+  }
+
+  function addBuiltinRule() {
+    const checked = checkBuiltinRule(builtinInput ? builtinInput.value : "");
+    if (!checked.ok) {
+      setBuiltinStatus(checked.error, "error");
+      return;
+    }
+    if (builtinAllowlist.includes(checked.text)) {
+      setBuiltinStatus(`「${checked.text}」已经在清单里了。`, "error");
+      return;
+    }
+    if (builtinAllowlist.length >= 300) {
+      setBuiltinStatus("内置白名单最多 300 条。", "error");
+      return;
+    }
+    builtinAllowlist.push(checked.text);
+    builtinInput.value = "";
+    setBuiltinStatus("已添加，点底部「保存」后生效。", "info");
+    markBuiltinDirty();
+  }
+
+  function resetBuiltinRules() {
+    // 默认清单由服务端一并下发（`builtinAllowlistDefaults`）：前端**不拄一份**，
+    // 否则与服务端漂移就成了两个真相。
+    builtinAllowlist = builtinDefaults.slice();
+    builtinEditing = null;
+    setBuiltinStatus("已恢复默认，点保存后生效。", "info");
+    builtinDirty = true;
+    renderBuiltinAllowlist();
   }
 
   /* ---------------- 审阅模型 ---------------- */
@@ -832,6 +1039,63 @@ export default function createSettingsPanel(elements) {
     blockAllow.appendChild(allowlistList);
     body.appendChild(blockAllow);
 
+    /* 2.5 内置只读白名单（TASK-FIX17-I R3）
+       PRD 要求：默认展示全部内置条目，可增 / 删 / 改 / 恢复默认。
+       放在「命令白名单」之后：两者都是「哪些命令不用问我」，
+       但这一块的条目是**系统给的默认值**，用户白名单是**自己加的**。 */
+    const blockBuiltin = el("section", { className: "settings-block", "data-block": "builtin-allowlist" });
+    blockBuiltin.appendChild(el("h3", { className: "settings-block-title" }, "内置只读白名单"));
+    blockBuiltin.appendChild(
+      el(
+        "p",
+        { className: "settings-block-hint" },
+        "这些命令是只读的，AI 可以不问就直接执行。删掉你不想让它自动跑的，也可以加自己的（例如 docker volume ls）。改动点保存后生效。",
+      ),
+    );
+    const builtinAddRow = el("div", { className: "builtin-allowlist-add-row" });
+    builtinInput = el("input", {
+      type: "text",
+      "data-role": "builtin-input",
+      placeholder: "例如 docker volume ls",
+      autocomplete: "off",
+      spellcheck: "false",
+      maxlength: "64",
+      "aria-label": "新增一条内置只读白名单",
+    });
+    const builtinAddButton = el("button", { type: "button", "data-role": "builtin-add" }, "添加");
+    builtinAddButton.addEventListener("click", () => addBuiltinRule());
+    builtinInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      addBuiltinRule();
+    });
+    builtinAddRow.append(builtinInput, builtinAddButton);
+    blockBuiltin.appendChild(builtinAddRow);
+    builtinList = el("div", {
+      "data-role": "builtin-allowlist-list",
+      className: "builtin-allowlist-list",
+    });
+    blockBuiltin.appendChild(builtinList);
+    // 页内状态行（添加 / 编辑 / 恢复默认的校验提示）
+    builtinStatusLine = el("p", {
+      className: "settings-block-hint",
+      "data-role": "builtin-allowlist-status",
+      role: "status",
+      "aria-live": "polite",
+    });
+    blockBuiltin.appendChild(builtinStatusLine);
+    const builtinFoot = el("div", { className: "builtin-allowlist-foot" });
+    builtinCountLine = el(
+      "span",
+      { className: "builtin-allowlist-count", "data-role": "builtin-allowlist-count" },
+      "共 0 条",
+    );
+    const resetButton = el("button", { type: "button", "data-role": "builtin-reset" }, "恢复默认");
+    resetButton.addEventListener("click", () => resetBuiltinRules());
+    builtinFoot.append(builtinCountLine, resetButton);
+    blockBuiltin.appendChild(builtinFoot);
+    body.appendChild(blockBuiltin);
+
     /* 3. 审阅模型（TASK-V4-H §5.3：没有「关闭审阅」，只有选哪家模型） */
     const blockReview = el("section", { className: "settings-block", "data-block": "review" });
     blockReview.appendChild(el("h3", { className: "settings-block-title" }, "审阅模型"));
@@ -1119,6 +1383,7 @@ export default function createSettingsPanel(elements) {
 
   async function load() {
     const versionAtStart = statusVersion;
+    const builtinVersionAtStart = builtinStatusVersion;
     setStatus("正在读取当前设置…", "info");
     const versionPromise =
       api && typeof api.version === "function"
@@ -1146,6 +1411,11 @@ export default function createSettingsPanel(elements) {
       renderAutonomy("balanced");
       allowlist = [];
       renderAllowlist();
+      builtinAllowlist = [];
+      builtinDefaults = [];
+      builtinDirty = false;
+      builtinEditing = null;
+      renderBuiltinAllowlist();
       renderReviewModels(null);
       renderReviewReasoning();
       basePromptInput.value = "";
@@ -1189,6 +1459,26 @@ export default function createSettingsPanel(elements) {
     setShowEffect(config.showApprovalEffect === true);
     renderDownloadDir(config);
     renderGateway();
+    // TASK-FIX17-I R3：内置只读白名单（放在这里而不是更早，是为了不让 load() 中途
+    // 的渲染把用户在等待期间的点搮捧掉 —— 下面的 `builtinDirty` 判断才是真正的保险）。
+    //
+    // 缺字段（老配置）→ 用服务端下发的默认清单，并且**不标 dirty**：
+    // 用户没动过就不往回写，否则老配置文件会在无人知情时被改一次。
+    // `builtinAllowlistDefaults` 是 `GET /api/config` 带回来的默认值（单一数据源在
+    // 内核的 `DEFAULT_BUILTIN_ALLOWLIST`，前端不拄第二份）。
+    const rawDefaults = Array.isArray(config.builtinAllowlistDefaults) ? config.builtinAllowlistDefaults : [];
+    builtinDefaults = rawDefaults.filter((rule) => typeof rule === "string" && rule.length > 0);
+    // 用户已经动过了（load() 在飞的时候点了增/删/改/恢复默认）就不拿服务端值覆盖：
+    // 那一瞬间的输入是用户的明确意图，抹掉比缺省值可怕。
+    if (!builtinDirty) {
+      builtinAllowlist = Array.isArray(config.builtinAllowlist)
+        ? config.builtinAllowlist.filter((rule) => typeof rule === "string" && rule.length > 0)
+        : builtinDefaults.slice();
+      builtinEditing = null;
+      renderBuiltinAllowlist();
+      // 这期间没有更新的状态（比如用户已经点了「删除」）才清空。
+      if (builtinStatusVersion === builtinVersionAtStart) setBuiltinStatus("", null);
+    }
     // 这期间没有更新的状态（比如用户已经点了「导出日志」）才清空。
     if (statusVersion === versionAtStart + 1) setStatus("", null);
     // 日志 block 的状态单独拉：它读的是文件 stat，和 config/models 无关。
@@ -1211,11 +1501,21 @@ export default function createSettingsPanel(elements) {
       basePrompt: basePromptInput.value.trim().length > 0 ? basePromptInput.value : null,
       showApprovalEffect,
       // TASK-FIX17-L1 R1：空串交给服务端归一成 null（这里 trim 后为空就送 null，
-      // 语义更直接："没填" = 用浏览器默认目录）。
+      // 语义更直接：“没填” = 用浏览器默认目录）。
       downloadDir: downloadDirInput && downloadDirInput.value.trim().length > 0
         ? downloadDirInput.value.trim()
         : null,
     };
+    // TASK-FIX17-I R3：内置清单只在用户真的动过时发送。
+    // 没动过就不发 —— 老配置（缺字段）不会被「顺手写回默认值」，
+    // 用户也不会因为打开过设置页就多出一份大数组。
+    // 也顺便检查：还在编辑态时不能直接保存（否则未提交的编辑被默默丢掉）。
+    if (builtinEditing !== null && builtinEditing !== undefined) {
+      if (saveButton) saveButton.disabled = false;
+      setStatus("内置白名单有一行还在编辑中：先点「保存」或「取消」。", "error");
+      return;
+    }
+    if (builtinDirty) patch.builtinAllowlist = builtinAllowlist.slice();
     const result = await api.saveConfig(patch);
     if (saveButton) saveButton.disabled = false;
     if (!result.ok) {
@@ -1228,6 +1528,22 @@ export default function createSettingsPanel(elements) {
       return;
     }
     setStatus("已保存", "ok");
+    // 保存成功后重新 GET /api/config 对齐一次（PRD R3 的「保存后对齐」）：
+    // 服务端会去重 / 归一，页内显示必须与它一致，不能变成两套真相。
+    try {
+      const fresh = await api.config();
+      if (fresh && fresh.ok && fresh.data && Array.isArray(fresh.data.builtinAllowlist)) {
+        builtinAllowlist = fresh.data.builtinAllowlist.filter((rule) => typeof rule === "string");
+        if (Array.isArray(fresh.data.builtinAllowlistDefaults)) {
+          builtinDefaults = fresh.data.builtinAllowlistDefaults.filter((rule) => typeof rule === "string");
+        }
+        builtinDirty = false;
+        builtinEditing = null;
+        renderBuiltinAllowlist();
+      }
+    } catch {
+      // 对齐失败不影响已经落盘的配置，保留页内值。
+    }
     onSaved(result.data || null);
     setTimeout(() => closeModal(), 500);
   }

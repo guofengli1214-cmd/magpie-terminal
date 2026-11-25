@@ -17,6 +17,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { BUILTIN_SHELL_IDS, isValidShellId } from "../pty/shells.mjs";
+import { DEFAULT_BUILTIN_ALLOWLIST, builtinRulesFrom } from "../policy/allowlist.mjs";
 
 /** 环境变量覆盖路径：只给测试用，生产不设。 */
 export const CONFIG_PATH_ENV = "MAGPIE_TERMINAL_CONFIG_PATH";
@@ -45,6 +46,8 @@ export const KNOWN_FIELDS = Object.freeze([
   // TASK-FIX17-L4 R1：对话 / 审阅模型的推理强度（null = 不指定，网关用自身默认）。
   "conversationReasoning",
   "reviewReasoning",
+  // TASK-FIX17-I R1：内置只读白名单（用户可增/删/改；缺字段 = 用默认清单）。
+  "builtinAllowlist",
 ]);
 
 /**
@@ -76,6 +79,16 @@ export const BASE_PROMPT_MAX = 8000;
  */
 export const DOWNLOAD_DIR_MAX = 512;
 
+/**
+ * 内置只读白名单的条数 / 单条长度上限（TASK-FIX17-I R1）。
+ *
+ * 300 而不是 `ALLOWLIST_MAX_ENTRIES`（200）：内置清单本身就是 60+ 条
+ * （23 个命令头 + 40 个只读子命令），再给用户留出扩充余地。
+ * 64 是单条上限：最长的默认项 `docker container ls` 才 19 个字符。
+ */
+export const BUILTIN_ALLOWLIST_MAX_ENTRIES = 300;
+export const BUILTIN_ALLOWLIST_ENTRY_MAX = 64;
+
 /** 主机认证方式（TASK-V2-B §2.2）。 */
 export const AUTH_TYPES = Object.freeze(["password", "privateKey"]);
 
@@ -101,6 +114,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   // 不同模型对 medium 的解释并不一致）。
   conversationReasoning: null,
   reviewReasoning: null,
+  // TASK-FIX17-I R1：默认 = 内置清单（`DEFAULT_BUILTIN_ALLOWLIST` 是唯一数据源）。
+  builtinAllowlist: DEFAULT_BUILTIN_ALLOWLIST,
 });
 
 /**
@@ -248,6 +263,127 @@ export function isValidAllowlistEntry(entry) {
 }
 
 /**
+ * 内置白名单里单个 token 的允许字符集（TASK-FIX17-I R1）。
+ *
+ * 故意不含引号 / 反引号 / `$` / `|` / `&` / `;` / `>` / `<` / `(){}[]*?!~`：
+ * 这些是 shell 元字符，一旦允许就能写出「看起来是只读命令、实际是另一条命令」的条目。
+ * `.` `:` `+` `/` `@` `-` `_` 是为真实命令名留的（`node -v`、`npm -v`、
+ * `docker compose ps`、`/usr/bin/ls`、`user@host`）。
+ */
+const BUILTIN_ALLOWLIST_TOKEN_RE = /^[A-Za-z0-9_.:+/@-]+$/;
+/** 一条规则最多几段（`docker container ls` = 3 段）。 */
+const BUILTIN_ALLOWLIST_SEGMENT_MAX = 3;
+
+/**
+ * 校验内置白名单的**单条**规则（TASK-FIX17-I R1）。
+ *
+ * @param {unknown} entry
+ * @returns {{ok:true, text:string} | {ok:false, userText:string}}
+ */
+export function checkBuiltinAllowlistEntry(entry) {
+  if (typeof entry !== "string") {
+    return { ok: false, userText: "每条规则都必须是一段文本（例如 free 或 docker volume ls）。" };
+  }
+  const text = entry.trim();
+  if (text.length === 0) {
+    return { ok: false, userText: "规则不能是空的。" };
+  }
+  if (text.length > BUILTIN_ALLOWLIST_ENTRY_MAX) {
+    return {
+      ok: false,
+      userText: `每条规则最长 ${BUILTIN_ALLOWLIST_ENTRY_MAX} 个字符（这条 ${text.length} 个）。`,
+    };
+  }
+  // 控制字符先单拎：制表符 / 换行会同时破坏“单词间单空格”与「一条规则一行」的 UI。
+  if (/[\u0000-\u001f\u007f]/.test(text)) {
+    return { ok: false, userText: "规则里不能混入换行、制表符或其它控制字符。" };
+  }
+  if (/\s{2,}/.test(text)) {
+    return { ok: false, userText: "单词之间只能有一个空格。" };
+  }
+  const parts = text.split(" ");
+  if (parts.length > BUILTIN_ALLOWLIST_SEGMENT_MAX) {
+    return {
+      ok: false,
+      userText: `一条规则最多 ${BUILTIN_ALLOWLIST_SEGMENT_MAX} 段（命令头 + 最多两个只读子命令词）。`,
+    };
+  }
+  for (const part of parts) {
+    if (!BUILTIN_ALLOWLIST_TOKEN_RE.test(part)) {
+      return {
+        ok: false,
+        userText: `「${part}」里有不允许的字符：只能使用字母、数字和 _ . : + / @ -。`,
+      };
+    }
+  }
+  return { ok: true, text };
+}
+
+/**
+ * 归一化内部内置白名单（TASK-FIX17-I R1）：返回值总是合法数组（可能是空数组）。
+ *
+ * - 非数组 / 缺失 → 默认清单（老配置自然升级，不需要版本迁移）；
+ * - 数组 → 逐条过 `checkBuiltinAllowlistEntry`，非法条目**丢掉**（fail-closed：
+ *   少一条放行只会多一次确认，绝不会多放行），去重保留首次出现，超 300 条截断；
+ * - `[]` 仍是 `[]`（用户把自动放行清单清空了）。
+ *
+ * 这里与 `validateConfigPatch` 是两道关：手改 config.json 写进非法值时，
+ * 读到内存里的值也必须是合法的（否则设置页会把非法值又写回去）。
+ *
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+export function normalizeBuiltinAllowlist(value) {
+  if (!Array.isArray(value)) return [...DEFAULT_BUILTIN_ALLOWLIST];
+  const out = [];
+  for (const entry of value) {
+    const checked = checkBuiltinAllowlistEntry(entry);
+    if (!checked.ok) continue;
+    if (out.includes(checked.text)) continue;
+    out.push(checked.text);
+    if (out.length >= BUILTIN_ALLOWLIST_MAX_ENTRIES) break;
+  }
+  return out;
+}
+
+/**
+ * 校验 `PUT /api/config` 里的 `builtinAllowlist`（TASK-FIX17-I R1）。
+ *
+ * 与「静默丢弃」相反：任何一条非法就整份拒绞（`INVALID_BUILTIN_ALLOWLIST` +
+ * 人话 userText，带上是第几条），让用户知道自己的输入没存上。
+ * 完全重复的条目不是错误（保留首次出现，其余去掉）。
+ *
+ * @param {unknown} value
+ * @returns {{ok:true, list:string[]} | {ok:false, code:string, userText:string}}
+ */
+export function validateBuiltinAllowlist(value) {
+  if (!Array.isArray(value)) {
+    return { ok: false, code: "INVALID_BUILTIN_ALLOWLIST", userText: "内置白名单必须是一个字符串数组。" };
+  }
+  if (value.length > BUILTIN_ALLOWLIST_MAX_ENTRIES) {
+    return {
+      ok: false,
+      code: "INVALID_BUILTIN_ALLOWLIST",
+      userText: `内置白名单最多 ${BUILTIN_ALLOWLIST_MAX_ENTRIES} 条（现在 ${value.length} 条）。`,
+    };
+  }
+  const list = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const checked = checkBuiltinAllowlistEntry(value[index]);
+    if (!checked.ok) {
+      return {
+        ok: false,
+        code: "INVALID_BUILTIN_ALLOWLIST",
+        userText: `第 ${index + 1} 条内置白名单不合法：${checked.userText}`,
+      };
+    }
+    if (list.includes(checked.text)) continue;
+    list.push(checked.text);
+  }
+  return { ok: true, list };
+}
+
+/**
  * 校验一份 `PUT /api/config` 的补丁（PROTOCOL §1）。
  *
  * 只校验 patch 里出现过的字段；返回第一个错误码，没有错误返回 null。
@@ -354,6 +490,13 @@ export function validateConfigPatch(patch) {
     }
   }
 
+  // TASK-FIX17-I R1：内置只读白名单（用户可增/删/改）。
+  // 空数组合法（= 所有命令都要确认）；非法条目整份拒绞，不静默丢弃。
+  if (has("builtinAllowlist")) {
+    const checked = validateBuiltinAllowlist(patch.builtinAllowlist);
+    if (!checked.ok) return { code: checked.code, userText: checked.userText };
+  }
+
   // TASK-V4-H §6：boolean，非法类型 400 INVALID_SHOW_EFFECT。
   if (has("showApprovalEffect")) {
     if (typeof patch.showApprovalEffect !== "boolean") {
@@ -429,6 +572,10 @@ function normalize(config) {
   // 读到内存里的值也必须是「未设置」，不能把相对路径当 cwd 用。
   next.downloadDir = normalizeDownloadDir(next.downloadDir);
 
+  // builtinAllowlist（TASK-FIX17-I R1）：非数组 / 非法条目一律按 fail-closed 处理
+  // （缺少 → 默认清单；非法条目 → 丢掉，只会多一次确认，绝不会多放行）。
+  next.builtinAllowlist = normalizeBuiltinAllowlist(next.builtinAllowlist);
+
   return next;
 }
 
@@ -447,6 +594,8 @@ export function publicConfig(config) {
     downloadDir: normalized.downloadDir,
     conversationReasoning: normalized.conversationReasoning,
     reviewReasoning: normalized.reviewReasoning,
+    // TASK-FIX17-I R1：内置只读白名单（归一后总是数组；缺字段时是默认清单）。
+    builtinAllowlist: normalized.builtinAllowlist,
   };
 }
 

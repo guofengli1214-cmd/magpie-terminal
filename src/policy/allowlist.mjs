@@ -292,6 +292,68 @@ const DANGEROUS_ARGS = Object.freeze({
   git: Object.freeze(["output"]),
 });
 
+/**
+ * 内置只读白名单的**扁平字符串形态**（TASK-FIX17-I R1）：唯一数据源。
+ *
+ * 元素形式两种：
+ *   - `"free"`：整个命令头放行（= 旧 `ALLOW_HEADS` 的一项）；
+ *   - `"docker volume ls"`：命令头 + 1~2 个只读子命令词（= 旧 `ALLOW_SUBCOMMANDS` 的一项）。
+ *
+ * 为什么要有扁平形态：设置页（`config.builtinAllowlist`）里用户看到/编辑的是这个数组，
+ * 内核判级用 `builtinRulesFrom()` 把它还原成 `{heads, subcommands}`。
+ * **本数组是唯一数据源**：`ALLOW_HEADS` / `ALLOW_SUBCOMMANDS` 由它摊平生成
+ * （下方），单测锁死 `DEFAULT_ALLOWLIST` 与 `builtinRulesFrom(DEFAULT_BUILTIN_ALLOWLIST)`
+ * 逐项相等 —— 不许再出现第二份手写清单。
+ */
+export const DEFAULT_BUILTIN_ALLOWLIST = Object.freeze([
+  ...ALLOW_HEADS,
+  ...Object.entries(ALLOW_SUBCOMMANDS).flatMap(([head, subs]) =>
+    subs.map((sub) => `${head} ${sub}`),
+  ),
+]);
+
+/**
+ * 把扁平清单还原成判级用的 `{ heads, subcommands }`（TASK-FIX17-I R2）。
+ *
+ * **纯函数、永不抛**，只做形状转换，**不做安全过滤**：
+ * 用户把 `rm` 加进清单时这里照样返回它 —— 「deny 先于 allow」由 `classify()` 保证，
+ * 而不是靠这里偷偷删掉（悄悄删会让用户以为「加了生效了」，且掩盖了真正的安全边界）。
+ *
+ * - `undefined` / `null` / 非数组 → 返回 `DEFAULT_ALLOWLIST`（老配置自然升级）；
+ * - 空数组 → `{ heads: [], subcommands: {} }` = 所有命令都要确认；
+ * - 元素非字符串 / 空白 → 跳过（落盘前已由 store 校验拒绝，这里只保证不抛）。
+ *
+ * @param {unknown} list
+ * @returns {{heads: readonly string[], subcommands: Readonly<Record<string, readonly string[]>>}}
+ */
+export function builtinRulesFrom(list) {
+  if (list === undefined || list === null) return DEFAULT_ALLOWLIST;
+  if (!Array.isArray(list)) return DEFAULT_ALLOWLIST;
+  if (list.length === 0) return Object.freeze({ heads: Object.freeze([]), subcommands: Object.freeze({}) });
+
+  const heads = [];
+  const subcommands = new Map();
+  for (const raw of list) {
+    if (typeof raw !== "string") continue;
+    const text = raw.trim().replace(/\s+/g, " ");
+    if (!text) continue;
+    const parts = text.split(" ");
+    if (parts.length === 1) {
+      if (!heads.includes(parts[0])) heads.push(parts[0]);
+      continue;
+    }
+    const head = parts[0];
+    const sub = parts.slice(1).join(" ");
+    const arr = subcommands.get(head) || [];
+    if (!arr.includes(sub)) arr.push(sub);
+    subcommands.set(head, arr);
+  }
+
+  const frozenSubs = {};
+  for (const [key, value] of subcommands) frozenSubs[key] = Object.freeze([...value]);
+  return Object.freeze({ heads: Object.freeze(heads), subcommands: Object.freeze(frozenSubs) });
+}
+
 export const DEFAULT_ALLOWLIST = Object.freeze({
   heads: ALLOW_HEADS,
   subcommands: ALLOW_SUBCOMMANDS,

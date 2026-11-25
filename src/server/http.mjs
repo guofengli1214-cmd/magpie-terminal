@@ -31,6 +31,7 @@ import {
   updateHost,
   validateConfigPatch,
 } from "../config/store.mjs";
+import { DEFAULT_BUILTIN_ALLOWLIST } from "../policy/allowlist.mjs";
 import { z } from "zod";
 import { RemoteRegistry, fingerprintForHost, listFiles, testHostConnection } from "../ssh/registry.mjs";
 import { stat, readFile } from "node:fs/promises";
@@ -306,6 +307,14 @@ function publicConfigPayload(view) {
     conversationReasoning: view.conversationReasoning,
     reviewReasoning: view.reviewReasoning,
     downloadDirDefault: defaultDownloadDir(),
+    // TASK-FIX17-I R1：内置只读白名单 + 它的默认值。
+    //
+    // `builtinAllowlistDefaults` 是给设置页「恢复默认」用的（只在删光/改乱时
+    // 才有意义）—— 前端不必再拄一份默认清单（拄了就会与内核漂移）。
+    // 为什么放在同一份响应里而不另开 `GET /api/config/defaults`：少一个路由，
+    // 少一次请求，设置页的 load() 不用变成两阶段。
+    builtinAllowlist: view.builtinAllowlist,
+    builtinAllowlistDefaults: [...DEFAULT_BUILTIN_ALLOWLIST],
   };
 }
 
