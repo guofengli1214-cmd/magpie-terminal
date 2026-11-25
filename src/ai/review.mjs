@@ -14,7 +14,7 @@
 import { generateText, tool, stepCountIs } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
-import { DEFAULT_MODEL, gatewayBaseUrl } from "./gateway.mjs";
+import { DEFAULT_MODEL, gatewayBaseUrl, resolveReasoningEffort } from "./gateway.mjs";
 
 /** 单次审阅的超时（PROTOCOL §5：60s；TASK-FIX17-J 由 8s 放宽）。 */
 export const REVIEW_TIMEOUT_MS = 60000;
@@ -198,7 +198,17 @@ function combineAbort(signal) {
  *          reversible:boolean|null, cachedTokens:number|null, model:string}>}
  *   失败不抛错：`{risk:null, aligned:null, justification:null, effect:null, confirmWhy:null, reversible:null}`
  */
-export async function reviewCommand({ command, model, cwd, history, shell, targetFacts, signal } = {}) {
+export async function reviewCommand({
+  command,
+  model,
+  cwd,
+  history,
+  shell,
+  targetFacts,
+  signal,
+  reasoning,
+  log,
+} = {}) {
   const reviewModel = resolveReviewModel(model);
   const fallback = {
     risk: null,
@@ -214,6 +224,18 @@ export async function reviewCommand({ command, model, cwd, history, shell, targe
 
   try {
     const provider = providerFor(gatewayBaseUrl());
+    // TASK-FIX17-L4 R3：审阅模型的推理强度（config.reviewReasoning）。
+    // 空 → null → 整块 providerOptions 不传；模型不支持 → 降级为不传并记
+    // REASONING_SKIPPED（由 resolveReasoningEffort 统一处理，不阻断审阅）。
+    const reasoningEffort = await resolveReasoningEffort({
+      level: reasoning,
+      modelId: reviewModel,
+      log,
+      where: "review",
+    });
+    const reasoningProviderOptions = reasoningEffort
+      ? { providerOptions: { openaiCompatible: { reasoningEffort } } }
+      : {};
     const result = await generateText({
       model: provider(reviewModel),
       // system 是缓存前缀的第一段：逐字节不变（不许塞 history / cwd / 时间）。
@@ -223,6 +245,7 @@ export async function reviewCommand({ command, model, cwd, history, shell, targe
       stopWhen: stepCountIs(1),
       abortSignal: combineAbort(signal),
       messages: buildReviewMessages({ command, history, cwd, shell, targetFacts }),
+      ...reasoningProviderOptions,
     });
 
     const verdict = result?.steps?.[0]?.toolCalls?.[0]?.input;

@@ -11,6 +11,7 @@
 //        agent-sessions / agent-sessions-toggle / agent-sessions-menu /
 //        agent-session-item / agent-new / agent-session-badge / agent-reasoning /
 //        approval-review / approval-review-tip
+//   TASK-FIX17-L4 新增：conversation-reasoning（对话模型的推理强度下拉）
 //   TASK-FIX17-D（问题 9/10/11）**删掉**的三个旧钩子：
 //        agent-send（发送按钮） / agent-stop（停止按钮） / composer-hint（常驻提示行）
 //        发送与停止合成一个元素 `data-role="composer-action"` + `.is-busy`；
@@ -69,6 +70,36 @@ const REVIEW_STATE = {
   danger: { state: "danger", label: "危险", text: "危险，必须你确认" },
   none: { state: "none", label: "未审阅", text: "未审阅，按需要确认处理" },
 };
+
+/**
+ * 服务端 `REASONING_LEVELS`（src/config/store.mjs）的镜像。
+ *
+ * 只用于**过滤**：真网关的模型清单里会出现 `none` / `ultra` 这类值，而服务端
+ * 的固定枚举只有这六个（PRD R1）。把服务端会 400 的值摆进下拉等于给用户挖坑，
+ * 所以选项 = 模型给的档位 ∩ 这张表。选项来源仍然只有 /api/models。
+ */
+const REASONING_ACCEPTED = Object.freeze(["off", "low", "medium", "high", "xhigh", "max"]);
+
+/**
+ * 推理档位的中文名（TASK-FIX17-L4 R4）。
+ *
+ * 只做「显示层翻译」：选项本身**只能**来自 `/api/models` 的 `reasoningLevels`，
+ * 这里多一个少一个都不会凭空造出档位（网关没给的档位永远不出现）。
+ * 认不出的档位（网关将来加新档）原样显示，不隐藏、不猜。
+ */
+const REASONING_LABELS = Object.freeze({
+  off: "关闭",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "极高",
+  max: "最高",
+});
+
+function reasoningLabel(level) {
+  const key = typeof level === "string" ? level : "";
+  return REASONING_LABELS[key] || key;
+}
 
 /** tooltip 两段标题（逐字固定，CHANGES-V4 §4 第 4 条）。 */
 const TIP_TITLE_EFFECT = "执行后会发生什么";
@@ -134,6 +165,10 @@ export default function createAiDrawer(elements) {
 
   let modelSelect = null;
   let modelMenu = null;
+  // TASK-FIX17-L4 R4：对话模型的推理强度下拉（模型按钮右侧）。
+  let reasoningSelect = null;
+  // 配置里的真值（null = 不指定 = 网关用自己的默认强度）。
+  let conversationReasoning = null;
   let timeline = null;
   let input = null;
   let composerEl = null;
@@ -239,6 +274,20 @@ export default function createAiDrawer(elements) {
       hidden: "",
     });
 
+    // TASK-FIX17-L4 R4：推理强度（模型按钮**右侧**、同一行；不塞进输入框）。
+    // 选项 = 当前模型的 reasoningLevels（来自 /api/models），首项「默认」value=""。
+    // 模型不支持 / 清单为空 → 整个 select 隐藏（不编造档位）。
+    reasoningSelect = el("select", {
+      "data-role": "conversation-reasoning",
+      className: "composer-reasoning",
+      "aria-label": "推理强度",
+      title: "对话模型的推理强度",
+      hidden: "",
+    });
+    reasoningSelect.addEventListener("change", () => {
+      void persistReasoning(reasoningSelect.value);
+    });
+
     // TASK-FIX17-D R4（问题 10）：发送与停止合成同一个按钮 —— 单元素 + `.is-busy` 类。
     // 空闲：实心圆 + ↑（发送）；忙碌：红环 + 深色圆心（点它 = 停止）。
     // 仍然保留 `data-role="composer-action"` 作为探针钩子（AC6/AC7）。
@@ -250,7 +299,7 @@ export default function createAiDrawer(elements) {
       title: "发送（Enter）",
     });
     actionButton.innerHTML = ACTION_ICON_SEND;
-    topbar.append(modelSelect, actionButton);
+    topbar.append(modelSelect, reasoningSelect, actionButton);
 
     const composerBox = el("div", {
       "data-role": "composer-box",
@@ -602,6 +651,11 @@ export default function createAiDrawer(elements) {
       modelSelect.appendChild(document.createTextNode("网关不可用，点重试"));
       modelSelect.setAttribute("data-gateway", "down");
       modelSelect.title = "网关不可用，点重试";
+      // TASK-FIX17-L4 R4：没有模型清单就没有可信档位 —— 下拉隐藏，不许编造。
+      if (reasoningSelect) {
+        reasoningSelect.textContent = "";
+        reasoningSelect.hidden = true;
+      }
       return;
     }
     const model = currentModel() || models[0] || null;
@@ -636,6 +690,8 @@ export default function createAiDrawer(elements) {
       item.addEventListener("click", () => {
         selectedModelId = model.id;
         updateModelLabel();
+        // 换模型 → 档位列表跟着换；旧值不在新列表里就回落默认。
+        syncReasoningSelect({ fromModelChange: true });
         closeModelMenu();
         void persistModel(model.id);
       });
@@ -672,6 +728,11 @@ export default function createAiDrawer(elements) {
     if (!reachable || models.length === 0) {
       selectedModelId = null;
       updateModelLabel();
+      // 模型清单为空（网关不可用）→ 下拉隐藏：没有清单就没有可信的档位。
+      if (reasoningSelect) {
+        reasoningSelect.textContent = "";
+        reasoningSelect.hidden = true;
+      }
       closeModelMenu();
       return;
     }
@@ -694,6 +755,9 @@ export default function createAiDrawer(elements) {
     if (modelSelect) modelSelect.removeAttribute("aria-busy");
     if (configResult && configResult.ok && configResult.data) {
       showApprovalEffect = configResult.data.showApprovalEffect === true;
+      // TASK-FIX17-L4 R4：刷新页面后从 GET /api/config 恢复档位。
+      const saved = configResult.data.conversationReasoning;
+      conversationReasoning = typeof saved === "string" && saved.length > 0 ? saved : null;
     }
     if (!modelsResult.ok) {
       reachable = false;
@@ -714,6 +778,8 @@ export default function createAiDrawer(elements) {
     const wanted =
       configured && models.some((model) => model.id === configured) ? configured : defaultId;
     renderOptions(wanted);
+    // renderOptions → updateModelLabel 已经把当前模型定下来，这里按它的档位重建下拉。
+    syncReasoningSelect();
   }
 
   // PUT 串行 + 只写最新一次选择（与 ai-bar.js 同一理由：并发 PUT 落盘顺序会乱）。
@@ -729,6 +795,79 @@ export default function createAiDrawer(elements) {
       return result;
     });
     return writeChain;
+  }
+
+  /* ---------------- 推理强度（TASK-FIX17-L4 R4） ---------------- */
+
+  /** 当前模型可用的档位（= 模型清单 ∩ 服务端枚举）；没有就是 []，绝不拿枚举凑选项。 */
+  function levelsOf(model) {
+    if (!model || !Array.isArray(model.reasoningLevels)) return [];
+    return model.reasoningLevels.filter(
+      (level) => typeof level === "string" && REASONING_ACCEPTED.includes(level),
+    );
+  }
+
+  /**
+   * 按当前模型重建下拉。
+   *
+   * @param {{fromModelChange?:boolean}} [opts]
+   *   fromModelChange=true 时，如果原来的档位不在新模型的列表里，回落「默认」并把
+   *   配置写回 null（否则会一直给新模型发一个它不认的档位）。初次加载**不**这么做：
+   *   模型不支持推理时配置值要留着（AC7：模型不支持 + 设了值 → 请求不带该键）。
+   */
+  function syncReasoningSelect({ fromModelChange = false } = {}) {
+    if (!reasoningSelect) return;
+    const model = currentModel();
+    const levels = levelsOf(model);
+    const supported = Boolean(model) && model.supportsReasoning === true && levels.length > 0;
+    reasoningSelect.textContent = "";
+    if (!supported) {
+      reasoningSelect.hidden = true;
+      reasoningSelect.title = "这个模型不支持推理强度";
+      return;
+    }
+    reasoningSelect.hidden = false;
+    reasoningSelect.title = "对话模型的推理强度";
+    reasoningSelect.appendChild(el("option", { value: "" }, "默认"));
+    for (const level of levels) {
+      reasoningSelect.appendChild(el("option", { value: level }, `推理：${reasoningLabel(level)}`));
+    }
+    const kept = typeof conversationReasoning === "string" && levels.includes(conversationReasoning);
+    if (!kept && conversationReasoning && fromModelChange) {
+      const dropped = conversationReasoning;
+      conversationReasoning = null;
+      void persistReasoning(null, { silent: true });
+      onNotice(`这个模型的推理档位里没有「${reasoningLabel(dropped)}」，已回到默认。`, "warn");
+    }
+    reasoningSelect.value = kept ? conversationReasoning : "";
+  }
+
+  // 与模型选择同一条串行链的理由：并发 PUT 落盘顺序会乱。
+  let reasoningChain = Promise.resolve();
+
+  /**
+   * 把一次选择写进配置。失败回滚下拉并 toast（PRD R4）。
+   *
+   * @param {string} value 下拉的 value（"" = 默认）
+   * @param {{silent?:boolean}} [opts] silent=true 时不 toast（换模型的自动回落）
+   */
+  function persistReasoning(value, { silent = false } = {}) {
+    const previous = conversationReasoning;
+    const next = typeof value === "string" && value.length > 0 ? value : null;
+    conversationReasoning = next;
+    if (reasoningSelect) reasoningSelect.value = next || "";
+    reasoningChain = reasoningChain.then(async () => {
+      const result = await api.saveConfig({ conversationReasoning: next });
+      if (!result || !result.ok) {
+        // 回滚到上一次成功的值，并让下拉跟着回去。
+        conversationReasoning = previous;
+        if (reasoningSelect) reasoningSelect.value = previous || "";
+        if (!silent) onNotice("推理强度没存住，已回到原来的档位。", "warn");
+        return false;
+      }
+      return true;
+    });
+    return reasoningChain;
   }
 
   /* ---------------- 时间线渲染 ---------------- */

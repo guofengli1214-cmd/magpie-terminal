@@ -42,7 +42,19 @@ export const KNOWN_FIELDS = Object.freeze([
   "showApprovalEffect",
   // TASK-FIX17-L1 R1：下载 / 导出目录（绝对路径；null = 用浏览器默认下载）。
   "downloadDir",
+  // TASK-FIX17-L4 R1：对话 / 审阅模型的推理强度（null = 不指定，网关用自身默认）。
+  "conversationReasoning",
+  "reviewReasoning",
 ]);
+
+/**
+ * 推理强度档位（TASK-FIX17-L4 R1）。
+ *
+ * 与网关 `reasoning_effort` 的合法值逐字一致（实测：别的值一律 400，
+ * 错误串里会列出这六个）。`null` 表示「不指定」，此时请求体里**不出现**该键。
+ * 冻结数组：调用方只读，避免某处 push 把校验面改掉。
+ */
+export const REASONING_LEVELS = Object.freeze(["off", "low", "medium", "high", "xhigh", "max"]);
 
 /** 自动执行档位（PROTOCOL §1）。 */
 export const AUTONOMY_LEVELS = Object.freeze(["strict", "balanced", "loose"]);
@@ -85,6 +97,10 @@ export const DEFAULT_CONFIG = Object.freeze({
   showApprovalEffect: false,
   // TASK-FIX17-L1 R1：null = 未设置 → 下载/导出回落浏览器默认目录。
   downloadDir: null,
+  // TASK-FIX17-L4 R1：null = 不指定，交给网关自己的默认强度（不要默认 medium：
+  // 不同模型对 medium 的解释并不一致）。
+  conversationReasoning: null,
+  reviewReasoning: null,
 });
 
 /**
@@ -316,6 +332,28 @@ export function validateConfigPatch(patch) {
     }
   }
 
+  // TASK-FIX17-L4 R1：推理强度只收固定枚举或 null。
+  // 空串 / 纯空白**不是**错误（设置页首项「默认」与抽屉里的空 value 都是它），
+  // 由 normalize 归一成 null（= 不传 reasoning_effort）。
+  for (const field of ["conversationReasoning", "reviewReasoning"]) {
+    if (!has(field)) continue;
+    const value = patch[field];
+    if (value === null) continue;
+    if (typeof value !== "string") {
+      return {
+        code: "INVALID_REASONING_LEVEL",
+        userText: `推理强度必须是 ${REASONING_LEVELS.join(" / ")} 之一，或者留空（用网关默认）。`,
+      };
+    }
+    const text = value.trim();
+    if (text.length > 0 && !REASONING_LEVELS.includes(text)) {
+      return {
+        code: "INVALID_REASONING_LEVEL",
+        userText: `推理强度必须是 ${REASONING_LEVELS.join(" / ")} 之一，或者留空（用网关默认）。`,
+      };
+    }
+  }
+
   // TASK-V4-H §6：boolean，非法类型 400 INVALID_SHOW_EFFECT。
   if (has("showApprovalEffect")) {
     if (typeof patch.showApprovalEffect !== "boolean") {
@@ -378,6 +416,14 @@ function normalize(config) {
   // showApprovalEffect：非 boolean 一律回落 false（默认关）。
   if (typeof next.showApprovalEffect !== "boolean") next.showApprovalEffect = false;
 
+  // conversationReasoning / reviewReasoning：只保留固定枚举，其余（含 "" / 手改的乱值）
+  // 一律回落 null = 不指定。这里与 validateConfigPatch 是两道关：手改 config.json
+  // 写进 "turbo" 时，读到内存里的也不能把它发进请求体（网关会 400）。
+  for (const field of ["conversationReasoning", "reviewReasoning"]) {
+    const value = typeof next[field] === "string" ? next[field].trim() : next[field];
+    next[field] = REASONING_LEVELS.includes(value) ? value : null;
+  }
+
   // downloadDir：非法值（相对路径 / 超长 / 非字符串）一律回落 null，不抛错。
   // 这里与 validateConfigPatch 是两道关：手改 config.json 写进相对路径时，
   // 读到内存里的值也必须是「未设置」，不能把相对路径当 cwd 用。
@@ -399,6 +445,8 @@ export function publicConfig(config) {
     defaultShell: normalized.defaultShell,
     showApprovalEffect: normalized.showApprovalEffect === true,
     downloadDir: normalized.downloadDir,
+    conversationReasoning: normalized.conversationReasoning,
+    reviewReasoning: normalized.reviewReasoning,
   };
 }
 

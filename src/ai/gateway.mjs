@@ -233,7 +233,102 @@ function toModelEntry(raw) {
       ? raw.magpie_label
       : id;
   const contextLength = Number.isFinite(raw.context_length) ? raw.context_length : null;
-  return { id, label, contextLength };
+  // TASK-FIX17-L4 R2：推理能力透传给前端（下拉选项的唯一来源）。
+  // `reasoning_levels` 是网关给的真实档位（例如 ["low","high","max"]），
+  // 不过滤空串以外的判断：只收非空字符串，其余一律丢掉 → 没有就是 []。
+  const reasoningLevels = Array.isArray(raw.reasoning_levels)
+    ? raw.reasoning_levels.filter((level) => typeof level === "string" && level.trim().length > 0)
+    : [];
+  return {
+    id,
+    label,
+    contextLength,
+    reasoningLevels,
+    supportsReasoning: raw.reasoning === true,
+  };
+}
+
+/**
+ * 推理支持信息的缓存时长（TASK-FIX17-L4 R3）。
+ *
+ * 为什么需要缓存：生成前要回答「这个模型支持推理吗」，唯一可靠来源是网关的
+ * `/v1/models`（`reasoning` + `reasoning_levels`）。每次生成都探一次会在
+ * 用户每句提问前白等一个往返；60 秒足够覆盖一段连续对话，又不会把刚换的模型
+ * 能力记错一分钟以上。
+ */
+export const REASONING_SUPPORT_TTL_MS = 60 * 1000;
+
+/** { at:number, byId:Map<string,{supportsReasoning:boolean, reasoningLevels:string[]}> } */
+let reasoningSupportCache = null;
+
+/** 仅供测试：清空推理能力缓存（换 stub 网关时必须调，否则上一轮的清单会污染）。 */
+export function resetReasoningSupportCache() {
+  reasoningSupportCache = null;
+}
+
+/**
+ * 查一个模型的推理能力。永不抛错。
+ *
+ * @param {string} modelId
+ * @returns {Promise<{known:boolean, supportsReasoning:boolean, reasoningLevels:string[]}>}
+ *   `known:false` = 网关不可达 / 清单里没有这个 id。此时**不做降级判断**
+ *   （宁可按用户选的值发：用户明确设了档，静默丢弃比网关报错更让人困惑）。
+ */
+export async function reasoningSupportFor(modelId) {
+  const id = typeof modelId === "string" ? modelId : "";
+  const now = Date.now();
+  if (!reasoningSupportCache || now - reasoningSupportCache.at >= REASONING_SUPPORT_TTL_MS) {
+    try {
+      const probe = await probeGateway();
+      const byId = new Map();
+      for (const model of probe.models) {
+        byId.set(model.id, {
+          supportsReasoning: model.supportsReasoning === true,
+          reasoningLevels: Array.isArray(model.reasoningLevels) ? model.reasoningLevels : [],
+        });
+      }
+      reasoningSupportCache = { at: Date.now(), byId };
+    } catch {
+      // 网关不可达：缓存一段「不知道」，别让每句提问都白等 5 秒 probes。
+      reasoningSupportCache = { at: Date.now(), byId: new Map() };
+      return { known: false, supportsReasoning: true, reasoningLevels: [] };
+    }
+  }
+  const hit = reasoningSupportCache.byId.get(id);
+  if (!hit) return { known: false, supportsReasoning: true, reasoningLevels: [] };
+  return { known: true, ...hit };
+}
+
+/**
+ * 把「用户选的档位」解成「这次请求该发的 reasoningEffort」。
+ *
+ * TASK-FIX17-L4 R3 的两条硬规则：
+ *   1. 没设（null / ""）→ 返回 null，调用方**整块不给 providerOptions**
+ *      （请求体里连 `reasoning_effort: null` 都不出现）。
+ *   2. 模型明确不支持（`reasoning !== true`）但用户设了值 → 降级为不传，
+ *      记一条 `code:"REASONING_SKIPPED"` warn（不阻断这次生成）。
+ *
+ * @param {{level?:string|null, modelId?:string, log?:Function, where?:string}} input
+ * @returns {Promise<string|null>}
+ */
+export async function resolveReasoningEffort({ level, modelId, log, where } = {}) {
+  if (typeof level !== "string" || level.trim().length === 0) return null;
+  const wanted = level.trim();
+  const support = await reasoningSupportFor(modelId);
+  if (support.known && !support.supportsReasoning) {
+    if (typeof log === "function") {
+      log({
+        level: "warn",
+        code: "REASONING_SKIPPED",
+        msg: "model does not support reasoning; effort dropped",
+        model: typeof modelId === "string" ? modelId : null,
+        requested: wanted,
+        where: typeof where === "string" ? where : null,
+      });
+    }
+    return null;
+  }
+  return wanted;
 }
 
 /**

@@ -302,6 +302,9 @@ function publicConfigPayload(view) {
     defaultShell: view.defaultShell,
     showApprovalEffect: view.showApprovalEffect === true,
     downloadDir: view.downloadDir,
+    // TASK-FIX17-L4 R1：推理强度（publicConfig() 已归一，这里只负责带出去）。
+    conversationReasoning: view.conversationReasoning,
+    reviewReasoning: view.reviewReasoning,
     downloadDirDefault: defaultDownloadDir(),
   };
 }

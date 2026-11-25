@@ -14,6 +14,8 @@
 //   allowlist-mode / allowlist-add / allowlist-list / allowlist-item /
 //   allowlist-toggle / allowlist-remove / review-model-select / base-prompt /
 //   gateway-info / settings-save / settings-cancel / settings-status
+//   TASK-FIX17-L4 新增：review-reasoning（审阅模型的推理强度下拉）/
+//   review-reasoning-hint（「这个模型不支持推理强度」的说明行）
 //   TASK-FIX17-G 新增：about-version / about-repository / about-install-kind /
 //   update-check / update-status / update-howto / update-howto-text
 
@@ -41,6 +43,32 @@ const DEFAULT_BASE_PROMPT_HINT =
 // TASK-V4-H §5.3：审阅是全档位强制执行的一步，设置页不再提供「关闭审阅」。
 // 保留这个常量只为兼容老配置（reviewModel === "" 仍然能让 judge 一律确认）。
 const REVIEW_SAME = "__same__";
+
+/**
+ * 服务端 `REASONING_LEVELS`（src/config/store.mjs）的镜像；只用于过滤
+ * （真网关会给出 `none` / `ultra`，服务端的固定枚举会 400 —— 不能摆进下拉）。
+ */
+const REASONING_ACCEPTED = Object.freeze(["off", "low", "medium", "high", "xhigh", "max"]);
+
+/**
+ * 推理档位的中文名（TASK-FIX17-L4 R5）。
+ *
+ * 只是显示层翻译：选项**只能**来自 `/api/models` 的 `reasoningLevels`，
+ * 这里不参与「有哪些档位」的决定（网关没给的档位永远不出现）。
+ */
+const REASONING_LABELS = Object.freeze({
+  off: "关闭",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "极高",
+  max: "最高",
+});
+
+function reasoningLabel(level) {
+  const key = typeof level === "string" ? level : "";
+  return REASONING_LABELS[key] || key;
+}
 
 function el(tag, attrs = {}, text) {
   const node = document.createElement(tag);
@@ -81,6 +109,15 @@ export default function createSettingsPanel(elements) {
   let allowlistMode = null;
   let allowlistList = null;
   let reviewSelect = null;
+  // TASK-FIX17-L4 R5：审阅模型的推理强度。
+  let reviewReasoningSelect = null;
+  let reviewReasoningHint = null;
+  // 配置里的真值（null = 默认 = 不传 reasoning_effort）。
+  let reviewReasoning = null;
+  // 「与对话模型相同」时要知道对话用的是哪个模型（选项按它的档位算）。
+  let conversationModelId = null;
+  // GET /api/models 的 default（配置里没存模型时，服务端会给它算一个真正生效的）。
+  let defaultModelId = null;
   let basePromptInput = null;
   let gatewayInfo = null;
   let statusLine = null;
@@ -262,6 +299,61 @@ export default function createSettingsPanel(elements) {
     const value = reviewSelect.value;
     if (value === REVIEW_SAME) return null;
     return value;
+  }
+
+  /* ---------------- 审阅推理强度（TASK-FIX17-L4 R5） ---------------- */
+
+  /** 下拉实际对应的模型：「与对话模型相同」= 配置里的对话模型。 */
+  function reviewTargetModel() {
+    if (!reviewSelect) return null;
+    const value = reviewSelect.value;
+    if (value !== REVIEW_SAME) return models.find((model) => model.id === value) || null;
+    const wanted = typeof conversationModelId === "string" ? conversationModelId : null;
+    return wanted ? models.find((model) => model.id === wanted) || null : null;
+  }
+
+  /**
+   * 按当前审阅模型重建「推理强度」下拉。
+   *
+   * 规则（PRD R5）：
+   *   - 选项 = 所选模型的 reasoningLevels，首项「默认」value=""；
+   *   - 换审阅模型时重算：原值仍合法就保留，否则回落「默认」并把配置值清成 null；
+   *   - 模型不支持推理 → select 禁用 + 写「这个模型不支持推理强度」。
+   */
+  function renderReviewReasoning() {
+    if (!reviewReasoningSelect) return;
+    const model = reviewTargetModel();
+    const levels =
+      model && Array.isArray(model.reasoningLevels)
+        ? model.reasoningLevels.filter(
+            (level) => typeof level === "string" && REASONING_ACCEPTED.includes(level),
+          )
+        : [];
+    const supported = Boolean(model) && model.supportsReasoning === true && levels.length > 0;
+    reviewReasoningSelect.textContent = "";
+    if (!supported) {
+      reviewReasoningSelect.appendChild(el("option", { value: "" }, "默认"));
+      reviewReasoningSelect.value = "";
+      reviewReasoningSelect.disabled = true;
+      if (reviewReasoningHint) reviewReasoningHint.textContent = "这个模型不支持推理强度。";
+      return;
+    }
+    reviewReasoningSelect.disabled = false;
+    reviewReasoningSelect.appendChild(el("option", { value: "" }, "默认"));
+    for (const level of levels) {
+      reviewReasoningSelect.appendChild(
+        el("option", { value: level }, `推理：${reasoningLabel(level)}`),
+      );
+    }
+    // 原值仍合法 → 保留；否则回落「默认」（同时把待保存的值也清掉，
+    // 不能让「界面显示默认、保存却写回旧档位」这种错位存在）。
+    if (!(typeof reviewReasoning === "string" && levels.includes(reviewReasoning))) {
+      reviewReasoning = null;
+    }
+    reviewReasoningSelect.value = reviewReasoning || "";
+    if (reviewReasoningHint) {
+      reviewReasoningHint.textContent = "可选档位由所选模型决定；「默认」= 用网关自己的默认强度。";
+    }
   }
 
   /* ---------------- 网关信息 ---------------- */
@@ -751,7 +843,30 @@ export default function createSettingsPanel(elements) {
       ),
     );
     reviewSelect = el("select", { "data-role": "review-model-select", "aria-label": "审阅模型" });
+    // 换审阅模型 → 档位列表跟着换（保留仍合法的旧值，否则回落默认）。
+    reviewSelect.addEventListener("change", () => renderReviewReasoning());
     blockReview.appendChild(reviewSelect);
+
+    // TASK-FIX17-L4 R5：模型选择下方一行 label「推理强度」+ select。
+    const reasoningRow = el("div", { className: "settings-row settings-reasoning-row" });
+    const reasoningLabelEl = el(
+      "label",
+      { className: "settings-reasoning-label", for: "review-reasoning-select" },
+      "推理强度",
+    );
+    reviewReasoningSelect = el("select", {
+      id: "review-reasoning-select",
+      "data-role": "review-reasoning",
+      "aria-label": "审阅模型的推理强度",
+    });
+    // 保存时随其它字段一起 PUT（沿用这一节的保存按钮，不单独提交）。
+    reviewReasoningSelect.addEventListener("change", () => {
+      reviewReasoning = reviewReasoningSelect.value || null;
+    });
+    reasoningRow.append(reasoningLabelEl, reviewReasoningSelect);
+    blockReview.appendChild(reasoningRow);
+    reviewReasoningHint = el("p", { className: "settings-block-hint", "data-role": "review-reasoning-hint" });
+    blockReview.appendChild(reviewReasoningHint);
     blockReview.appendChild(
       el(
         "p",
@@ -1020,9 +1135,11 @@ export default function createSettingsPanel(elements) {
       const payload = modelsResult.data || {};
       gateway = payload.gateway || null;
       models = Array.isArray(payload.models) ? payload.models : [];
+      defaultModelId = typeof payload.default === "string" ? payload.default : null;
     } else {
       gateway = null;
       models = [];
+      defaultModelId = null;
     }
     if (!configResult.ok) {
       setStatus(`${configResult.userText}（${configResult.code}）`, "error");
@@ -1030,6 +1147,7 @@ export default function createSettingsPanel(elements) {
       allowlist = [];
       renderAllowlist();
       renderReviewModels(null);
+      renderReviewReasoning();
       basePromptInput.value = "";
       setShowEffect(false);
       renderDownloadDir(null);
@@ -1049,7 +1167,24 @@ export default function createSettingsPanel(elements) {
         }))
       : [];
     renderAllowlist();
+    // 对话模型：GET /api/config 的 model 在「从没保存过」时是服务端兜底的 DEFAULT_MODEL，
+    // 不一定在清单里。按「清单里存在 → 用；否则用 /api/models 的 default → 再否则 models[0]」
+    // 解析，才能和抽屉实际选中的那个模型对上（档位按它算）。
+    const known = (id) => typeof id === "string" && id.length > 0 && models.some((model) => model.id === id);
+    const configuredModel = typeof config.model === "string" ? config.model : null;
+    conversationModelId = known(configuredModel)
+      ? configuredModel
+      : known(defaultModelId)
+        ? defaultModelId
+        : models[0]
+          ? models[0].id
+          : null;
+    reviewReasoning =
+      typeof config.reviewReasoning === "string" && config.reviewReasoning.length > 0
+        ? config.reviewReasoning
+        : null;
     renderReviewModels(typeof config.reviewModel === "string" ? config.reviewModel : null);
+    renderReviewReasoning();
     basePromptInput.value = typeof config.basePrompt === "string" ? config.basePrompt : "";
     setShowEffect(config.showApprovalEffect === true);
     renderDownloadDir(config);
@@ -1071,6 +1206,8 @@ export default function createSettingsPanel(elements) {
         enabled: entry.enabled !== false,
       })),
       reviewModel: selectedReviewModel(),
+      // TASK-FIX17-L4 R5：空串 = 默认 → null（服务端再归一，但这里语义更直接）。
+      reviewReasoning: reviewReasoning || null,
       basePrompt: basePromptInput.value.trim().length > 0 ? basePromptInput.value : null,
       showApprovalEffect,
       // TASK-FIX17-L1 R1：空串交给服务端归一成 null（这里 trim 后为空就送 null，

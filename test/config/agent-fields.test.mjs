@@ -109,7 +109,8 @@ test("DEFAULT_CONFIG 带上 agent 四字段 + defaultShell + showApprovalEffect 
 });
 
 // TASK-FIX17-L1 R1：downloadDir（下载 / 导出目录）也进了已知字段。
-test("KNOWN_FIELDS 是 model + 四个 agent 字段 + defaultShell + showApprovalEffect + downloadDir", () => {
+// TASK-FIX17-L4 R1：两个推理强度字段也进了已知字段。
+test("KNOWN_FIELDS 是 model + 四个 agent 字段 + defaultShell + showApprovalEffect + downloadDir + 两个推理字段", () => {
   assert.deepEqual([...KNOWN_FIELDS], [
     "model",
     "autonomy",
@@ -119,6 +120,8 @@ test("KNOWN_FIELDS 是 model + 四个 agent 字段 + defaultShell + showApproval
     "defaultShell",
     "showApprovalEffect",
     "downloadDir",
+    "conversationReasoning",
+    "reviewReasoning",
   ]);
 });
 

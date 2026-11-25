@@ -124,7 +124,13 @@ test("AC4：.composer-hint 的 CSS 规则已全部删除（提示改成了 place
 
 test("AC3：JS 里模型下拉与动作按钮同在 .composer-topbar 下（不在 composer-box 里）", () => {
   assert.match(DRAWER_JS, /const topbar = el\("div", \{ className: "composer-topbar" \}\);/);
-  assert.match(DRAWER_JS, /topbar\.append\(modelSelect, actionButton\)/, "模型与按钮必须 append 到 topbar");
+  // TASK-FIX17-L4 R4 在模型按钮右侧插入了推理下拉（三子项），
+  // 顺序固定：模型 → 推理 → 动作按钮。
+  assert.match(
+    DRAWER_JS,
+    /topbar\.append\(modelSelect, reasoningSelect, actionButton\)/,
+    "模型 / 推理 / 按钮必须按顺序 append 到 topbar",
+  );
   assert.match(DRAWER_JS, /composerBox\.append\(grow, input\)/, "composer-box 里只留把手与 textarea");
   assert.match(DRAWER_JS, /composerEl\.append\(topbar, modelMenu, composerBox\)/);
   const block = blockOf(COMPONENTS, '[data-role="ai-drawer"] .composer-topbar');

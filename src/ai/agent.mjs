@@ -29,7 +29,7 @@ import crypto from "node:crypto";
 import { streamText, tool, stepCountIs } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
-import { DEFAULT_MODEL, gatewayBaseUrl } from "./gateway.mjs";
+import { DEFAULT_MODEL, gatewayBaseUrl, resolveReasoningEffort } from "./gateway.mjs";
 import { judge } from "./judge.mjs";
 import { catastrophicReason } from "../policy/forbidden.mjs";
 import { buildContext } from "./context.mjs";
@@ -903,6 +903,20 @@ export function createAgentRunner(opts = {}) {
         let finalText = "";
         let reasoning = "";
         let streamed = "";
+        // TASK-FIX17-L4 R3：用户选的推理强度（config.conversationReasoning）。
+        // 空 → 返回 null → `reasoningProviderOptions` 是空对象，请求体里**不出现**
+        // `providerOptions`（更不能出现 `reasoning_effort: null`）。
+        // 模型不支持 → resolveReasoningEffort 内部记 REASONING_SKIPPED 并返回 null。
+        const reasoningEffort = await resolveReasoningEffort({
+          level: effectiveConfig.conversationReasoning,
+          modelId: chosenModel,
+          // 其它 agent 日志都带 taskId；降级那条也要能对到具体任务。
+          log: (entry) => log({ ...entry, taskId }),
+          where: "agent",
+        });
+        const reasoningProviderOptions = reasoningEffort
+          ? { providerOptions: { openaiCompatible: { reasoningEffort } } }
+          : {};
         if (injectedStream) {
           const result = await injectedStream({
             model: providerFor(gatewayBaseUrl())(chosenModel),
@@ -911,6 +925,7 @@ export function createAgentRunner(opts = {}) {
             stopWhen: stepCountIs(MAX_STEPS),
             abortSignal: controller.signal,
             messages,
+            ...reasoningProviderOptions,
           });
           finalText = result && typeof result.text === "string" ? result.text : "";
           reasoning = extractReasoning(result);
@@ -922,6 +937,7 @@ export function createAgentRunner(opts = {}) {
             stopWhen: stepCountIs(MAX_STEPS),
             abortSignal: controller.signal,
             messages,
+            ...reasoningProviderOptions,
             // 中止时的内部 Promise 拒绝不让它变成 unhandledRejection（否则会崩进程）。
             onError: ({ error }) => {
               log({

@@ -223,6 +223,10 @@ export async function judge({ command, config, cwd, model, review, log, history,
       shell,
       targetFacts: facts,
       signal,
+      // TASK-FIX17-L4 R3：审阅模型的推理强度（null = 不指定，不传 reasoning_effort）。
+      reasoning: conf.reviewReasoning === undefined ? null : conf.reviewReasoning,
+      // 降级日志（REASONING_SKIPPED）用同一个 log：审阅失败日志已经在这里落。
+      log: logFn,
     });
   } catch (err) {
     verdict = null;
@@ -297,6 +301,7 @@ export async function judge({ command, config, cwd, model, review, log, history,
     historyChars: historyText.length,
     tier,
     reviewModel: resolvedModel,
+    reviewReasoning: conf.reviewReasoning === undefined ? null : conf.reviewReasoning,
     autonomy,
     durationMs: Date.now() - reviewStartedAt,
   });

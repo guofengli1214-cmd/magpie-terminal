@@ -1075,6 +1075,41 @@ button[disabled] {
   color: var(--term-dim);
 }
 
+/* TASK-FIX17-L4 R4：推理强度下拉（模型按钮**右侧**，同一行，宽约 96px）。
+   只新增规则，不改上面既有的模型按钮几何。颜色全走变量（F 批规矩）：
+   边界 --term-line-3（浅 3.09:1 / 深 4.73:1），聚焦 --term-focus。 */
+[data-role="ai-drawer"] .composer-topbar [data-role="conversation-reasoning"] {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 96px;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--term-muted);
+  background: var(--term-bg);
+  border: 1px solid var(--term-line-3);
+  border-radius: var(--term-radius);
+}
+
+[data-role="ai-drawer"] .composer-topbar [data-role="conversation-reasoning"]:focus-visible {
+  border-color: var(--term-focus);
+  outline: none;
+}
+
+/* 不支持推理 / 清单为空时整个下拉隐藏（不给禁用态：虚线灰框会被误读成坏控件）。 */
+[data-role="ai-drawer"] .composer-topbar [data-role="conversation-reasoning"][hidden] {
+  display: none;
+}
+
+/* 顶栏现在有三个子项（模型 / 推理 / 动作）。`justify-content: space-between`
+   会把中间项推到中间；auto margin 先吃掉剩余空间，让动作按钮仍靠右、
+   推理下拉紧贴模型按钮右侧。 */
+[data-role="ai-drawer"] .composer-topbar [data-role="composer-action"] {
+  margin-left: auto;
+}
+
 /* 模型菜单：锚点是 `.composer`（position:relative），向上弹。
    bottom: calc(100% - 6px) 让菜单底边落在顶栏之上；
    `--term-panel-solid` 是**显式的不透明实色**（见 tokens.css 的说明）：
@@ -1469,6 +1504,44 @@ button[disabled] {
   align-self: flex-start;
   min-width: 200px;
   max-width: 100%;
+}
+
+/* TASK-FIX17-L4 R5：审阅模型的「推理强度」一行（模型选择下方）。
+   只新增规则；边界同样用 --term-line-3，聚焦用 --term-focus。 */
+.settings-block .settings-reasoning-row {
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-block .settings-reasoning-label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--term-fg);
+}
+
+.settings-block [data-role="review-reasoning"] {
+  flex: 0 0 auto;
+  height: 26px;
+  box-sizing: border-box;
+  min-width: 132px;
+  max-width: 100%;
+  font: inherit;
+  font-size: 12px;
+  color: var(--term-fg);
+  background: var(--term-bg);
+  border: 1px solid var(--term-line-3);
+  border-radius: var(--term-radius);
+}
+
+.settings-block [data-role="review-reasoning"]:focus-visible {
+  border-color: var(--term-focus);
+  outline: none;
+}
+
+/* 模型不支持推理时禁用：与 allowlist 的禁用项同一套视觉（只降不透明度）。 */
+.settings-block [data-role="review-reasoning"]:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 [data-role="allowlist-list"] {
