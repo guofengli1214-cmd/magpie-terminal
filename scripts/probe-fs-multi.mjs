@@ -266,7 +266,12 @@ try {
 
       const contrast = await themed.evaluate(`(() => {
         const parse = (text) => {
-          const m = /rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)/.exec(text || '');
+          const t = (text || '').trim();
+          // Chrome 对 color-mix() 派生色输出 color(srgb r g b / a)（0..1 浮点），
+          // 只认 rgb/rgba 会让这类颜色恒为 null（曾导致 AC1.dark 假失败）。
+          const srgb = /^color\\(srgb\\s+([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)/.exec(t);
+          if (srgb) return [Number(srgb[1]) * 255, Number(srgb[2]) * 255, Number(srgb[3]) * 255];
+          const m = /rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)/.exec(t);
           return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
         };
         const lum = (rgb) => {
