@@ -23,22 +23,53 @@
 import path from "node:path";
 import os from "node:os";
 
-/** 把任意空白压成一个空格并按此切词；引号剥掉（`rm -rf '/'` 与 `rm -rf /` 等价）。 */
+import { isProtectedTarget } from "./protected-paths.mjs";
+
+/**
+ * 把命令切成 token；引号内的空白不再切词（TASK-FIX17-K R2）。
+ *
+ * 为什么改：`Remove-Item -Recurse -Force 'C:\Program Files'` 的路径里有空格，
+ * 旧的「先 split(' ') 再去引号」会把它切成 `'C:\Program` 与 `Files'` 两个 token，
+ * 取目标时永远拿不到 `C:\Program Files` → 系统目录保护空过（K 批要修的正是这个）。
+ * 现在按引号状态扫描：成对引号包起来的内容算一个 token，引号本身剥掉（与原行为一致）。
+ * 反斜杠保持字面量（Windows 路径），不做转义处理。
+ */
 export function tokenize(command) {
-  return String(command)
-    .replace(/\s+/g, " ")
-    .trim()
-    .split(" ")
-    .map((token) => {
-      let t = token;
-      if (t.length >= 2) {
-        const first = t[0];
-        const last = t[t.length - 1];
-        if ((first === "'" || first === '"') && last === first) t = t.slice(1, -1);
+  const text = String(command);
+  const tokens = [];
+  let buffer = "";
+  let quote = null;
+  let started = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+        continue;
       }
-      return t;
-    })
-    .filter((token) => token.length > 0);
+      buffer += ch;
+      started = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started) {
+        tokens.push(buffer);
+        buffer = "";
+        started = false;
+      }
+      continue;
+    }
+    buffer += ch;
+    started = true;
+  }
+  if (started) tokens.push(buffer);
+  return tokens.filter((token) => token.length > 0);
 }
 
 /** 段分隔符：& 系的词与 | 系的词都算「下一条命令开始」。 */
@@ -432,6 +463,117 @@ export function positionalTargets(args) {
   return out;
 }
 
+/** 会删除 / 清空 / 移动目标的命令头（不含 cp / copy：拷出不删源）。 */
+export const DELETE_MOVE_HEADS = new Set([
+  "rm",
+  "rmdir",
+  "rd",
+  "del",
+  "erase",
+  "remove-item",
+  "ri",
+  "clear-content",
+  "clc",
+  "mv",
+  "move",
+]);
+
+/** cmd / PowerShell 的命令名大小写不敏感；POSIX 的 rm / mv 仍按原样（与旧行为一致）。 */
+const CASE_INSENSITIVE_DELETE_HEADS = new Set([
+  "rmdir",
+  "rd",
+  "del",
+  "erase",
+  "remove-item",
+  "ri",
+  "clear-content",
+  "clc",
+  "move",
+]);
+
+/** PowerShell 的命名参数：下一个 token 才是目标。 */
+const PS_TARGET_PARAMS = new Set(["-path", "-literalpath", "-destination"]);
+
+/**
+ * 从一条命令的参数里抽出删除 / 移动的**目标**（原始 token，未解析成绝对路径）。
+ *
+ * 覆盖三族写法：
+ *   POSIX        `rm -rf /etc`                        → 位置参数
+ *   cmd          `del /f /s /q C:\Windows`            → 跳过 `/x` 开关后的位置参数
+ *   PowerShell   `Remove-Item -Path C:\Windows -Recurse` → 命名参数的**下一个** token
+ *
+ * `-Recurse` / `-Force` / `-WhatIf` / `-r` / `-Recurse:$false` 一律当开关；
+ * `-Path:C:\Windows` 这种粘连写法也认（PowerShell 支持）。
+ *
+ * @param {unknown[]} args 命令头之后的原始参数
+ * @returns {{targets: string[], unresolved: boolean}}
+ *   unresolved = 出现了 `-Path` 却没给值（目标读不出来）。
+ */
+export function targetsForArgs(args) {
+  const list = Array.isArray(args) ? args : [];
+  const targets = [];
+  let unresolved = false;
+
+  for (let i = 0; i < list.length; i += 1) {
+    const raw = String(list[i]);
+    const lower = raw.toLowerCase();
+
+    // `-Path:C:\Windows` / `-Destination:D:\x` 粘连写法。
+    const attached = /^-(path|literalpath|destination):(.*)$/i.exec(raw);
+    if (attached) {
+      const value = attached[2].trim();
+      if (value.length > 0) targets.push(value);
+      else unresolved = true;
+      continue;
+    }
+
+    if (raw.startsWith("-")) {
+      if (PS_TARGET_PARAMS.has(lower)) {
+        const next = i + 1 < list.length ? String(list[i + 1]) : "";
+        // 下一个仍是开关（或没有）→ `-Path` 没给值，目标读不出来。
+        if (next.length === 0 || next.startsWith("-")) {
+          unresolved = true;
+          continue;
+        }
+        targets.push(next);
+        i += 1;
+      }
+      continue;
+    }
+
+    // cmd 的 `/s` `/q` `/f` 开关；盘根 `/` 保留。
+    if (positionalTargets([raw]).length === 0) continue;
+    targets.push(raw);
+  }
+
+  return { targets, unresolved };
+}
+
+/** 该命令头是否属于删除 / 清空 / 移动（大小写规则见 CASE_INSENSITIVE_DELETE_HEADS）。 */
+function isDeleteOrMoveHead(head) {
+  const text = String(head);
+  if (DELETE_MOVE_HEADS.has(text)) return true;
+  return CASE_INSENSITIVE_DELETE_HEADS.has(text.toLowerCase()) && DELETE_MOVE_HEADS.has(text.toLowerCase());
+}
+
+/**
+ * 删除 / 清空 / 移动的目标里只要有一个是受保护的系统目录 → 灾难级（TASK-FIX17-K R2）。
+ *
+ * 为什么用「目标表」而不是再加几条 rm 正则：系统目录不是盘根，命令头也不止 rm
+ * （PowerShell 的 Remove-Item / ri / Clear-Content 同样是删除）。表放在
+ * protected-paths.mjs，与 destructive-targets.mjs 共用。
+ */
+function deletesProtectedTarget(heads) {
+  for (const item of heads) {
+    if (!isDeleteOrMoveHead(item.head)) continue;
+    const { targets } = targetsForArgs(item.args);
+    for (const target of targets) {
+      if (isProtectedTarget(target).protected) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * cmd 的 `rd` / `rmdir`（带 `/s`）与 `del` / `erase`（带 `/s`）。
  *
@@ -536,6 +678,12 @@ const RULES = Object.freeze([
     tier: "catastrophic",
     reason: "递归删除盘根或家目录（Remove-Item -Recurse）",
     test: (c) => destroysPowerShellTarget(c.heads),
+  },
+
+  {
+    tier: "catastrophic",
+    reason: "删除或清空系统目录（C:\\Windows 一类）",
+    test: (c) => deletesProtectedTarget(c.heads),
   },
 
   {

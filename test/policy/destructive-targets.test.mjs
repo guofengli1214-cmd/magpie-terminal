@@ -56,8 +56,14 @@ function guard(command, { cwd = CWD, historyText = "" } = {}) {
 
 /* ---------------------------------------------------------------- 目标解析 */
 
-test("R4：命令头表就是 rm/rmdir/del/erase/mv/move/cp/copy", () => {
-  assert.deepEqual([...DESTRUCTIVE_HEADS].sort(), ["copy", "cp", "del", "erase", "move", "mv", "rm", "rmdir"].sort());
+test("R4/K R3：命令头表就是 rm/rmdir/del/erase/mv/move/cp/copy + PowerShell 删除/清空四头", () => {
+  // K 批（TASK-FIX17-K R3）加了 remove-item / ri / clear-content / clc：
+  // 它们原来不在表里 → 护栏取不到目标 → 直接 ok=true（J 批验收发现的缺口）。
+  // 本断言仍是**精确集合**（多了少了都失败），不是放宽。
+  assert.deepEqual(
+    [...DESTRUCTIVE_HEADS].sort(),
+    ["clc", "clear-content", "copy", "cp", "del", "erase", "move", "mv", "remove-item", "ri", "rm", "rmdir"].sort(),
+  );
 });
 
 test("R4：没有破坏性命令头 → heads=false，护栏直接放行", () => {
@@ -83,6 +89,51 @@ test("R4：引号路径剥掉引号再解析", () => {
   const extracted = extractDestructiveTargets('rm "wrong-file.txt"');
   assert.deepEqual(extracted.targets, ["wrong-file.txt"]);
   assert.equal(guard('rm "wrong-file.txt"').ok, true);
+});
+
+/* ---------------------------------------------------------------- K 批：PowerShell 头 */
+
+test("K R3：Remove-Item / ri / Clear-Content / clc 也能取到目标", () => {
+  assert.deepEqual(extractDestructiveTargets("Remove-Item -Recurse -Force C:\\Windows").targets, ["C:\\Windows"]);
+  assert.deepEqual(extractDestructiveTargets("Remove-Item C:\\Windows\\System32 -Recurse").targets, [
+    "C:\\Windows\\System32",
+  ]);
+  assert.deepEqual(extractDestructiveTargets("ri -Recurse C:\\Users").targets, ["C:\\Users"]);
+  assert.deepEqual(
+    extractDestructiveTargets("Clear-Content C:\\Windows\\System32\\drivers\\etc\\hosts").targets,
+    ["C:\\Windows\\System32\\drivers\\etc\\hosts"],
+  );
+  assert.deepEqual(extractDestructiveTargets("clc ./tmp/a.txt").targets, ["./tmp/a.txt"]);
+});
+
+test("K R3：-Path / -LiteralPath / -Destination 的下一个 token 是目标", () => {
+  assert.deepEqual(extractDestructiveTargets("Remove-Item -Path C:\\ProgramData -Recurse").targets, ["C:\\ProgramData"]);
+  assert.deepEqual(extractDestructiveTargets("Remove-Item -LiteralPath 'C:\\Program Files' -Force").targets, [
+    "C:\\Program Files",
+  ]);
+  assert.deepEqual(extractDestructiveTargets("move -Destination D:\\x C:\\Windows").targets, [
+    "D:\\x",
+    "C:\\Windows",
+  ]);
+  // 粘连写法也认（PowerShell 两种写法等价）。
+  assert.deepEqual(extractDestructiveTargets("Remove-Item -Path:C:\\Windows -Recurse").targets, ["C:\\Windows"]);
+});
+
+test("K R3：带空格的引号目标是一个 token（旧 split(' ') 会切碎）", () => {
+  assert.deepEqual(extractDestructiveTargets("Remove-Item -Recurse -Force 'C:\\Program Files'").targets, [
+    "C:\\Program Files",
+  ]);
+  assert.deepEqual(extractDestructiveTargets('mv "C:\\Program Files" D:\\backup').targets, [
+    "C:\\Program Files",
+    "D:\\backup",
+  ]);
+});
+
+test("K R3：-Recurse:$false 当开关，不污染目标；缺值仍算读不出", () => {
+  assert.deepEqual(extractDestructiveTargets("Remove-Item -Recurse:$false C:\\Windows").targets, ["C:\\Windows"]);
+  const missing = extractDestructiveTargets("Remove-Item -Path -Recurse");
+  assert.deepEqual(missing.targets, []);
+  assert.equal(missing.targetsUnresolved, true);
 });
 
 test("R4：通配符 / 变量 / 家目录缩写读不出目标 → targetsUnresolved，护栏拦下", () => {
@@ -146,6 +197,13 @@ test("AC4：盘根 / 家目录 / cwd 本身 / cwd 祖先 → 永远 confirm（�
     assert.ok(result.blocked.length > 0, `${command} 的 blocked 不能是空`);
     assert.match(result.reason, /只能你自己确认|需要你确认/, `${command} reason=${result.reason}`);
   }
+});
+
+test("K R3：护栏自己也会拦系统目录（不依赖灾难级闸门，独立失效面）", () => {
+  const result = guard("rm -rf C:\\Windows", { historyText: "对话里提过 windows" });
+  assert.equal(result.ok, false, "对话里点名过也不许放行系统目录");
+  assert.match(result.reason, /系统目录/);
+  assert.deepEqual(result.blocked, ["C:\\Windows"]);
 });
 
 test("R4：Windows 路径比较不分大小写（C:\\PROJECT 与 c:\\project 同一处）", () => {

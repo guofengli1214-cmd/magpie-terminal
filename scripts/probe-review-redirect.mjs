@@ -29,6 +29,19 @@ const EVIDENCE_DIR = path.resolve(".dispatch", "fix17-h", "evidence");
 const SHOTS_DIR = path.join(EVIDENCE_DIR, "shots");
 const NOTE_TEXT = "已忽略无害重定向（2>&1 / /dev/null 一类）";
 
+/**
+ * 负对照基线（TASK-FIX17-K R4）。
+ *
+ * 为什么不能用 HEAD：H 批修复（7f03cae）提交后，HEAD 里的 segments/allowlist 已经是**改后**
+ * 实现，负对照那 9 条会「改前也 auto」→ 9 条假失败（J 批验收时 39/48）。
+ *
+ * 为什么也不是 prd 里写的 28bd259：28bd259 是 H 批**归档**提交，它在 7f03cae 之后，
+ * `git diff 28bd259 HEAD -- src/policy/segments.mjs` 为空 —— 用它跑出来仍然是 39/48。
+ * 因此固定用 H 修复提交的父提交 7a4eac7（H 批开工后的文档提交，src/policy 与 H 前一致）。
+ * 这是 K 批与 prd R4 字面 SHA 的冲突点，已写进 .dispatch/fix17-k/REPORT.md。
+ */
+const NEGATIVE_CONTROL_SHA = "7a4eac7";
+
 const results = [];
 function record(name, pass, detail, expected) {
   results.push({ group: name.split(".")[0], name, pass: Boolean(pass), detail, expected: expected ?? null });
@@ -96,21 +109,22 @@ function runClassifyCases() {
 /* ---------------------------------------------------------------- ② 负对照 */
 
 /**
- * 把**改前版本**（git HEAD）的 policy 模块落到临时目录，动态 import 出旧的 classify。
+ * 把**改前版本**（固定 SHA 7a4eac7：H 修复提交的父提交）的 policy 模块落到临时目录，
+ * 动态 import 出旧的 classify。
  *
- * 为什么要真跑：只说「以前是 confirm」没有证据。这里用 `git show HEAD:<file>` 取基线
+ * 为什么要真跑：只说「以前是 confirm」没有证据。这里用 `git show 7a4eac7:<file>` 取基线
  * 的字节，import 的是**真的旧实现**，不是我们自己写的替身。
  */
 async function loadOldClassify() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "mt-h-negctl-"));
   const policyDir = path.join(dir, "src", "policy");
   await mkdir(policyDir, { recursive: true });
-  // classify.mjs 的静态 import 全在这几个文件里，一起取 HEAD 版本。
+  // classify.mjs 的静态 import 全在这几个文件里，一起取基线 SHA 的版本。
   const files = ["classify.mjs", "segments.mjs", "allowlist.mjs", "sensitive.mjs"];
   const shown = [];
   for (const file of files) {
-    const text = execFileSync("git", ["show", `HEAD:src/policy/${file}`], { cwd: ROOT, encoding: "utf8" });
-    if (!text || text.length === 0) throw new Error(`git show HEAD:src/policy/${file} 是空的`);
+    const text = execFileSync("git", ["show", `${NEGATIVE_CONTROL_SHA}:src/policy/${file}`], { cwd: ROOT, encoding: "utf8" });
+    if (!text || text.length === 0) throw new Error(`git show ${NEGATIVE_CONTROL_SHA}:src/policy/${file} 是空的`);
     await writeFile(path.join(policyDir, file), text, "utf8");
     shown.push({ file, bytes: Buffer.byteLength(text, "utf8") });
   }

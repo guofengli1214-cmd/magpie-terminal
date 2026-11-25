@@ -1,10 +1,11 @@
 // TASK-FIX17-J R1 / AC1 / AC3：硬禁止分两层的锁。
 //
 // 本批把原来的一张「硬禁止」表拆成两层（共用同一张规则表 RULES）：
-//   灾难级 catastrophic：24 条，任何档位、任何白名单、AI 审阅都不能自动放行，且**不送审**
+//   灾难级 catastrophic：25 条（K 批加第 25 条「删除/清空系统目录」），任何档位、任何白名单、
+//                        AI 审阅都不能自动放行，且**不送审**
 //   普通黑名单 blacklist：默认确认，但审阅（aligned）+ 静态护栏都过时可以自动跑
 //
-// 这里逐条钉死 24 条灾难级规则的正例，并且用**假审阅计数为 0** 证明灾难级根本不送审
+// 这里逐条钉死 25 条灾难级规则的正例，并且用**假审阅计数为 0** 证明灾难级根本不送审
 // （送审 = 给了 AI「放行」的机会 = 这条锁链就断了）。
 
 import test from "node:test";
@@ -30,7 +31,7 @@ function countingReviewer(verdict = { risk: "safe", aligned: true, reversible: t
   return fn;
 }
 
-/* ---------------------------------------------------------------- 24 条灾难级 */
+/* ---------------------------------------------------------------- 25 条灾难级 */
 
 const CATASTROPHIC = [
   ["1 提权 sudo", "sudo rm -rf /"],
@@ -57,10 +58,12 @@ const CATASTROPHIC = [
   ["22 根目录权限 chmod 777 /", "chmod 777 /"],
   ["23 接管所有权 takeown", "takeown /f x"],
   ["24 改 ACL icacls", "icacls x /grant y"],
+  // K 批（TASK-FIX17-K）第 25 条：删除 / 清空 / 移动系统目录。
+  ["25 删系统目录 Remove-Item", "Remove-Item -Recurse -Force C:\\Windows"],
 ];
 
-test("AC1：表里就是 24 条灾难级规则（少一条都是漏锁）", () => {
-  assert.equal(CATASTROPHIC.length, 24);
+test("AC1：表里就是 25 条灾难级规则（少一条都是漏锁）", () => {
+  assert.equal(CATASTROPHIC.length, 25);
 });
 
 for (const [label, command] of CATASTROPHIC) {
@@ -72,7 +75,7 @@ for (const [label, command] of CATASTROPHIC) {
   });
 }
 
-test("AC1/AC3：24 条灾难级在任何档位下都 confirm，且**一次审阅都不调**", async () => {
+test("AC1/AC3：25 条灾难级在任何档位下都 confirm，且**一次审阅都不调**", async () => {
   for (const [label, command] of CATASTROPHIC) {
     for (const autonomy of ["strict", "balanced", "loose"]) {
       const review = countingReviewer({ risk: "safe", aligned: true, reversible: true, justification: "用户要的" });

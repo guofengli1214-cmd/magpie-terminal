@@ -15,10 +15,29 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { commandHeads, positionalTargets, splitOnSeparators, tokenize } from "./forbidden.mjs";
+import { commandHeads, splitOnSeparators, targetsForArgs, tokenize } from "./forbidden.mjs";
+import { isProtectedTarget } from "./protected-paths.mjs";
 
-/** 会改动 / 删除目标的命令头。只有它们才需要护栏。 */
-export const DESTRUCTIVE_HEADS = new Set(["rm", "rmdir", "del", "erase", "mv", "move", "cp", "copy"]);
+/**
+ * 会改动 / 删除目标的命令头。只有它们才需要护栏。
+ *
+ * TASK-FIX17-K R3 加了 PowerShell 的删除 / 清空头（Remove-Item / ri / Clear-Content / clc）：
+ * 它们和 rm/del 一样会动目标，不加进来护栏就取不到目标，会直接 ok=true（J 批验收发现的缺口）。
+ */
+export const DESTRUCTIVE_HEADS = new Set([
+  "rm",
+  "rmdir",
+  "del",
+  "erase",
+  "mv",
+  "move",
+  "cp",
+  "copy",
+  "remove-item",
+  "ri",
+  "clear-content",
+  "clc",
+]);
 
 /** 目标里出现这些字符时静态解析不出来（变量 / 通配符 / 家目录缩写）→ 按「读不出来」处理。 */
 const UNRESOLVABLE_TARGET_RE = /[*?$`%~]/;
@@ -64,7 +83,8 @@ export function isDriveRoot(resolved) {
  * @param {unknown} command
  * @returns {{heads: boolean, targets: string[], targetsUnresolved: boolean}}
  *   heads            命令里是否有 rm/mv/del/... 这类命令头
- *   targets          位置参数（已跳过 `-x` 与 cmd 的 `/s` `/q` `/f` 一类开关）
+ *   targets          删除 / 移动 / 清空的目标（位置参数；已跳过 `-x` 与 cmd 的 `/s` `/q` `/f`；
+ *                    PowerShell 的 `-Path` / `-LiteralPath` / `-Destination` 取下一个 token）
  *   targetsUnresolved 目标里含通配符 / 变量，或该段根本读不出目标
  */
 export function extractDestructiveTargets(command) {
@@ -82,13 +102,14 @@ export function extractDestructiveTargets(command) {
       const head = fold(item.head);
       if (!DESTRUCTIVE_HEADS.has(head)) continue;
       sawDestructive = true;
-      const positional = positionalTargets(item.args);
-      if (positional.length === 0) {
+      const parsed = targetsForArgs(item.args);
+      if (parsed.targets.length === 0) {
         // `rm -rf` 后面什么都没有、或目标全被当成开关剥掉了：读不出来。
         unresolved = true;
         continue;
       }
-      for (const target of positional) {
+      if (parsed.unresolved) unresolved = true;
+      for (const target of parsed.targets) {
         if (UNRESOLVABLE_TARGET_RE.test(target)) unresolved = true;
         targets.push(target);
       }
@@ -107,6 +128,8 @@ function blockedReasonFor(kind, resolved) {
       return `这条命令会动到盘根 ${resolved}，删掉它等于毁掉整块盘，只能你自己确认`;
     case "home":
       return `这条命令会动到家目录 ${resolved}，只能你自己确认`;
+    case "protected":
+      return `这条命令会动到系统目录 ${resolved}，删掉它等于毁掉整台机器，只能你自己确认`;
     case "cwd":
       return `这条命令会动到整个工作目录 ${resolved}（不是它里面的某个文件），需要你确认`;
     case "outside":
@@ -165,6 +188,13 @@ export function guardTargets({ targets, cwd, historyText, targetsUnresolved } = 
     if (UNRESOLVABLE_TARGET_RE.test(target)) {
       // 用原始目标回报（`~` / `$TARGET` 解析成绝对路径后反而看不懂）。
       block(target, "unknown", target);
+      continue;
+    }
+
+    // 系统目录：灾难级闸门已经先拦一道，这里是护栏自己的第二道（独立失效面）。
+    const protectedVerdict = isProtectedTarget(target, base);
+    if (protectedVerdict.protected) {
+      block(target, "protected", protectedVerdict.resolved);
       continue;
     }
 

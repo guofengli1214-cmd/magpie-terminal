@@ -175,9 +175,45 @@ classify("git branch side-effect-branch")             -> auto → 分支被创�
 | `mkfs`、`dd`、`diskpart`、`format`、`fdisk`、`parted` | 格式化/分区/裸盘写入，可能毁掉整块盘 |
 | `shutdown`、`reboot`、`halt`、`poweroff`、`init 0/6` | 关机重启，正在干活的东西全部丢失 |
 | `rm -rf /` / `~` / `/*`；`rd /s` 盘根；`Remove-Item -Recurse` 盘根/家目录 | 删根或家目录，不可恢复 |
+| 删除 / 清空 / 移动系统目录（`C:\Windows`、`C:\Program Files`、`/etc` 一类） | 删系统目录等于毁掉整台机器，且 AI 审阅不擅长判这种目标；见 3.4.1.1 |
 | `curl … \| sh` 一类（管道给解释器） | 下载即执行 = 任意代码执行 |
 | `reg delete` | 删注册表项，可能让系统起不来 |
 | `chmod`/`chown` 目标是 `/`；`takeown`、`icacls` | 改根目录权限 / 接管所有权，系统可能再也改不回来 |
+
+#### 3.4.1.1 系统目录保护清单（TASK-FIX17-K）
+
+判定入口是 `src/policy/protected-paths.mjs` 的 `isProtectedTarget(raw, cwd)`；
+`forbidden.mjs` 在删除 / 清空 / 移动命令头上问这张表，命中即灾难级（**不送审**）。
+源表只有一份，`destructive-targets.mjs`（静态护栏）与它共用，不复制第二份。
+
+**整棵子树保护**（删它自己或任意子路径都算）：
+
+| 目标 | 为什么 |
+|---|---|
+| `C:\Windows` | 系统本体，删任意子路径都会让系统起不来 |
+| `C:\Program Files` | 已安装程序本体 |
+| `C:\Program Files (x86)` | 32 位程序本体 |
+| `C:\ProgramData` | 全机共享的程序数据 |
+
+**只保护它本身**（子目录照常交给审阅 + 护栏判）：
+
+| 目标 | 为什么只保护本身 |
+|---|---|
+| `C:\Users` | `C:\Users\<用户名>\...` 是用户自己的文件，删自己的项目目录必须能过（J 批核心诉求）；只挡「把整个 Users 端掉」 |
+| `/` | POSIX 根，已有盘根判据兜底，这里保留一条显式表项 |
+| `/etc`、`/usr`、`/bin`、`/sbin`、`/boot`、`/dev`、`/lib`、`/lib64`、`/var`、`/home`、`/root`、`/opt`、`/srv`、`/sys`、`/proc` | 根一级系统目录；它们下面的日常可删路径（`/var/log/app.log`、`/usr/local/...`）不在表内 |
+| `/System`、`/Library`、`/Applications`、`/private` | macOS 系统目录（同样只挡根本身） |
+
+**归一化**：去引号（`'` `"` 与 `` ` ``）→ 反斜杠转正斜杠 → 去尾随 `/` 与 `*` →
+`path.resolve(cwd, …)`（Windows 盘符路径与 POSIX 绝对路径分别用 win32/posix 语义折叠 `..`）→
+Windows 大小写不敏感比较。`C:\Windows\..\Windows` 必须先 resolve 再判，不能靠字符串前缀。
+
+**系统变量写法**：`%SystemRoot%`、`%windir%`、`$env:SystemRoot`、`${env:SystemRoot}` 读不出真实路径，
+在删除 / 清空 / 移动命令头下直接判灾难级（fail-closed）；其它命令头（`echo $env:SystemRoot`、
+`Get-ChildItem C:\Windows`）不判。
+
+**为什么 `cp` / `copy` 不算**：拷出不删源，源目录在复制完成后仍然存在，不属于「删除 / 清空 / 移动」。
+`cp` 仍走普通黑名单 + 护栏（目标在工作目录外且对话没点名过一样会 confirm）。
 
 #### 3.4.2 普通黑名单（默认确认，但「审阅说符合意图 + 护栏通过」时可以自动跑）
 
