@@ -782,7 +782,9 @@ export default function createAiDrawer(elements) {
         {},
         approval.confirmWhy ||
           (state.state === "none"
-            ? "审阅不可用，按「需要确认」处理：一定要你亲自看过这条命令才行。"
+            ? approval.reviewReason
+              ? `${approval.reviewReason}，所以没有送审：一定要你亲自看过这条命令才行。`
+              : "审阅不可用，按「需要确认」处理：一定要你亲自看过这条命令才行。"
             : "审阅没有说明为什么要你确认；按当前安全档位，这条不会自动执行。"),
       ),
     );
@@ -803,11 +805,17 @@ export default function createAiDrawer(elements) {
       "data-review": (REVIEW_STATE[["safe", "caution", "danger"].includes(approval.risk) ? approval.risk : "none"]).state,
       className: "agent-approval",
     });
+    // risk=null 有两种情况，不许混成一句「审阅不可用」（TASK-FIX17-H R3）：
+    //   ① judge 明确说了原因（reviewReason，例如「命令含输出重定向，可能写文件」）
+    //      → 直接说原因，用户才知道该看哪儿；
+    //   ② 真的没有原因（审阅失败 / 超时）→ 维持原文案。
     const headText =
       approval.risk === "danger"
         ? "需要你批准：这条命令不可逆"
         : approval.risk === null
-          ? "需要你批准：审阅不可用，请自己看一眼"
+          ? approval.reviewReason
+            ? `需要你批准：${approval.reviewReason}`
+            : "需要你批准：审阅不可用，请自己看一眼"
           : "需要你批准：这条会改动东西";
     const head = el("div", { className: "approval-head" });
     head.append(el("span", { className: "approval-head-glyph", "aria-hidden": "true" }, "!"), headText);

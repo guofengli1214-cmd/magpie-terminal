@@ -429,7 +429,18 @@ export function createAgentRunner(opts = {}) {
 
     const firstMessage = buildAgentUserMessage(question, context);
 
-    function awaitApproval({ stepId, command, why, risk, effect, confirmWhy, reversible, reviewModel }) {
+    function awaitApproval({
+      stepId,
+      command,
+      why,
+      risk,
+      effect,
+      confirmWhy,
+      reversible,
+      reviewModel,
+      reviewReason,
+      reviewHit,
+    }) {
       const approvalId = newApprovalId();
       return new Promise((resolve) => {
         const timer = setTimeout(() => {
@@ -455,6 +466,12 @@ export function createAgentRunner(opts = {}) {
           confirmWhy: confirmWhy === undefined ? null : confirmWhy,
           reversible: reversible === undefined ? null : reversible,
           reviewModel: reviewModel === undefined ? null : reviewModel,
+          // TASK-FIX17-H R3：把 judge 的「为什么没送审」原话传给前端。
+          // 以前卡片只有 risk=null 一个信号，只能说「审阅不可用」，而实际
+          // 最常见的原因是「命令里有输出重定向，所以没送审」（judge 第 3.5 级）。
+          // 新增字段，不改上面任何已有字段的语义。
+          reviewReason: typeof reviewReason === "string" ? reviewReason : null,
+          reviewHit: typeof reviewHit === "string" ? reviewHit : null,
         });
       });
     }
@@ -532,6 +549,8 @@ export function createAgentRunner(opts = {}) {
             confirmWhy: verdict.confirmWhy,
             reversible: typeof verdict.reversible === "boolean" ? verdict.reversible : null,
             reviewModel: verdict.reviewModel || null,
+            reviewReason: verdict.reason,
+            reviewHit: verdict.hit,
           });
           if (stopped || answer.aborted) {
             emit({ type: "agent.step", requestId, taskId, stepId, index, kind: "command", status: "skipped", command, why });

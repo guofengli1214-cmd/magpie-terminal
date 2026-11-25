@@ -311,3 +311,189 @@ test("S10b：敏感路径只在「会吐内容」的命令头上拦 —— ls ~/
   // ls 只列文件名、不吐文件内容（AC5 要求不误伤日常命令）。
   assert.equal(classify("ls ~/.ssh").decision, "auto");
 });
+
+// ===========================================================================
+// TASK-FIX17-H R1/R2：剥离无害重定向 + 扩充只读白名单
+//
+// 背景：用户当天 3 条命令全部带 `2>&1`，全部被判 `redirect` → judge 跳过 AI 审阅
+// → 卡片一律显示「审阅不可用」。修法是**剥离确定无害**的重定向后再判级，
+// 同时把只读白名单扩到日常用的 docker / git / npm 只读子命令。
+// 安全边界不变：剥离后仍有写文件的重定向 → 照样 confirm / redirect。
+// ===========================================================================
+
+const H_REDIRECT_AUTO = [
+  // [命令, 期望 hit, 为什么]
+  ["docker version 2>&1 | head -20", "allow:docker version", "真实事故命令：docker version 是只读子命令"],
+  ["docker ps -a 2>&1 | head -30", "allow:docker ps", "docker ps 只列容器"],
+  ["docker images 2>&1", "allow:docker images", "docker images 只列镜像"],
+  ["docker volume ls 2>&1", "allow:docker volume ls", "两词子命令：volume ls"],
+  ["ls -la 2>&1 | head", "allow:ls", "最常见的形态"],
+  ["git status 2>&1", "allow:git status", "git status 只读"],
+  ["free -h; echo '---'; free -m 2>&1", "allow:free", "free/echo 都在白名单"],
+  ["curl -I https://example.com 2>&1", "allow:curl", "-I 已在参数允许集内"],
+];
+
+for (const [command, expectedHit, why] of H_REDIRECT_AUTO) {
+  test(`H-R1 剥离后 auto：${command}（${why}）`, () => {
+    const result = classify(command);
+    assert.equal(result.decision, "auto", `${command} decision=${result.decision} hit=${result.hit}`);
+    assert.equal(result.hit, expectedHit);
+    assert.equal(result.note, "已忽略无害重定向（2>&1 / /dev/null 一类）");
+  });
+}
+
+const H_REDIRECT_CONFIRM = [
+  // 工作单 §6 的 9 条安全反例，一条都不许变成 auto。
+  ["ls > out.txt", "redirect"],
+  ["echo x >> ~/.bashrc", "redirect"],
+  ["cat /etc/passwd > /tmp/leak.txt", "redirect"],
+  ["ls >&out.txt", "redirect"],
+  ["ls 2>&12", "redirect"],
+  ["ls >NUL", "redirect"],
+  ["ls 2>$null", "redirect"],
+  ["ls 2>/dev/null > out.txt", "redirect"],
+  ["ls; 2>/dev/null", "redirect"],
+];
+
+for (const [command, expectedHit] of H_REDIRECT_CONFIRM) {
+  test(`H-R1 安全反例仍 confirm：${command} → ${expectedHit}`, () => {
+    const result = classify(command);
+    assert.equal(result.decision, "confirm", `${command} 不许变成 auto`);
+    assert.equal(result.hit, expectedHit, `${command} hit=${result.hit}`);
+  });
+}
+
+test("H-R1：note 只在剥离过时出现（别的命令不许带，避免误读日志）", () => {
+  assert.equal(classify("ls -la").note, null);
+  assert.equal(classify("git status").note, null);
+  assert.equal(classify("ls > out.txt").note, null);
+  assert.equal(classify("docker version 2>&1").note, "已忽略无害重定向（2>&1 / /dev/null 一类）");
+});
+
+test("H-R1：剥离不改变段数 —— ls 2>&1; rm -rf x 的第二段照样 deny:rm", () => {
+  const result = classify("ls 2>&1; rm -rf x");
+  assert.equal(result.decision, "confirm");
+  assert.equal(result.hit, "deny:rm");
+});
+
+test("H-R1：引号内不动 —— echo \"a 2>&1 b\" 仍 auto / allow:echo", () => {
+  const result = classify('echo "a 2>&1 b"');
+  assert.equal(result.decision, "auto");
+  assert.equal(result.hit, "allow:echo");
+  assert.equal(result.note, null);
+});
+
+test("H-R1：引号内不动 —— echo '> x' 仍 auto / allow:echo", () => {
+  const result = classify("echo '> x'");
+  assert.equal(result.decision, "auto");
+  assert.equal(result.hit, "allow:echo");
+});
+
+test("H-R1：黑名单优先于剥离 —— npm install left-pad 2>&1 仍 deny", () => {
+  const result = classify("npm install left-pad 2>&1");
+  assert.equal(result.decision, "confirm");
+  assert.equal(result.hit, "deny:npm install");
+});
+
+// ---------------------------------------------------------------- R2：只读白名单
+
+const H_R2_AUTO = [
+  // [命令, 期望 hit]
+  ["free -h", "allow:free"],
+  ["df -h", "allow:df"],
+  ["uptime", "allow:uptime"],
+  ["uname -a", "allow:uname"],
+  ["whoami", "allow:whoami"],
+  ["hostname", "allow:hostname"],
+  ["nproc", "allow:nproc"],
+  ["date", "allow:date"],
+  ["docker volume ls", "allow:docker volume ls"],
+  ["docker network ls", "allow:docker network ls"],
+  ["docker system df", "allow:docker system df"],
+  ["docker compose ps", "allow:docker compose ps"],
+  ["docker compose logs web", "allow:docker compose logs"],
+  ["git remote -v", "allow:git remote"],
+  ["git remote", "allow:git remote"],
+  ["git tag", "allow:git tag"],
+  ["git tag -l", "allow:git tag"],
+  ["git rev-parse HEAD", "allow:git rev-parse"],
+  ["git describe --tags", "allow:git describe"],
+  ["git blame src/policy/classify.mjs", "allow:git blame"],
+  ["git stash list", "allow:git stash list"],
+  ["npm ls", "allow:npm ls"],
+  ["npm list", "allow:npm list"],
+  ["npm outdated", "allow:npm outdated"],
+];
+
+for (const [command, expectedHit] of H_R2_AUTO) {
+  test(`H-R2 只读白名单：${command} → ${expectedHit}`, () => {
+    const result = classify(command);
+    assert.equal(result.decision, "auto", `${command} decision=${result.decision} hit=${result.hit}`);
+    assert.equal(result.hit, expectedHit);
+  });
+}
+
+const H_R2_CONFIRM = [
+  // 工作单 R2 指定的反例 + 同类写操作
+  ["docker volume rm v1", "default:docker"],
+  ["docker compose up -d", "default:docker"],
+  ["docker rmi x", "default:docker"],
+  ["docker run --rm alpine", "default:docker"],
+  ["git remote add origin x", "deny:git remote positional:add"],
+  ["git tag v1.0", "deny:git tag positional:v1.0"],
+  ["git stash", "default:git"],
+  ["git stash drop", "default:git"],
+  ["npm run build", "default:npm"],
+  ["ps aux", "default:ps"],
+];
+
+for (const [command, expectedHit] of H_R2_CONFIRM) {
+  test(`H-R2 反例仍 confirm：${command} → ${expectedHit}`, () => {
+    const result = classify(command);
+    assert.equal(result.decision, "confirm", `${command} 不许自动执行`);
+    assert.equal(result.hit, expectedHit, `${command} hit=${result.hit}`);
+  });
+}
+
+test("H-R2：ps 故意不在白名单（命令行里常带明文口令，属信息泄露）", () => {
+  assert.equal(classify("ps aux").decision, "confirm");
+  assert.equal(classify("ps -ef").decision, "confirm");
+  assert.equal(classify("ps").decision, "confirm");
+});
+
+// H-R2 追加：`date` / `hostname` 的「同名不同义」参数。
+// `date 010100002020`（设系统时间）与 `hostname newname`（改主机名）都是写操作，
+// 命令头在白名单里也必须 confirm；只读形态（`date +%s`、`date -d …`、`hostname -f`）要放行。
+test("H-R2：date 只读形态 auto，改时间形态 confirm", () => {
+  assert.equal(classify("date").decision, "auto");
+  assert.equal(classify("date +%s").decision, "auto");
+  assert.equal(classify("date -u").decision, "auto");
+  assert.equal(classify("date -d '2020-01-01'").decision, "auto");
+  assert.equal(classify("date -r package.json").decision, "auto");
+  // 不带 `+` 的位置参数是「设系统时间」；-s/--set 同理。
+  const setByPositional = classify("date 010100002020");
+  assert.equal(setByPositional.decision, "confirm");
+  assert.equal(setByPositional.hit, "deny:date positional:010100002020");
+  assert.equal(classify("date -s '2020-01-01'").decision, "confirm");
+  assert.equal(classify("date --set=2020").decision, "confirm");
+});
+
+test("H-R2：hostname 只读形态 auto，改主机名形态 confirm", () => {
+  assert.equal(classify("hostname").decision, "auto");
+  assert.equal(classify("hostname -f").decision, "auto");
+  assert.equal(classify("hostname -I").decision, "auto");
+  const rename = classify("hostname newname");
+  assert.equal(rename.decision, "confirm");
+  assert.equal(rename.hit, "deny:hostname positional:newname");
+  assert.equal(classify("hostname -F /tmp/newname").decision, "confirm");
+});
+
+test("H-R2：带值选项的值不当作位置参数（git tag/branch 的 --contains 等）", () => {
+  assert.equal(classify("git tag --contains HEAD").decision, "auto");
+  assert.equal(classify("git tag -l 'v1*'").decision, "auto");
+  assert.equal(classify("git branch --contains HEAD").decision, "auto");
+  assert.equal(classify("git branch --merged main").decision, "auto");
+  // 值后面再跟真正的位置参数，仍然是写操作。
+  assert.equal(classify("git branch --contains HEAD newbranch").decision, "confirm");
+  assert.equal(classify("git tag -d v1").decision, "confirm");
+});

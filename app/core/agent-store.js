@@ -13,7 +13,8 @@
 //       status, taskId, requestId, error,
 //       turns: [ { round, question, summary, reasoning, streamText,
 //                  steps: [{stepId,index,kind,status,command,why,output,exitCode,durationMs,userText}] } ],
-//       pendingApprovals: [ {approvalId, stepId, round, command, why, risk, effect, confirmWhy, reversible} ],
+//       pendingApprovals: [ {approvalId, stepId, round, command, why, risk, effect, confirmWhy, reversible,
+//                            reviewModel, reviewReason, reviewHit} ],
 //     }>
 //   }
 //
@@ -581,6 +582,15 @@ export default function createAgentStore() {
         confirmWhy: typeof frame.confirmWhy === "string" && frame.confirmWhy.length > 0 ? frame.confirmWhy : null,
         reversible: typeof frame.reversible === "boolean" ? frame.reversible : null,
         reviewModel: typeof frame.reviewModel === "string" ? frame.reviewModel : null,
+        // TASK-FIX17-H R3：judge 的「为什么没送审」原话（例如
+        // 「命令含输出重定向，可能写文件」）与命中的判定分支（例如 "redirect"）。
+        // 只有字符串才收；风险=null 的卡片靠它说真话，不再一律说「审阅不可用」。
+        reviewReason: typeof frame.reviewReason === "string" && frame.reviewReason.length > 0
+          ? frame.reviewReason
+          : null,
+        reviewHit: typeof frame.reviewHit === "string" && frame.reviewHit.length > 0
+          ? frame.reviewHit
+          : null,
       };
       session.pendingApprovals.push(approval);
       session.status = "awaiting";

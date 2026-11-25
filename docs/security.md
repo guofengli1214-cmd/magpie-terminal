@@ -120,10 +120,12 @@ Origin === "http://localhost:3480"
 | 目录与文件查看 | `ls`、`dir`、`pwd`、`cd`、`tree` | `cd` 只改当前 shell 的 cwd，不写盘 |
 | 文件内容读取 | `cat`、`head`、`tail`、`less`、`more`、`wc` | 只读；输出受第 1 节威胁 6 的遮罩保护 |
 | 搜索 | `grep`、`rg`、`which`、`where`、`type` | 不含 `find`（见下） |
-| 进程与端口 | `ps`、`tasklist`、`netstat`、`ss`、`lsof` | 「看看谁占着 3480」的最小集合 |
-| 磁盘与系统信息 | `df`、`du`、`free`、`whoami`、`hostname`、`date`、`uname`、`systeminfo` | 全部只读 |
+| 进程与端口 | `netstat`、`ss` | 「看看谁占着 3480」的最小集合。**`ps` / `tasklist` / `lsof` 故意不在白名单**：它们会原样列出其它进程的完整命令行，其中常见 `mysql -pXXX`、`--password=...` 这类明文口令（信息泄露路径，与 `cat .env` 同类） |
+| 磁盘与系统信息 | `df`、`du`、`free`、`uptime`、`nproc`、`whoami`、`hostname`、`date`、`uname`、`systeminfo` | 全部只读（`free`/`df`/`uptime`/`uname`/`whoami`/`hostname`/`nproc`/`date` 已在 `src/policy/allowlist.mjs` 落地）。`date`、`hostname` 带参数级允许集：`date 010100002020`（设时间）、`date -s …`、`hostname newname`（改名）、`hostname -F …` 仍然确认 |
 | 版本号 | `node -v`、`npm -v`、`git --version` | 只读 |
-| git 只读子命令 | `git status`、`git log`、`git diff`、`git show`、`git branch`（**无位置参数**且参数 ⊆ `{-a,-r,-v,-vv,-l,--list,--show-current,--contains,--merged,--no-merged,--points-at}`） | 见下方「为什么按命令头判定就必须排除某些命令」与 3.4 |
+| git 只读子命令 | `git status`、`git log`、`git diff`、`git show`、`git branch`（**无位置参数**且参数 ⊆ `{-a,-r,-v,-vv,-l,--list,--show-current,--contains,--merged,--no-merged,--points-at}`）、`git remote`（只放 `-v/--verbose`）、`git tag`（只放 `-l/--list/-n/--contains/--points-at/--merged/--no-merged`）、`git rev-parse`、`git describe`、`git blame`、`git stash list` | `git remote` / `git tag` / `git branch` 只要带**位置参数**就确认（那就是写仓库：`git remote add`、`git tag v1.0`、`git branch newbranch`）。见下方「为什么按命令头判定就必须排除某些命令」与 3.4 |
+| docker 只读子命令 | `docker ps`、`docker images`、`docker image ls`、`docker container ls`、`docker volume ls`、`docker network ls`、`docker system df`、`docker compose ps`、`docker compose logs`、`docker version`、`docker info`、`docker stats`、`docker logs`、`docker inspect`、`docker port`、`docker top`、`docker history`、`docker diff`、`docker search` | 子命令按**最长匹配**（`volume ls` 与 `volume rm` 能区分）。写操作仍确认：`docker run`、`docker rmi`、`docker volume rm`、`docker compose up` |
+| npm 只读子命令 | `npm -v`、`npm ls`、`npm list`、`npm outdated` | **`npm run` 绝不加**：会执行 `package.json` 里的任意脚本 |
 | PowerShell 只读 | `Get-ChildItem`、`Get-Content`、`Get-Process`、`Get-NetTCPConnection`、`Select-String` | 默认 shell 为 bash；仅在回退到 PowerShell 时启用这一组（见 `docs/architecture.md` 第 7 节） |
 
 **为什么按命令头判定就必须排除某些命令**（这是本设计最容易写错的地方）：
@@ -133,6 +135,8 @@ Origin === "http://localhost:3480"
 - `sort` 不进白名单：`sort -o out.txt` 会写文件。
 - `tee`、`xargs` 不进白名单：前者写文件，后者把参数变成另一条命令。
 - `git branch -D` 不单列白名单条目：`git branch` 的只读性依赖参数，因此 `git` 只放 `status/log/diff/show` 四个子命令，`branch` 仅在无位置参数且参数落在只读允许集内时放行（参数级判断，见 3.4）。
+- 同理，`git remote` / `git tag` 只有在**无位置参数**时才只读：`git remote add origin <url>`、`git tag v1.0` 都是写仓库，靠参数级允许集的 `positional:"deny"` 拦住。
+- `ps` / `tasklist` / `lsof` 也不进白名单：命令头只读没错，但输出里常带其它进程的明文口令，属信息泄露（与 `cat .env` 同类），见第 3.3 节表格备注。
 
 ### 3.4 参数级校验：用允许集，不用危险参数黑名单（2026-11-22 实测教训）
 
@@ -168,7 +172,7 @@ classify("git branch side-effect-branch")             -> auto → 分支被创�
 | `chmod`、`chown`、`attrib`、`icacls` | 改权限，可能让文件对更多主体可见 |
 | `kill`、`taskkill`、`Stop-Process` | 杀进程，可能杀掉用户没保存的工作 |
 | `curl`、`wget`、`Invoke-WebRequest` 后接执行（`\| sh`、`-o` 落盘） | 下载即执行；单纯 `curl -I` 也在黑名单里，因为按命令头判定无法区分 |
-| `> `、`>>` | 重定向写文件：`>` 覆盖、`>>` 追加。**只要出现就确认**，不判断目标是不是 `/dev/null`，因为目标可能是符号链接或设备路径 |
+| `> `、`>>`（写文件） | 重定向写文件：`>` 覆盖、`>>` 追加，一律确认。**例外只有「确定无害」的 4 类**：`2>&1`/`1>&2`（流合并）、`2>&-`/`1>&-`（关 fd）、`>/dev/null` 一族（位桶）、`</dev/null`（读空设备）—— 它们先被剥离再判，剥离后仍有写文件的 `>`/`<` 就照样确认（详细白名单与不豁免清单见 `.trellis/spec/backend/security-model.md` 5.4.2）。`>NUL`（cmd）、`2>$null`（PowerShell）、`>&file`（bash 写文件）、`2>&12`（未知 fd）都**不在豁免内** |
 | `format`、`diskpart`、`reg delete`、`shutdown`、`reboot` | 破坏系统级状态 |
 | 无法归类的任何命令头 | 白名单之外即确认，默认拒绝 |
 

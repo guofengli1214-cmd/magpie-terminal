@@ -179,6 +179,8 @@ export async function judge({ command, config, cwd, model, review, log } = {}) {
     msg: "[REVIEW]",
     commandLength: text.length,
     commandHead: text.slice(0, 40),
+    // classify 的 note 只作排查用（`2>&1` 一类被剥离过）；不影响 decision。
+    note: builtin && typeof builtin.note === "string" ? builtin.note : null,
     risk,
     effect: effect || null,
     confirmWhy: confirmWhy || null,

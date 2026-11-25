@@ -875,3 +875,33 @@ test("§5.2：agent.* 出站帧都带 sessionId（前端靠它区分）", async 
     assert.equal(frame.sessionId, aiSessionId, `${type} 必须带 sessionId`);
   }
 });
+
+// TASK-FIX17-H R3：approval 帧必须把 judge 的「为什么没送审」原话带出去。
+// 前端不再靠 risk=null 猜原因；reviewReason 就是 judge 的 reason，reviewHit 是 hit。
+test("H-R3：agent.approval 帧带 reviewReason / reviewHit（judge 原话透传）", async () => {
+  const judgeFn = async () => ({
+    decision: "confirm",
+    reason: "命令含输出重定向，可能写文件",
+    hit: "redirect",
+    risk: null,
+    effect: null,
+    confirmWhy: null,
+    reversible: null,
+    reviewModel: null,
+  });
+  const { agent, send } = makeAgent({ plan: [{ command: "ls > out.txt", why: "写文件" }], judgeFn });
+  agent.start({ requestId: "r1", question: "q", sessionId: "s1", socket: SOCKET, send, config: {} });
+  await waitForFrame(send, "agent.approval");
+  const approval = send.first("agent.approval");
+  assert.equal(approval.reviewReason, "命令含输出重定向，可能写文件");
+  assert.equal(approval.reviewHit, "redirect");
+  // 已有字段一个都不能变。
+  assert.equal(approval.risk, null);
+  assert.equal(approval.command, "ls > out.txt");
+  assert.equal(approval.effect, null);
+  assert.equal(approval.confirmWhy, null);
+  assert.equal(approval.reversible, null);
+  assert.equal(approval.reviewModel, null);
+  agent.resolveApproval({ approvalId: approval.approvalId, approved: false });
+  await waitForFrame(send, "agent.done");
+});

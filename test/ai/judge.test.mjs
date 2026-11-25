@@ -518,3 +518,50 @@ test("P1-2b：其余 P1-1 变体也都在第 1 级被拦（任何档位）", asy
     }
   }
 });
+
+// ===========================================================================
+// TASK-FIX17-H R1：带 `2>&1` 的只读命令不再命中 redirect，也不再跳过审阅
+//
+// 事故形态：judge 第 3.5 级用 UNREVIEWABLE_HITS 跳过审阅，而 "redirect" 在里面。
+// 于是 `docker version 2>&1 | head -20` 这种只读命令既不自动执行、也不算「审过」，
+// 卡片只能写「审阅不可用」。现在剥离后走第 3 级 auto。
+// ===========================================================================
+
+test("H-R1：带 2>&1 的只读命令 decision=auto，且不调审阅", async () => {
+  const review = reviewer({ risk: "safe" });
+  const verdict = await judge({
+    command: "docker version 2>&1 | head -20",
+    config: { ...baseConfig, autonomy: "balanced" },
+    review,
+  });
+  assert.equal(verdict.decision, "auto");
+  assert.equal(verdict.hit, "allow:docker version");
+  assert.equal(review.calls.length, 0, "内置只读白名单命中就走第 3 级，不该调审阅");
+});
+
+test("H-R1：真写文件的重定向仍然 confirm/redirect 且不交审阅", async () => {
+  for (const command of ["ls > out.txt", "ls 2>&12", "ls 2>/dev/null > out.txt"]) {
+    const review = reviewer({ risk: "safe" });
+    const verdict = await judge({ command, config: { ...baseConfig, autonomy: "loose" }, review });
+    assert.equal(verdict.decision, "confirm", `${command} 必须 confirm`);
+    assert.equal(verdict.hit, "redirect", `${command} hit=${verdict.hit}`);
+    assert.equal(review.calls.length, 0, `${command} 不该交审阅`);
+  }
+});
+
+test("H-R1：classify 的 note 作为排查信息进 [REVIEW] 日志，不改 decision", async () => {
+  const lines = [];
+  const log = (entry) => lines.push(entry);
+  const review = reviewer({ risk: "caution", reversible: true });
+  const verdict = await judge({
+    // npm run 不在白名单 → 会真的走审阅；带 2>&1 是为了让 note 有值。
+    command: "npm run build 2>&1",
+    config: { ...baseConfig, autonomy: "balanced" },
+    review,
+    log,
+  });
+  assert.equal(verdict.decision, "confirm");
+  const reviewLine = lines.find((entry) => entry.code === "REVIEW");
+  assert.ok(reviewLine, "必须有一条 code=REVIEW 的日志");
+  assert.equal(reviewLine.note, "已忽略无害重定向（2>&1 / /dev/null 一类）");
+});

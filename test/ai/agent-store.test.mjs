@@ -313,3 +313,53 @@ test("newDraft：再点「新会话」不覆盖当前会话的历史", () => {
   assert.equal(store.getSnapshot().turns.length, 1);
   assert.equal(store.getSnapshot().turns[0].summary, "旧回答");
 });
+
+// ---------------------------------------------------------------- TASK-FIX17-H R3
+//
+// approval 帧新增 reviewReason / reviewHit：risk=null 时前端靠它们说人话，
+// 不再把「因为命令含重定向所以没送审」冒充成「审阅服务坏了」。
+
+test("onApproval：reviewReason / reviewHit 进 pendingApprovals", () => {
+  const { store } = makeStore();
+  local(store, "pty-a");
+  store.beginRun({ requestId: "r1", question: "q" });
+  store.onStart({ requestId: "r1", taskId: "t1", sessionId: "s-1", round: 1 });
+  store.onApproval({
+    requestId: "r1",
+    taskId: "t1",
+    sessionId: "s-1",
+    stepId: "st1",
+    approvalId: "a1",
+    command: "ls > out.txt",
+    risk: null,
+    reviewReason: "命令含输出重定向，可能写文件",
+    reviewHit: "redirect",
+  });
+  const item = store.getSnapshot().pendingApprovals[0];
+  assert.equal(item.reviewReason, "命令含输出重定向，可能写文件");
+  assert.equal(item.reviewHit, "redirect");
+  // 老字段语义一个都不许变。
+  assert.equal(item.risk, null);
+  assert.equal(item.command, "ls > out.txt");
+});
+
+test("onApproval：非字符串 / 空串的 reviewReason → null（前端回落到原文案）", () => {
+  const { store } = makeStore();
+  local(store, "pty-a");
+  store.beginRun({ requestId: "r1", question: "q" });
+  store.onStart({ requestId: "r1", taskId: "t1", sessionId: "s-1", round: 1 });
+  store.onApproval({
+    requestId: "r1",
+    taskId: "t1",
+    sessionId: "s-1",
+    stepId: "st1",
+    approvalId: "a1",
+    command: "rm x",
+    risk: null,
+    reviewReason: 42,
+    reviewHit: "",
+  });
+  const item = store.getSnapshot().pendingApprovals[0];
+  assert.equal(item.reviewReason, null);
+  assert.equal(item.reviewHit, null);
+});
