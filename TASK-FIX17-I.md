@@ -10,13 +10,25 @@
 
 ## 2. 前序批次（别回退）
 
-基线 = H 批合入后的 HEAD（H 批刚做完「剥离无害重定向 + 扩只读白名单」）。开工先 `git log --oneline -5` 与 `git status --porcelain`：
+基线 = L3 批合入后的 HEAD（`3ee77ef` 之后）。开工先 `git log --oneline -8` 与 `git status --porcelain`（工作区必须干净，唯一允许的脏文件是本任务自己的 `.trellis/tasks/11-25-task-i-allowlist-editable/task.json`）。
 
-- H 批已经把 `2>&1` / `>/dev/null` 这类无害重定向剥离、扩了 ALLOW_HEADS（`free`/`df`/`uptime`/`uname`/`whoami`/`hostname`/`nproc`/`date`）与 docker/git/npm 子命令；
-- **你要在 H 之后的基础上摊平出 `DEFAULT_BUILTIN_ALLOWLIST`**，不要凭本卡抄一份清单（那样会和代码漂移）。
-- 基线测试：`node --test` 全绿（H 批验收后的数字，自己跑一遍拿到）；doctor 33/33。
+H/I 之间已经合入五批，**下面这些都已存在，别回退、别重写**：
 
-工作区必须干净（唯一允许的脏文件是本任务自己的 `.trellis/tasks/11-25-task-i-allowlist-editable/task.json`）。
+- **H 批**：`2>&1` / `>/dev/null` 一类无害重定向已被 `src/policy/segments.mjs` 的 `SAFE_REDIRECTS` 剥离（`splitSegments` 返回 `{ok,segments,raw,stripped}`）；`ALLOW_HEADS` 已扩到 23 项（含 `free`/`df`/`uptime`/`uname`/`whoami`/`hostname`/`nproc`/`date`，**故意没有 `ps`**）；`ALLOW_SUBCOMMANDS` 的 docker/git/npm 已扩（docker 有 `volume ls`/`compose ps`/`system df` 这类多词子命令，git 有 `remote`/`tag`/`rev-parse`/`describe`/`stash list`），子命令已改**最长匹配**（`matchSubcommand`，`src/policy/classify.mjs:302`）。
+- **J 批**：黑名单分两层 —— `catastrophicReason`（24 类灾难级，永远人工）与普通黑名单（交 AI 审阅按对话意图判）。`judge()` 的判级链是 0 空 →1 catastrophic →2 sensitiveReadTarget →3 用户白名单 →4 `classify` →5 UNREVIEWABLE_HITS →6 reviewModel==="" →7 送审 →7b risk=danger →7c strict →7d/7e 黑名单层 →7f safe&&reversible。`REVIEW_TIMEOUT_MS=60000`；审阅带全量历史。
+- **K 批**：`src/policy/protected-paths.mjs`（`PROTECTED_SUBTREES` / `PROTECTED_EXACT` / `normalizeTargetPath` / `isProtectedTarget`），系统目录删除由 `forbidden.mjs` 的 `DELETE_MOVE_HEADS` 走灾难级。
+- **L1 批**：`downloadDir` 配置字段 + `src/fs/export.mjs` + `src/fs/reveal.mjs` + `POST /api/fs/save`、`/api/fs/reveal`、`/api/logs/export-to-dir`；设置页多了 `data-block="downloads"`。
+- **L4 批**：`conversationReasoning`/`reviewReasoning` 两字段（`REASONING_LEVELS` 六档）、`src/ai/gateway.mjs` 的 `toModelEntry` 带 `reasoningLevels`/`supportsReasoning`、`resolveReasoningEffort()`；设置页多了 `data-role="review-reasoning"`；AI 栏多了顶部栏推理下拉。
+- **L2/L3 批**：`app/ui/command-orb.js`（终端底部悬浮球）、`app/ui/approval-popover.js`（未开抽屉时的浮层确认卡）；`app/app.js` 已拆出 `dispatchFrame`/`refreshApprovalPopover`/模块级 `approveAgent`。
+
+**基线数字（我刚实测的，直接用，别抄旧卡里的 1135）**：
+
+| 项 | 期望 |
+|---|---|
+| `node --test` | **1405 tests / 1405 pass / 0 fail**（L3 批验收实测；本批新增后应 ≥1430） |
+| `node scripts/doctor.mjs` | **33/33**（必须用隔离 config + `DOCTOR_PORT`，见 §5） |
+| `node scripts/probe-terminal-edges.mjs` | **10/10** |
+| `node scripts/probe-drawer.mjs` | 32/32（如果要碰 ai-drawer，本批不该碰） |
 
 ## 3. 允许改
 
@@ -25,7 +37,7 @@
 - `src/config/store.mjs`
 - `src/server/http.mjs`（`GET /api/config` 增加两个键；`PUT` 的 `KNOWN_FIELDS` 增加 `builtinAllowlist`）
 - `app/ui/settings-panel.js`（新增一个 block）
-- `app/styles/components.css`（**只许在设置模态段 1216-1540 内新增规则**，不许改既有规则值，不许写颜色字面量）
+- `app/styles/components.css`（**只许在「设置模态」段内新增规则**：段头在 `:1339` `* 设置模态（§6.4）`，下一个段头 `:1822` 是主机面板；现有的 `[data-role="allowlist-list"]` 样式在 `:1547-1620` 属同一段。不许改既有规则的值，不许写颜色字面量）
 - `test/**`
 - 新增 `scripts/probe-allowlist-ui.mjs`
 - `.trellis/spec/backend/security-model.md`、`docs/security.md`
@@ -43,6 +55,14 @@
 - 真实插件服务在 `127.0.0.1:3480`，别重启。独立服务自己 `startServer({port, token})`，请求头 `x-magpie-term-token`，token 64 位 hex；`/api` 鉴权失败一律 403。
 - 后台跑 node 要 `< /dev/null`，前台不用。
 - node 在 `D:/nodejs/install`；原生程序不认 `/c/...` 路径，path 参数写 `C:/Users/...`。
+- **doctor 的隔离写法**（不隔离会读你机器的真实默认 shell，得到 7/9 而非 33/33）：
+  ```
+  mkdir -p .dispatch/fix17-i/doctor && printf '{"version":1,"defaultShell":null}' > .dispatch/fix17-i/doctor/config.json
+  MAGPIE_TERMINAL_CONFIG_PATH=$PWD/.dispatch/fix17-i/doctor/config.json DOCTOR_PORT=3498 node scripts/doctor.mjs
+  ```
+- **禁止 heredoc**：`python - << 'PY' … PY`、`bash << 'EOF'` 这类写法在本机已经两次把会话卡死（heredoc 没生效 → 解释器读 stdin 永久挂住）。要跑脚本就**先用写文件工具落成 `.mjs` / `.py` 文件再执行**，或者用 `node -e "…"` 单行。
+- **全量 `node --test` 偶发卡死是环境问题**：如果输出出现 `test\pty\session.test.mjs (300000ms) 'test failed'` 且整轮耗时数百秒，先单跑 `node --test test/pty/session.test.mjs`（正常 19-20 秒、10 pass）；单跑过了就判为并发偶发，**别反复重跑全量烧时间**，在 REPORT 里如实写「全量偶发 pty 挂死，单跑 3/3 通过」。
+- `node --test test/pty/`（传目录）在 node 24 上直接报 `Cannot find module` —— 那是 node 的限制，不是回归。
 
 ## 6. 硬要求（真判真改，不许糊）
 
