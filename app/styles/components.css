@@ -4181,3 +4181,241 @@ html[data-files-open="true"] [data-role="ai-handle"] {
     transition: none;
   }
 }
+
+/* =====================================================================
+ * 浮层确认卡（TASK-FIX17-L3，用户问题清单第 3 条）
+ *
+ * 一条铁律：**只允许追加**，不许改上面任何一行。本段选择器全部以
+ * `.approval-popover` / `.ap-` 开头，不会命中既有元素。
+ *
+ * 几何（PRD R3）：
+ *   position: fixed + left:50% + translateX(-50%) → 水平居中、不参与流式布局；
+ *   bottom: 96px = 浮球 44px + 球高 38px + 14px 间距 → 卡片始终在浮球**上方**，
+ *   任何窗口尺寸都不压球、不压状态栏；
+ *   width: min(400px, 100vw - 24px) → 窄窗时左右各留 12px，绝不横向溢出；
+ *   max-height: min(50vh, 420px) + 内部滚动 → 长命令 / 长文案不把卡片顶出视口。
+ *
+ * 层级：球是 30，卡是 35（卡必须能被点到，球不能压住卡），抽屉是 30/32 —— 抽屉
+ * 打开时卡片本来就隐藏（R2），所以 35 不会盖住抽屉内容。
+ *
+ * 颜色全部走变量（F 批规矩：本段不许出现任何颜色字面量）：
+ *   底色 --term-panel-solid / 边框 --term-line-3（实测 ≥3:1，--term-line-2 只有 1.85/2.12）/ 标题 --term-fg /
+ *   正文 --term-fg-2 / 次要 --term-muted / 角标四态复用 --term-ok|warn|danger|dim。
+ * ===================================================================== */
+
+.approval-popover {
+  position: fixed;
+  /* 与浮球同一个水平基准：终端区中心 = 视口中心 + rail/2（见 L2 的 .command-orb）。 */
+  left: calc(50% + var(--term-rail-width) / 2);
+  /* 96px = 浮球底距（状态栏 26 + 18）+ 球高 38 + 间距 14。 */
+  bottom: 96px;
+  transform: translateX(-50%);
+  z-index: 35;
+  box-sizing: border-box;
+  width: min(400px, calc(100vw - 24px));
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--term-line-3);
+  border-radius: var(--term-radius-lg);
+  background: var(--term-panel-solid);
+  box-shadow: 0 10px 30px var(--term-shadow);
+  color: var(--term-fg-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.approval-popover[hidden] {
+  display: none;
+}
+
+/* 头部：风险角标 + 标题 + 队列条数。 */
+.approval-popover .ap-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--term-fg);
+}
+
+.approval-popover .ap-risk {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--term-line-3);
+  background: var(--term-panel-2);
+  color: var(--term-dim);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.approval-popover .ap-risk-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* 四态与抽屉角标同一套语义（data-review 值不许改名）。 */
+.approval-popover .ap-risk[data-review="ok"] {
+  color: var(--term-ok);
+  border-color: var(--term-ok);
+  background: var(--term-ok-soft);
+}
+
+.approval-popover .ap-risk[data-review="caution"] {
+  color: var(--term-warn);
+  border-color: var(--term-warn);
+  background: var(--term-warn-soft);
+}
+
+.approval-popover .ap-risk[data-review="danger"] {
+  color: var(--term-danger);
+  border-color: var(--term-danger);
+  background: var(--term-danger-soft);
+}
+
+.approval-popover .ap-risk[data-review="none"] {
+  color: var(--term-dim);
+  border-color: var(--term-line-3);
+  background: var(--term-panel-2);
+}
+
+.approval-popover .ap-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--term-fg);
+}
+
+.approval-popover .ap-count {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--term-line-3);
+  color: var(--term-muted);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.approval-popover .ap-count[hidden] {
+  display: none;
+}
+
+/* 命令行：等宽 + 横向滚动，**不折行**（折行会把一条命令读成两条）。 */
+.approval-popover .ap-command {
+  display: block;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--term-line-3);
+  background: var(--term-bg);
+  font-family: var(--term-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--term-fg-2);
+  white-space: pre;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  user-select: all;
+}
+
+/* 两段人话（「要做什么」/「执行后会怎样」）。 */
+.approval-popover .ap-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.approval-popover .ap-label {
+  color: var(--term-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.approval-popover .ap-why,
+.approval-popover .ap-effect {
+  margin: 0;
+  color: var(--term-fg-2);
+  font-size: 11.5px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+/* 「执行后会怎样」是用户最要看的一句：给一层浅底把它和命令区分开。 */
+.approval-popover .ap-effect {
+  padding: 5px 8px;
+  border-radius: 5px;
+  border: 1px dashed var(--term-line-3);
+  background: var(--term-panel-2);
+}
+
+/* risk=null 且 judge 说了原因时才出现的一行（danger 三态不许被它覆盖）。 */
+.approval-popover .ap-reason {
+  margin: 0;
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px dashed var(--term-line-3);
+  background: var(--term-warn-bg);
+  color: var(--term-warn);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.approval-popover .ap-reason[hidden] {
+  display: none;
+}
+
+/* 按钮：主（执行）/ 次（拒绝）/ 第三（本会话都允许）。 */
+.approval-popover .ap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.approval-popover .ap-actions button {
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 5px;
+}
+
+.approval-popover [data-role="popover-approve"] {
+  background: var(--term-ok-soft);
+  border-color: var(--term-ok);
+  color: var(--term-fg);
+  font-weight: 600;
+}
+
+.approval-popover [data-role="popover-reject"] {
+  border-color: var(--term-line-3);
+  color: var(--term-muted);
+}
+
+.approval-popover [data-role="popover-approve-rest"] {
+  border-color: var(--term-line-3);
+}
+
+/* 窄窗：卡片贴视口内边，仍然在浮球上方。 */
+@media (max-width: 420px) {
+  .approval-popover {
+    width: calc(100vw - 24px);
+  }
+}
+
+/* 减少动态效果偏好：本段本来没有过渡，这里显式声明保持与全站一致。 */
+@media (prefers-reduced-motion: reduce) {
+  .approval-popover {
+    box-shadow: 0 4px 14px var(--term-shadow);
+  }
+}

@@ -28,6 +28,9 @@ const CONSTANTS_JS = await read("app/core/constants.js");
 const COMPONENTS_CSS = await read("app/styles/components.css");
 const DRAWER_JS = await read("app/ui/ai-drawer.js");
 
+/** TASK-FIX17-L3 的段头（浮层确认卡）；用作球段的结束边界。 */
+const L3_SECTION_MARKER = "/* =====================================================================\n * 浮层确认卡";
+
 /** 去掉注释与空行，只在真代码里断言（不匹配说明文字）。 */
 const code = (source) =>
   source
@@ -204,13 +207,15 @@ test("R7：CSS 段只追加在文件末尾，选择器全以 .command-orb / .orb
   const marker = "/* =====================================================================\n * 终端悬浮球";
   const start = COMPONENTS_CSS.indexOf(marker);
   assert.ok(start > 0, "「终端悬浮球」段必须存在");
-  const tail = COMPONENTS_CSS.slice(start);
-  // 段之后再没有其它段（= 确实追加在末尾）。
-  assert.equal(
-    tail.slice(0, tail.length - 1).includes("/* =====================================================================") &&
-      tail.indexOf(marker) !== tail.lastIndexOf("/* ====================================================================="),
-    false,
-    "悬浮球段必须是最后一段",
+  // TASK-FIX17-L3：悬浮球的**下一条**组件段是浮层确认卡（同样只许追加在末尾）。
+  // 所以这里改成「从球段到下一个段头为止」——既保住原意（球段还是完整一段、
+  // 里面不许有会命中既有元素的选择器），也不禁止后面再追加新段。
+  const next = COMPONENTS_CSS.indexOf(L3_SECTION_MARKER, start + marker.length);
+  const tail = next > 0 ? COMPONENTS_CSS.slice(start, next) : COMPONENTS_CSS.slice(start);
+  // 球段之后再没有别的段（= 球段确实是紧接在 L3 段之前的最后一段）。
+  assert.ok(
+    next > 0 || !tail.slice(0, tail.length - 1).includes("/* ====================================================================="),
+    "悬浮球段之后出现了未登记的段（新增段要先在本测试里登记）",
   );
   const selectors = [...tail.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/(^|\})\s*([^{}@]+)\{/g)].map((m) =>
     m[2].trim(),

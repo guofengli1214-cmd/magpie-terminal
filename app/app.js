@@ -15,6 +15,7 @@ import createRail from "./ui/rail.js";
 import createHostsPanel from "./ui/hosts-panel.js";
 import createFilePanel from "./ui/file-panel.js";
 import createCommandOrb from "./ui/command-orb.js";
+import createApprovalPopover from "./ui/approval-popover.js";
 
 const root = document.querySelector('[data-role="app"]');
 const railHost = document.querySelector('[data-role="rail"]');
@@ -58,6 +59,8 @@ let wsClient = null;
 let hostsPanel = null;
 let filePanel = null;
 let commandOrb = null;
+// TASK-FIX17-L3：未开抽屉时的浮层确认卡（与抽屉读同一份 agentStore 快照）。
+let approvalPopover = null;
 // 远程会话建连中的 hostId → 等 session.created 时补上的元数据（用于建标签后同步面板）。
 let pendingRemoteHost = null;
 // 刚发出、还没收到 session.created 的 pty.create 数。命中这些帧时只建标签并 attach，
@@ -344,6 +347,16 @@ function remoteAddrOf(frame) {
 }
 
 function handleFrame(frame) {
+  const handled = dispatchFrame(frame);
+  // R5：每个 `agent.*` 帧处理**末尾**刷新浮层确认卡。放在这里而不是每个 case
+  // 里，是为了让「以后新加一个 agent.* 分支忘了刷」这种漏没法再发生。
+  if (frame && typeof frame.type === "string" && frame.type.startsWith("agent.")) {
+    refreshApprovalPopover();
+  }
+  return handled;
+}
+
+function dispatchFrame(frame) {
   switch (frame.type) {
     case "session.created": {
       const id = frame.id;
@@ -789,16 +802,37 @@ function logInternal(text) {
   }
 }
 
+/**
+ * 浮层确认卡的**唯一**刷新点（TASK-FIX17-L3 R5）。
+ *
+ * 调用时机：每个 `agent.*` 帧处理末尾（handleFrame）、onApprove 之后、
+ * 抽屉开合（openDrawer / closeDrawer）、beginRun 之后、以及 agentStore 的订阅里。
+ *
+ * 为什么是 app.js 主动推：`agentStore` 的 `notify` 走 queueMicrotask，而帧处理与
+ * beginRun 都是同步链路 —— 探针（与用户）推完帧的同一拍就要看到卡片。
+ * 组件的 render() 是幂等的，多推一次不会闪、不会重建节点。
+ *
+ * @returns {{visible: boolean, count: number}|null}
+ */
+function refreshApprovalPopover() {
+  if (!approvalPopover) return null;
+  return approvalPopover.render(agentStore.getSnapshot());
+}
+
 function openDrawer({ focus = false } = {}) {
   store.setAiOpen(true);
   store.setAiUnread(false);
   applyAiOpen(true);
   if (focus && aiDrawer) aiDrawer.focusInput();
+  // 抽屉打开 → 浮层让位（抽屉里自己有卡片，两层同时出现等于问两次）。
+  refreshApprovalPopover();
 }
 
 function closeDrawer() {
   store.setAiOpen(false);
   applyAiOpen(false);
+  // 抽屉关回去但仍有待确认 → 浮层重新出现（R5：隐藏不清状态）。
+  refreshApprovalPopover();
 }
 
 function toggleAi() {
@@ -857,8 +891,40 @@ function askAgent(payload, { openDrawer: shouldOpenDrawer = true } = {}) {
   if (begun && begun.adopted === false) {
     logInternal(`上一个任务还在跑，本次 agent.run 等 agent.start 再接管（requestId=${requestId}）`);
   }
+  // beginRun 之后浮层要跟着走（新一轮接管 / 清旧待确认都由它反映）。
+  refreshApprovalPopover();
   if (shouldOpenDrawer) openDrawer();
   return "sent";
+}
+
+/**
+ * 审批的**唯一**实现（TASK-FIX17-L3 R5：浮层与抽屉必须走同一份）。
+ *
+ * 主体从原 `ai-drawer` 的 onApprove 选项**逐字**搬到这里，一个分支都没改：
+ * 发 `agent.approve` 帧 → 失败就提示并不改本地状态 → 成功就立刻 removeApproval。
+ *
+ * @param {{approvalId: string, approved: boolean, scope?: "once"|"rest"}} payload
+ * @returns {boolean} 帧是否发出
+ */
+function approveAgent({ approvalId, approved, scope }) {
+  const snapshot = agentStore.getSnapshot();
+  const requestId = snapshot.requestId;
+  if (!requestId) return false;
+  const frame = {
+    type: "agent.approve",
+    requestId,
+    approvalId,
+    approved: Boolean(approved),
+    scope: scope === "rest" ? "rest" : "once",
+  };
+  const sent = wsClient.send(frame);
+  if (!sent) {
+    statusBar.setNotice("审批没发出去：连接断了。点状态栏「重连」后重试。", "error");
+    return false;
+  }
+  // 立刻收尾本地状态（修复 D4）：不等内核补 agent.step{running}。
+  agentStore.removeApproval(approvalId, Boolean(approved));
+  return true;
 }
 
 /** 忙碌态的唯一判定（抽屉的 updateActionButton 用的是同一对值）。 */
@@ -873,6 +939,8 @@ function stopAgent() {
   if (!snapshot.requestId) return;
   wsClient.send({ type: "agent.stop", requestId: snapshot.requestId });
   agentStore.markStopped();
+  // markStopped 会清掉待确认（包括浮层正在显示的那一条）→ 卡片要跟着消失。
+  refreshApprovalPopover();
 }
 
 /** #root[data-ai-open] / 把手 aria-expanded 的唯一同步点。
@@ -1276,25 +1344,12 @@ function init() {
     // 唯一差别是第三个参数 `{openDrawer}`（抽屉默认 true，球的默认行为一个字不改）。
     onAsk: (payload, opts) => askAgent(payload, opts),
     // 审批按钮 → agent.approve（scope 默认 once；requestId 必须取当前活动任务）。
-    onApprove: ({ approvalId, approved, scope }) => {
-      const snapshot = agentStore.getSnapshot();
-      const requestId = snapshot.requestId;
-      if (!requestId) return false;
-      const frame = {
-        type: "agent.approve",
-        requestId,
-        approvalId,
-        approved: Boolean(approved),
-        scope: scope === "rest" ? "rest" : "once",
-      };
-      const sent = wsClient.send(frame);
-      if (!sent) {
-        statusBar.setNotice("审批没发出去：连接断了。点状态栏「重连」后重试。", "error");
-        return false;
-      }
-      // 立刻收尾本地状态（修复 D4）：不等内核补 agent.step{running}。
-      agentStore.removeApproval(approvalId, Boolean(approved));
-      return true;
+    // TASK-FIX17-L3 R5：主体搬到模块级 approveAgent()，浮层确认卡用的是同一份。
+    onApprove: (payload) => {
+      const ok = approveAgent(payload);
+      // 浮层卡片可能正在显示这一条：审批完立刻重算（本地已 removeApproval）。
+      refreshApprovalPopover();
+      return ok;
     },
     onStop: () => stopAgent(),
     // 旧 ai.reply 的确认卡走本地直接写 PTY（不发 ai.confirm，保持原行为）。
@@ -1359,6 +1414,10 @@ function init() {
     store.setAgentStatus(snapshot.status);
     // TASK-FIX17-L2 R6：悬浮球的忙碌态与抽屉同源（同一个 snapshot，不另判）。
     if (commandOrb) commandOrb.setBusy(agentBusy(snapshot));
+    // TASK-FIX17-L3 R5：浮层确认卡也读同一份 snapshot（store 的 notify 已经拍平，
+    // 这里只是把「异步才走到」的那几条路径（markStopped / 切换会话 / 服务端推帧）
+    // 一并覆盖，不改任何状态。
+    refreshApprovalPopover();
     // 切到一个还没还原过、也没本地内容的会话 → 拉服务端全文填时间线。
     const id = snapshot.currentSessionId;
     if (id && !restoredSessionIds.has(id) && (!snapshot.turns || snapshot.turns.length === 0)) {
@@ -1381,6 +1440,21 @@ function init() {
     onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
   });
   commandOrb.setBusy(agentBusy(agentStore.getSnapshot()));
+
+  // TASK-FIX17-L3：未开 AI 抽屉时的浮层确认卡。
+  // 与抽屉读同一份 agentStore 快照、走同一个 approveAgent（R5），自己不轮询、不自拼帧。
+  approvalPopover = createApprovalPopover({
+    mount: document.body,
+    onApprove: (payload) => {
+      const ok = approveAgent(payload);
+      refreshApprovalPopover();
+      return ok;
+    },
+    onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
+    // R2：抽屉是否打开由 app.js 的 store 判，组件自己不猜 DOM 类名。
+    isDrawerOpen: () => store.getSnapshot().aiOpen === true,
+  });
+  refreshApprovalPopover();
 
   // V4-H：打开页面就拉一次会话列表（画下拉），并给首个标签绑上会话。
   void refreshAiSessions().then(() => focusTerminalSession());
@@ -1419,6 +1493,27 @@ function init() {
     const open = snapshot.aiOpen === true;
     if (root.getAttribute("data-ai-open") !== (open ? "true" : "false")) applyAiOpen(open);
   });
+
+  // TASK-FIX17-L3：交付前自查用（只读快照，只在 loopback 上挂）。
+  if (location.hostname === "127.0.0.1" || location.hostname === "localhost") {
+    Object.defineProperty(window, "__termDebugPopover", {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: () => {
+        const node = document.querySelector('[data-role="approval-popover"]');
+        if (!node) return null;
+        return {
+          hidden: node.hidden === true,
+          visible: node.getAttribute("data-visible") === "true",
+          command: (node.querySelector('[data-role="popover-command"]') || {}).textContent || "",
+          why: (node.querySelector('[data-role="popover-why"]') || {}).textContent || "",
+          effect: (node.querySelector('[data-role="popover-effect"]') || {}).textContent || "",
+          reason: (node.querySelector('[data-role="popover-reason"]') || {}).textContent || "",
+        };
+      },
+    });
+  }
 
   // 健康行：只读，失败不阻塞终端。
   api.health().then((result) => {
