@@ -14,7 +14,9 @@
 //       turns: [ { round, question, summary, reasoning, streamText,
 //                  steps: [{stepId,index,kind,status,command,why,output,exitCode,durationMs,userText}] } ],
 //       pendingApprovals: [ {approvalId, stepId, round, command, why, risk, effect, confirmWhy, reversible,
-//                            reviewModel, reviewReason, reviewHit} ],
+//                            reviewModel, reviewReason, reviewHit, justification} ],
+//       // TASK-FIX17-J R5：正在审阅的那一步（null = 没在审）。
+//       reviewing: { stepId, since } | null,
 //     }>
 //   }
 //
@@ -72,6 +74,8 @@ function emptySession(overrides = {}) {
     error: null,
     turns: [],
     pendingApprovals: [],
+    // 正在审阅的步骤（agent.review start 进 / done 出）。
+    reviewing: null,
     ...overrides,
   };
 }
@@ -103,6 +107,7 @@ function cloneSession(session) {
     error: session.error ? { ...session.error } : null,
     turns: session.turns.map(cloneTurn),
     pendingApprovals: session.pendingApprovals.map((item) => ({ ...item })),
+    reviewing: session.reviewing ? { ...session.reviewing } : null,
   };
 }
 
@@ -174,6 +179,9 @@ export default function createAgentStore() {
       turns: currentTurns().map(cloneTurn),
       sessions: list.map((item) => ({ ...item })),
       sessionPending: session ? session.pendingApprovals.map((item) => ({ ...item })) : [],
+      // TASK-FIX17-J R5：审阅中状态（没在审就是 null）。视图靠它画
+      // 「正在审阅这条命令…（最多 60 秒）」那一行。
+      reviewing: session && session.reviewing ? { ...session.reviewing } : null,
     };
   }
 
@@ -551,6 +559,37 @@ export default function createAgentStore() {
       return patch;
     },
 
+    /**
+     * agent.review：审阅中状态（TASK-FIX17-J R5）。
+     *
+     * start → 记 {stepId, since}；done → 清掉。帧里没有 stepId 就忽略。
+     * 前端只靠这一个状态画「正在审阅这条命令…（最多 60 秒）」，
+     * 不再自己猜超时（60 秒是 REVIEW_TIMEOUT_MS，前端不许重复一遍）。
+     */
+    onReview(frame) {
+      if (!frame || typeof frame !== "object") return null;
+      if (typeof frame.stepId !== "string" || frame.stepId.length === 0) return null;
+      const target = targetSessionFor(frame);
+      const session = target.session;
+      if (!session) return null;
+      if (!frameBelongsTo(session, frame)) return null;
+      if (frame.state === "done") {
+        const wasMine = session.reviewing && session.reviewing.stepId === frame.stepId;
+        session.reviewing = null;
+        if (wasMine) notify();
+        return null;
+      }
+      const ms = Number(frame.ms);
+      session.reviewing = {
+        stepId: frame.stepId,
+        since: Date.now(),
+        // 帧自带的耗时（done 帧才有）；start 帧没有就是 null。
+        ms: Number.isFinite(ms) ? ms : null,
+      };
+      notify();
+      return session.reviewing;
+    },
+
     /** agent.approval：插一条待确认（同一 approvalId 只保留一条）。 */
     onApproval(frame) {
       if (!frame || typeof frame.approvalId !== "string") return null;
@@ -590,6 +629,10 @@ export default function createAgentStore() {
           : null,
         reviewHit: typeof frame.reviewHit === "string" && frame.reviewHit.length > 0
           ? frame.reviewHit
+          : null,
+        // TASK-FIX17-J R5：审阅给出的「一句话依据」（符合/不符合用户意图）。
+        justification: typeof frame.justification === "string" && frame.justification.length > 0
+          ? frame.justification
           : null,
       };
       session.pendingApprovals.push(approval);
@@ -663,6 +706,8 @@ export default function createAgentStore() {
       const turn = lastTurn(session);
       if (turn) turn.summary = text || turn.streamText;
       session.pendingApprovals = [];
+      // 审阅中状态也要收尾（否则连接异常时那行「正在审阅…」会永久留着）。
+      session.reviewing = null;
       closeOpenSteps(session);
       session.error = null;
       session.status = frame && frame.stopped === true ? "stopped" : "done";
@@ -699,6 +744,7 @@ export default function createAgentStore() {
         }
       }
       session.pendingApprovals = [];
+      session.reviewing = null;
       session.status = "error";
       pendingRun = null;
       notify();

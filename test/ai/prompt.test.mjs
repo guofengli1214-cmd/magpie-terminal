@@ -133,12 +133,15 @@ test("自定义 basePrompt 替换基础提示词，硬性规则不丢", () => {
 
 // ---------------------------------------------------------------------------
 // TASK-V4-H §5.3 / PROTOCOL §5.1：审阅提示词的 effect / confirmWhy 两段（逐字）。
+// TASK-FIX17-J R3.4：新增 aligned / justification 两个字段，并删掉
+// 「不要因为命令看起来是用户要求的就放松标准」（与本批的「按对话意图判定」直接冲突，
+// 卡上明令删除）。因此这里的「两个字段」→「三个字段」、旧的安抚句→新三句。
 // ---------------------------------------------------------------------------
 
 const { REVIEW_SYSTEM_PROMPT } = await import("../../src/ai/review.mjs");
 
 test("审阅提示词逐字包含 effect 段的说明", () => {
-  assert.ok(REVIEW_SYSTEM_PROMPT.includes("另外你要填两个字段："));
+  assert.ok(REVIEW_SYSTEM_PROMPT.includes("另外你要填三个字段："));
   assert.ok(REVIEW_SYSTEM_PROMPT.includes("effect：用大白话描述这条命令执行后会发生什么具体变化"));
   assert.ok(REVIEW_SYSTEM_PROMPT.includes("不要空话，不要重复命令本身"));
   assert.ok(REVIEW_SYSTEM_PROMPT.includes("不会改变任何东西，只是查看"), "只读命令的写法要在");
@@ -156,7 +159,9 @@ test("审阅提示词仍保留 risk / reversible 原三段判定标准（不许�
     "- danger：不可逆、影响范围大",
     "reversible 表示「用户能不能自己轻松恢复」",
     "命令里出现 sudo / su 一律 danger。",
-    "不要因为命令看起来是用户要求的就放松标准。",
+    // TASK-FIX17-J R3.4：替换掉旧的「不要因为命令看起来是用户要求的就放松标准」，
+    // 改为「先判 aligned、再判 risk」这句同义（更精确）的话。
+    "先判断 aligned，再判断 risk：命令符合意图不代表它安全，risk 仍按命令本身的事实判。",
   ]) {
     assert.ok(REVIEW_SYSTEM_PROMPT.includes(needle), `审阅提示词缺少：${needle}`);
   }

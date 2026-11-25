@@ -1,12 +1,18 @@
-// 硬禁止清单（PROTOCOL-AGENT.md §8）。
+// 硬禁止清单（PROTOCOL-AGENT.md §8），TASK-FIX17-J R1 起分两层。
 //
-// 命中即「永远要用户确认」——任何自动执行档位、任何白名单都不能绕过。
+//   灾难级 catastrophic：任何档位、任何白名单、AI 审阅都不能自动放行。
+//   普通黑名单 blacklist ：默认要确认，但「AI 审阅 + 静态护栏」都通过时可以自动跑。
+//
+// 两层共用**同一张规则表**（RULES），不许复制两份判定逻辑——复制必然漂移。
 // 本模块是纯函数、零 IO、永不抛；拿不准一律返回原因（fail-closed）。
 //
 // 与 src/policy/classify.mjs 的分工：
 // classify() 回答「这条命令是否属于内置只读白名单」；
 // forbiddenReason() 回答「这条命令是否连『自动执行』这条路都不许走」。
-// 两者互不依赖，judge() 先问 forbidden，再问白名单。
+// 两者互不依赖，judge() 先问 catastrophic，再问白名单，最后才用 blacklist 决定放行口径。
+//
+// 另外导出 tokenize / splitOnSeparators / commandHeads / positionalTargets 给
+// src/policy/destructive-targets.mjs 复用（那里要解析删除目标，不许再抄一份切词）。
 //
 // TASK-V3-D-FIX1 修复 2（m1）：硬禁止只看**每段的命令头**，不再对整条命令的
 // 任意 token 做匹配。否则 `npm run format`、`git commit -m "fix reboot bug"`、
@@ -18,7 +24,7 @@ import path from "node:path";
 import os from "node:os";
 
 /** 把任意空白压成一个空格并按此切词；引号剥掉（`rm -rf '/'` 与 `rm -rf /` 等价）。 */
-function tokenize(command) {
+export function tokenize(command) {
   return String(command)
     .replace(/\s+/g, " ")
     .trim()
@@ -47,7 +53,7 @@ function isSeparator(token) {
  * @param {string} token
  * @returns {string[]}
  */
-function splitOnSeparators(token) {
+export function splitOnSeparators(token) {
   const out = [];
   let buffer = "";
   for (let i = 0; i < token.length; i += 1) {
@@ -170,7 +176,7 @@ function headArgs(segment) {
 }
 
 /** 每段的 { head, args } 视图。 */
-function commandHeads(tokens) {
+export function commandHeads(tokens) {
   return splitSegments(tokens).map((segment) => ({
     segment,
     head: headOf(segment),
@@ -413,7 +419,7 @@ function argsHave(args, flagRe) {
 }
 
 /** 参数里的位置目标（非 `-` / `/` 开头的选项；cmd 风格 `/s` `/q` 跳过）。 */
-function positionalTargets(args) {
+export function positionalTargets(args) {
   const out = [];
   for (const arg of args) {
     const text = String(arg);
@@ -484,62 +490,172 @@ function changesRootPermission(heads) {
 }
 
 /**
- * 硬禁止判定。
+ * 规则表：**唯一**的判定来源。
+ *
+ * 每条规则：
+ *   tier   "catastrophic" = 灾难级（永远人工） / "blacklist" = 可审阅黑名单
+ *   reason 命中的中文原因（给用户看）
+ *   test   判定函数，入参 c = { heads, raw }
+ *
+ * 顺序即优先级（同层内先命中先返回）。层与层之间由下面三个导出函数各自过滤，
+ * 所以灾难级永远先于普通黑名单被问到（judge 也是这个顺序）。
+ *
+ * 以前这里是一串顺序 `if`；改成表以后加规则只要加一行，且不可能出现
+ * 「灾难级漏了一条、黑名单多了一条」这种两份逻辑不一致。
+ */
+const RULES = Object.freeze([
+  // ---------------------------------------------------------------- 灾难级
+  { tier: "catastrophic", reason: "提权命令（sudo）", test: (c) => hasHead(c.heads, ["sudo"]) },
+  { tier: "catastrophic", reason: "提权命令（su）", test: (c) => hasHead(c.heads, ["su"]) },
+  { tier: "catastrophic", reason: "提权命令（runas）", test: (c) => hasHead(c.heads, ["runas"]) },
+  { tier: "catastrophic", reason: "提权命令（doas）", test: (c) => hasHead(c.heads, ["doas"]) },
+  { tier: "catastrophic", reason: "提权命令（pkexec）", test: (c) => hasHead(c.heads, ["pkexec"]) },
+
+  {
+    tier: "catastrophic",
+    reason: "磁盘格式化命令（mkfs）",
+    test: (c) => hasHead(c.heads, ["mkfs"], { allowDotted: true }),
+  },
+  { tier: "catastrophic", reason: "磁盘写入命令（dd）", test: (c) => hasHead(c.heads, ["dd"]) },
+  { tier: "catastrophic", reason: "磁盘分区命令（diskpart）", test: (c) => hasHead(c.heads, ["diskpart"]) },
+  { tier: "catastrophic", reason: "磁盘格式化命令（format）", test: (c) => hasHead(c.heads, ["format"]) },
+  { tier: "catastrophic", reason: "磁盘分区命令（fdisk）", test: (c) => hasHead(c.heads, ["fdisk"]) },
+  { tier: "catastrophic", reason: "磁盘分区命令（parted）", test: (c) => hasHead(c.heads, ["parted"]) },
+
+  {
+    tier: "catastrophic",
+    reason: "递归删除根目录或家目录（rm -rf / ~）",
+    test: (c) => destroysDangerousTarget(c.heads),
+  },
+  {
+    tier: "catastrophic",
+    reason: "递归删除盘根或家目录（rd /s、del /s）",
+    test: (c) => destroysWindowsTarget(c.heads),
+  },
+  {
+    tier: "catastrophic",
+    reason: "递归删除盘根或家目录（Remove-Item -Recurse）",
+    test: (c) => destroysPowerShellTarget(c.heads),
+  },
+
+  {
+    tier: "catastrophic",
+    reason: "修改根目录权限（chmod / chown /）",
+    test: (c) => changesRootPermission(c.heads),
+  },
+  { tier: "catastrophic", reason: "接管文件所有权（takeown）", test: (c) => hasHead(c.heads, ["takeown"]) },
+  { tier: "catastrophic", reason: "修改文件权限（icacls）", test: (c) => hasHead(c.heads, ["icacls"]) },
+
+  { tier: "catastrophic", reason: "关机命令（shutdown）", test: (c) => hasHead(c.heads, ["shutdown"]) },
+  { tier: "catastrophic", reason: "重启命令（reboot）", test: (c) => hasHead(c.heads, ["reboot"]) },
+  { tier: "catastrophic", reason: "关机命令（halt）", test: (c) => hasHead(c.heads, ["halt"]) },
+  { tier: "catastrophic", reason: "关机命令（poweroff）", test: (c) => hasHead(c.heads, ["poweroff"]) },
+  { tier: "catastrophic", reason: "切换运行级别（init 0/6）", test: (c) => hasInitRunlevel(c.heads) },
+
+  {
+    tier: "catastrophic",
+    reason: "把下载内容直接管道给解释器执行",
+    test: (c) => pipesIntoInterpreter(c.raw),
+  },
+
+  {
+    tier: "catastrophic",
+    reason: "删除 Windows 注册表项（reg delete）",
+    test: (c) => hasSubcommand(c.heads, "reg", "delete"),
+  },
+
+  // ---------------------------------------------------------------- 普通黑名单
+  // 这些**可以**被 AI 审阅按对话意图放行（前提：静态护栏也通过）。
+  {
+    tier: "blacklist",
+    reason: "递归修改权限（chmod -R）",
+    test: (c) => hasFlagFor(c.heads, "chmod", /^-[a-zA-Z]*R[a-zA-Z]*$/),
+  },
+  {
+    tier: "blacklist",
+    reason: "递归修改所有者（chown -R）",
+    test: (c) => hasFlagFor(c.heads, "chown", /^-[a-zA-Z]*R[a-zA-Z]*$/),
+  },
+  {
+    tier: "blacklist",
+    reason: "git 强制推送（--force）",
+    test: (c) => subcommandHasFlag(c.heads, "git", "push", /^--force(-with-lease)?$/),
+  },
+  {
+    tier: "blacklist",
+    reason: "git 强制推送（-f）",
+    test: (c) => subcommandHasFlag(c.heads, "git", "push", /^-[a-zA-Z]*f[a-zA-Z]*$/),
+  },
+  {
+    tier: "blacklist",
+    reason: "git 丢弃本地改动（reset --hard）",
+    test: (c) => subcommandHasFlag(c.heads, "git", "reset", /^--hard$/),
+  },
+  {
+    tier: "blacklist",
+    reason: "git 删除未跟踪文件（clean -fd）",
+    test: (c) => subcommandHasFlag(c.heads, "git", "clean", /^-[a-zA-Z]*f[a-zA-Z]*$/),
+  },
+]);
+
+/** 判定过程异常时的原因（fail-closed）：两层都当命中，绝不放行。 */
+export const UNDECIDABLE_REASON = "命令无法安全判定";
+
+/**
+ * 在指定层上跑规则表。异常一律 fail-closed。
  *
  * @param {unknown} command
- * @returns {string|null} 命中返回中文原因（给用户看），未命中返回 null
+ * @param {ReadonlyArray<string>} tiers 允许跑的层
+ * @returns {string|null}
  */
-export function forbiddenReason(command) {
+function lookup(command, tiers) {
   try {
     if (typeof command !== "string") return null;
     const raw = command.replace(/\s+/g, " ").trim();
     if (raw.length === 0) return null;
     const tokens = tokenize(raw).flatMap(splitOnSeparators);
     // 只看每段的命令头：参数、引号内的文字不再参与匹配（修复 2）。
-    const heads = commandHeads(tokens);
-
-    if (hasHead(heads, ["sudo"])) return "提权命令（sudo）";
-    if (hasHead(heads, ["su"])) return "提权命令（su）";
-    if (hasHead(heads, ["runas"])) return "提权命令（runas）";
-    if (hasHead(heads, ["doas"])) return "提权命令（doas）";
-    if (hasHead(heads, ["pkexec"])) return "提权命令（pkexec）";
-
-    if (hasHead(heads, ["mkfs"], { allowDotted: true })) return "磁盘格式化命令（mkfs）";
-    if (hasHead(heads, ["dd"])) return "磁盘写入命令（dd）";
-    if (hasHead(heads, ["diskpart"])) return "磁盘分区命令（diskpart）";
-    if (hasHead(heads, ["format"])) return "磁盘格式化命令（format）";
-    if (hasHead(heads, ["fdisk"])) return "磁盘分区命令（fdisk）";
-    if (hasHead(heads, ["parted"])) return "磁盘分区命令（parted）";
-
-    if (destroysDangerousTarget(heads)) return "递归删除根目录或家目录（rm -rf / ~）";
-    if (destroysWindowsTarget(heads)) return "递归删除盘根或家目录（rd /s、del /s）";
-    if (destroysPowerShellTarget(heads)) return "递归删除盘根或家目录（Remove-Item -Recurse）";
-
-    if (hasFlagFor(heads, "chmod", /^-[a-zA-Z]*R[a-zA-Z]*$/)) return "递归修改权限（chmod -R）";
-    if (hasFlagFor(heads, "chown", /^-[a-zA-Z]*R[a-zA-Z]*$/)) return "递归修改所有者（chown -R）";
-    if (changesRootPermission(heads)) return "修改根目录权限（chmod / chown /）";
-    if (hasHead(heads, ["takeown"])) return "接管文件所有权（takeown）";
-    if (hasHead(heads, ["icacls"])) return "修改文件权限（icacls）";
-
-    if (hasHead(heads, ["shutdown"])) return "关机命令（shutdown）";
-    if (hasHead(heads, ["reboot"])) return "重启命令（reboot）";
-    if (hasHead(heads, ["halt"])) return "关机命令（halt）";
-    if (hasHead(heads, ["poweroff"])) return "关机命令（poweroff）";
-    if (hasInitRunlevel(heads)) return "切换运行级别（init 0/6）";
-
-    if (pipesIntoInterpreter(raw)) return "把下载内容直接管道给解释器执行";
-
-    if (subcommandHasFlag(heads, "git", "push", /^--force(-with-lease)?$/)) return "git 强制推送（--force）";
-    if (subcommandHasFlag(heads, "git", "push", /^-[a-zA-Z]*f[a-zA-Z]*$/)) return "git 强制推送（-f）";
-
-    if (subcommandHasFlag(heads, "git", "reset", /^--hard$/)) return "git 丢弃本地改动（reset --hard）";
-    if (subcommandHasFlag(heads, "git", "clean", /^-[a-zA-Z]*f[a-zA-Z]*$/)) return "git 删除未跟踪文件（clean -fd）";
-
-    if (hasSubcommand(heads, "reg", "delete")) return "删除 Windows 注册表项（reg delete）";
-
+    const ctx = { heads: commandHeads(tokens), raw };
+    for (const rule of RULES) {
+      if (!tiers.includes(rule.tier)) continue;
+      if (rule.test(ctx)) return rule.reason;
+    }
     return null;
   } catch {
     // 判定过程异常：按禁止处理（fail-closed），而不是放行。
-    return "命令无法安全判定";
+    return UNDECIDABLE_REASON;
   }
+}
+
+/**
+ * 灾难级禁止：任何档位、任何白名单、AI 审阅都**不能**自动放行。
+ *
+ * @param {unknown} command
+ * @returns {string|null} 命中返回中文原因（给用户看），未命中返回 null
+ */
+export function catastrophicReason(command) {
+  return lookup(command, ["catastrophic"]);
+}
+
+/**
+ * 普通黑名单：默认要确认，但 AI 审阅说「符合对话意图」且静态护栏通过时可以自动执行。
+ *
+ * @param {unknown} command
+ * @returns {string|null}
+ */
+export function blacklistReason(command) {
+  return lookup(command, ["blacklist"]);
+}
+
+/**
+ * 硬禁止判定（向后兼容：两层之或）。
+ *
+ * 语义与拆分前完全一致：`forbiddenReason(cmd) !== null` 仍是「这条命令不许自动走」。
+ * judge 用的是更细的 catastrophicReason / blacklistReason，这里保留给旧调用方与旧测试。
+ *
+ * @param {unknown} command
+ * @returns {string|null} 命中返回中文原因（给用户看），未命中返回 null
+ */
+export function forbiddenReason(command) {
+  return catastrophicReason(command) || blacklistReason(command);
 }

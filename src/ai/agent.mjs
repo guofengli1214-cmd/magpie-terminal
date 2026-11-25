@@ -9,6 +9,16 @@
 //   3. **审阅全档位**：judge 三档都调审阅，审阅结论（risk/effect/confirmWhy/reversible）
 //      原样进 agent.approval 帧，前端据此画角标。
 //
+// TASK-FIX17-J 的四处改动：
+//   1. **审阅带全量对话历史**：decide() 时把与主会话同一份 history + shell 传下去，
+//      审阅才能判断「这条命令是不是用户几轮前就说过要做的事」。
+//   2. **审阅中要有反馈**：调 judge 前后各发一个 agent.review 帧（start / done），
+//      60 秒的超时不能变成用户以为卡死。
+//   3. **confirm 卡带上 justification**：审阅的一句话依据进 agent.approval 帧。
+//   4. **「剩下的都自动执行」（scope=rest）只越过普通确认，不越过灾难级**：
+//      以前用 forbiddenReason 判，拆层后必须用 catastrophicReason，
+//      否则普通黑名单（git push --force 一类）会被 autoRest 直接跑掉，等于绕开审阅。
+//
 // 关键约束（沿用 V3-D / V4-S）：
 //   - 不要用 AI SDK 的 `toolApproval`：跨轮恢复有 bug。审批挂在 execute 内部 await。
 //   - `stopWhen: stepCountIs(8)`。
@@ -21,7 +31,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
 import { DEFAULT_MODEL, gatewayBaseUrl } from "./gateway.mjs";
 import { judge } from "./judge.mjs";
-import { forbiddenReason } from "../policy/forbidden.mjs";
+import { catastrophicReason } from "../policy/forbidden.mjs";
 import { buildContext } from "./context.mjs";
 import { OUTPUT_MAX_CHARS } from "./runner.mjs";
 
@@ -273,8 +283,18 @@ export function createAgentRunner(opts = {}) {
   /** 每个 socket 一个当前任务：socket -> task */
   const bySocket = new Map();
 
-  async function decide({ command, config: conf, cwd, model }) {
-    return judgeFn({ command, config: conf, cwd, model, log });
+  async function decide({ command, config: conf, cwd, model, history, shell, session, signal }) {
+    return judgeFn({
+      command,
+      config: conf,
+      cwd,
+      model,
+      history,
+      shell,
+      session,
+      signal,
+      log,
+    });
   }
 
   function resolveApproval({ approvalId, approved, scope } = {}) {
@@ -415,6 +435,16 @@ export function createAgentRunner(opts = {}) {
     let stepCount = 0;
     let aiSession = typeof aiSessionId === "string" ? aiSessionId : "";
     let round = 1;
+    /**
+     * 本任务的**全量**对话历史（与主会话同一份，含本轮用户提问）。
+     *
+     * 为什么要单独的变量：喂给模型时最后一条用户消息会被换成 buildAgentUserMessage
+     * 的富文本（避免重复），但审阅需要看到用户**原话**——所以这里保留未裁剪的版本。
+     * 只追加、不改写（prompt 缓存的前提）。
+     */
+    let taskHistory = [];
+    /** 本任务的 shell 名（审阅要看「命令在这个 shell 里是什么语义」）。 */
+    const taskShell = buildContext(context).shell;
     const startedAt = Date.now();
     /** 本任务发出的待审批（taskId 维度，stop 时全部 resolve）。 */
     const taskPending = new Set();
@@ -438,6 +468,7 @@ export function createAgentRunner(opts = {}) {
       confirmWhy,
       reversible,
       reviewModel,
+      justification,
       reviewReason,
       reviewHit,
     }) {
@@ -472,6 +503,9 @@ export function createAgentRunner(opts = {}) {
           // 新增字段，不改上面任何已有字段的语义。
           reviewReason: typeof reviewReason === "string" ? reviewReason : null,
           reviewHit: typeof reviewHit === "string" ? reviewHit : null,
+          // TASK-FIX17-J R5：审阅给出的「一句话依据」（符合/不符合用户意图），
+          // 卡片上直接显示，用户不用去猜 AI 为什么这么判。
+          justification: typeof justification === "string" ? justification : null,
         });
       });
     }
@@ -498,10 +532,20 @@ export function createAgentRunner(opts = {}) {
         const stepId = `s-${crypto.randomBytes(5).toString("hex")}`;
         const index = stepCount;
 
-        // 1. 分级
+        // 1. 分级（审阅可能要看 60 秒，前后各发一帧，前端才能显示「正在审阅…」）。
+        emit({ type: "agent.review", requestId, taskId, stepId, state: "start" });
+        const reviewStartedAt = Date.now();
         let verdict;
         try {
-          verdict = await decide({ command, config: effectiveConfig, cwd: context && context.cwd, model: chosenModel });
+          verdict = await decide({
+            command,
+            config: effectiveConfig,
+            cwd: context && context.cwd,
+            model: chosenModel,
+            history: taskHistory,
+            shell: taskShell,
+            signal: controller.signal,
+          });
         } catch {
           verdict = {
             decision: "confirm",
@@ -512,13 +556,25 @@ export function createAgentRunner(opts = {}) {
             confirmWhy: null,
             reversible: null,
             reviewModel: null,
+            aligned: null,
+            justification: null,
           };
         }
+        emit({
+          type: "agent.review",
+          requestId,
+          taskId,
+          stepId,
+          state: "done",
+          ms: Date.now() - reviewStartedAt,
+        });
 
         let auto = verdict.decision === "auto";
-        // scope === "rest" 之后的 confirm 级命令直接跑；硬禁止仍然 confirm（PROTOCOL §6.3）。
-        // 硬禁止用 forbiddenReason 再确认一次，不靠 reason 文本前缀（那太脆）。
-        if (!auto && autoRest && forbiddenReason(command) === null) auto = true;
+        // scope === "rest" 之后的 confirm 级命令直接跑；**灾难级**仍然 confirm（PROTOCOL §6.3）。
+        // TASK-FIX17-J：这里必须用 catastrophicReason —— 用 forbiddenReason 会把
+        // 普通黑名单（git push --force / git reset --hard 一类）也当成可直接跑，
+        // 等于绕开审阅与护栏。判定不靠 reason 文本前缀（那太脆）。
+        if (!auto && autoRest && catastrophicReason(command) === null) auto = true;
 
         emit({
           type: "agent.step",
@@ -551,6 +607,7 @@ export function createAgentRunner(opts = {}) {
             reviewModel: verdict.reviewModel || null,
             reviewReason: verdict.reason,
             reviewHit: verdict.hit,
+            justification: verdict.justification,
           });
           if (stopped || answer.aborted) {
             emit({ type: "agent.step", requestId, taskId, stepId, index, kind: "command", status: "skipped", command, why });
@@ -831,6 +888,9 @@ export function createAgentRunner(opts = {}) {
         await waitPersisted(aiSession);
         const fresh = await safe(sessions.getSession(aiSession), "AI_SESSION_READ_FAILED");
         history = buildHistoryMessages(fresh);
+        // TASK-FIX17-J：审阅用的是**未裁剪**的这份（含本轮用户原话）。
+        // 对话会话的前缀形状不变：仍然 [...history, 本轮富文本消息]，只追加不改写。
+        taskHistory = history;
         // 最后一轮（本轮）刚写的用户消息与 firstMessage 重复 → 去掉，避免同一句出现两次。
         const last = history[history.length - 1];
         if (last && last.role === "user" && typeof question === "string" && last.content.trim() === question.trim()) {

@@ -826,6 +826,14 @@ export default function createAiDrawer(elements) {
     if (approval.why) {
       card.appendChild(el("p", { className: "approval-why" }, approval.why));
     }
+    // TASK-FIX17-J R5：审阅的一句话依据（为什么它认为符合/不符合你的意图）。
+    // 没有就不画 —— 老服务端发的帧没有这个字段，不许因此多出一行空行。
+    if (approval.justification) {
+      const justification = el("p", { "data-role": "approval-justification", className: "approval-justification" });
+      justification.appendChild(el("b", {}, "审阅判断："));
+      justification.appendChild(document.createTextNode(approval.justification));
+      card.appendChild(justification);
+    }
     // 常显效果行（设置开关打开时才有；默认关，卡片 §5.6）。
     if (showApprovalEffect && approval.effect) {
       const effectLine = el("p", { className: "approval-effect" });
@@ -883,6 +891,23 @@ export default function createAiDrawer(elements) {
     return wrap;
   }
 
+  /** 审阅中的那一行（TASK-FIX17-J R5）：灰色，带一句「最多 60 秒」。 */
+  function buildReviewingLine() {
+    // 60 秒对应 REVIEW_TIMEOUT_MS；前端不自己算超时，只说实话。
+    return el(
+      "div",
+      { "data-role": "agent-reviewing", className: "agent-reviewing" },
+      "正在审阅这条命令…（最多 60 秒）",
+    );
+  }
+
+  /** 当前是否有哪一步正在审阅（stepId 为空 = 没在审）。 */
+  function reviewingStepId(snapshot) {
+    return snapshot && snapshot.reviewing && typeof snapshot.reviewing.stepId === "string"
+      ? snapshot.reviewing.stepId
+      : "";
+  }
+
   function buildToolCard(step, snapshot, index) {
     const stepEl = el("div", {
       "data-role": "agent-step",
@@ -927,6 +952,10 @@ export default function createAiDrawer(elements) {
     }
     if (step.userText) {
       stepEl.appendChild(el("div", { className: "step-usertext" }, step.userText));
+    }
+    // 审阅中：这一行就是「60 秒不是卡死」的唯一证据（数据来自 agent.review 帧）。
+    if (reviewingStepId(snapshot) === step.stepId) {
+      stepEl.appendChild(buildReviewingLine());
     }
 
     // 输出：默认只露 3 行（折叠），点「展开」看全部。
@@ -1150,6 +1179,13 @@ export default function createAiDrawer(elements) {
 
     for (const approval of orphanApprovals(snapshot)) {
       timeline.appendChild(buildApprovalCard(approval));
+    }
+
+    // 审阅中的那一行：还在审、且那一一步的 step 帧还没到（首条命令常见）时，
+    // 直接画在时间线末尾，否则用户会以为点下去没反应。
+    const reviewingId = reviewingStepId(snapshot);
+    if (reviewingId && !turns.some((turn) => turn.steps.some((step) => step.stepId === reviewingId))) {
+      timeline.appendChild(buildReviewingLine());
     }
 
     for (const block of legacyBlocks) {

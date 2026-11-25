@@ -545,6 +545,13 @@ function handleFrame(frame) {
       agentStore.onStep(frame);
       return;
     }
+    case "agent.review": {
+      // TASK-FIX17-J R5：审阅中（start）/ 审阅完（done）。只改 store 里的一个状态，
+      // 没有任何业务分支 —— 抽屉靠它画「正在审阅这条命令…（最多 60 秒）」。
+      if (aiDrawer) aiDrawer.notifyAgentFrame();
+      agentStore.onReview(frame);
+      return;
+    }
     case "agent.text": {
       // AC13：流式文本增量（工具与审批仍然走 agent.step / agent.approval）。
       if (aiDrawer) aiDrawer.notifyAgentFrame();
