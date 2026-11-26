@@ -51,3 +51,11 @@ doctor-run-latest.txt
 secrets.json
 secrets.key
 known_hosts.json
+
+# 本地开发工具配置（不入公开仓库）
+.trellis/
+.claude/
+.codex/
+.pi/
+.agents/
+AGENTS.md

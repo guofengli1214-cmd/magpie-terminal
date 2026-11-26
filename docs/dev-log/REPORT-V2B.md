@@ -591,7 +591,7 @@ $ wc -l ~/.ssh/authorized_keys
 1 /c/Users/41807/.ssh/authorized_keys
 
 $ cat ~/.ssh/authorized_keys
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK/Y7h9hmy1nzTb7Kx8WrH56Z54spqwTgXl7VwKyM3+Z hermes-agent@192.168.10.70
+ssh-ed25519 AAAA...REDACTED hermes-agent@192.168.10.70
 
 $ ls ~/.ssh/id_probe*
 ls: cannot access '/c/Users/41807/.ssh/id_probe*': No such file or directory

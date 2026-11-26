@@ -8,7 +8,7 @@
 // 纯函数、零 IO、永不抛：拿不准一律返回 protected:false（由调用方按黑名单层兜底），
 // 只有明确命中表项或系统变量写法才返回 protected:true。
 //
-// 表的设计（见 .trellis/tasks/11-25-task-k-protected-paths/design.md）：
+// 表的设计：
 //   - 子树保护：Windows 系统目录，删它任意子路径都等于动系统。
 //   - 只保护本身：Users / POSIX 根一级目录。`C:\Users\<用户名>\...` 是用户自己的文件，
 //     删自己的项目目录必须能过（J 批核心诉求），所以不把用户目录放进子树表。

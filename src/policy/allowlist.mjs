@@ -3,7 +3,7 @@
 // 文件本身不做 IO，不放函数，只导出冻结的常量。
 //
 // 为什么参数层用「允许集」而不是「危险参数黑名单」：
-// 见 docs/security.md 3.3 / 3.4 与 .trellis/spec/backend/security-model.md 5.4.1。
+// 见 docs/security.md 3.3 / 3.4。
 // 危险参数黑名单漏一个就整条链失守（实测 find -fprint / curl -T / git branch <name>
 // 都被放行并真的写盘/建分支）。
 

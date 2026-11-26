@@ -1,9 +1,46 @@
 {
   "name": "magpie-terminal",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
+  "description": "A real terminal inside the magpie window, with a Chinese-speaking AI command assistant.",
+  "license": "MIT",
+  "author": "magpie-terminal contributors",
   "type": "module",
   "main": "./index.mjs",
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "terminal",
+    "pty",
+    "xterm",
+    "ai",
+    "ssh"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/REPO_OWNER/magpie-terminal.git"
+  },
+  "bugs": {
+    "url": "https://github.com/REPO_OWNER/magpie-terminal/issues"
+  },
+  "homepage": "https://github.com/REPO_OWNER/magpie-terminal#readme",
+  "engines": {
+    "node": ">=20",
+    "magpie": ">=0.1.1340"
+  },
+  "files": [
+    "index.mjs",
+    "page/",
+    "app/",
+    "src/",
+    "scripts/",
+    "docs/architecture.md",
+    "docs/platform-notes.md",
+    "docs/security.md",
+    "docs/pty-notes.md",
+    "docs/roadmap.md",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "doctor": "node scripts/doctor.mjs",
     "test": "node --test"
@@ -15,9 +52,6 @@
     "ssh2": "1.17.0",
     "ws": "8.22.0",
     "zod": "4.6.7"
-  },
-  "engines": {
-    "magpie": ">=0.1.1340"
   },
   "magpie": {
     "name": "magpie-terminal",

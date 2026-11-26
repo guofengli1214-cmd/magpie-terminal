@@ -311,9 +311,9 @@ test("SessionManager 的 OSC 7 接线组", async (t) => {
     const events = [];
     manager.on("session.cwd", (info) => events.push(info));
     const session = manager.get("s1");
-    manager.handleOutput(session, "\x1b]7;file://h/c/Users/2");
+    manager.handleOutput(session, "\x1b]7;file://h/c/Users/4");
     assert.equal(events.length, 0);
-    manager.handleOutput(session, "4384\x07");
+    manager.handleOutput(session, "1807\x07");
     assert.equal(events.length, 1);
     assert.equal(events[0].cwd, WIN_ROOT);
   });

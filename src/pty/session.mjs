@@ -515,10 +515,6 @@ export class SessionManager extends EventEmitter {
     // 所以改成「只排队、不写字节」：
     // 暖场窗口退化为纯输入延迟窗口，语义与前端 INPUT_LOCK_MS 完全一致。
     // **绝对不要把 write("\r") 加回来**。
-    // 注意：`.trellis/spec/backend/pty-lifecycle.md` §3 与
-    // `.trellis/spec/frontend/terminal-rendering.md` §4 仍写着旧对策（「发一个垃圾
-    // `'\r'`」）—— 那两份 spec 不在本卡的文件范围内，未修改，已在 REPORT 的
-    // 「已知风险 / 未做项」里登记，需由主控同步。
     this.armWarmup(session);
     return true;
   }
