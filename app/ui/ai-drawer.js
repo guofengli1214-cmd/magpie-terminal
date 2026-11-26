@@ -206,7 +206,8 @@ export default function createAiDrawer(elements) {
     const sep = el("span", { className: "sess-sep", "aria-hidden": "true" }, "·");
     sessionsCount = el("span", { className: "sess-count" }, "0 个会话");
     top.append(titleEl, sep, sessionsCount);
-    sessionsSub = el("span", { className: "sess-sub trunc" }, "说你想要什么结果，我来动手。");
+    // TASK-FIX17-U：初始占位与空态副标题保持同一句，避免头部三行重复同一件事。
+    sessionsSub = el("span", { className: "sess-sub trunc" }, "问一句就行，我来动手。");
     main.append(top, sessionsSub);
     const caret = el("span", { className: "sess-caret", "aria-hidden": "true" }, "▾");
     sessionsButton.append(mark, main, caret);
@@ -627,7 +628,7 @@ export default function createAiDrawer(elements) {
     const messageCount = current ? Number(current.messageCount) || 0 : 0;
     sessionsSub.textContent = current
       ? `${current.title || "新会话"} · ${messageCount} 条消息`
-      : "还没有会话 · 发送第一条消息时创建";
+      : "问一句就行，我来动手。";
     sessionsButton.title = `切换 ${headTitle} 的会话`;
     if (newButton) newButton.title = `新建会话（${headTitle}）`;
   }

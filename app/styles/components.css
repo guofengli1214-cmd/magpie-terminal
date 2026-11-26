@@ -1,12 +1,16 @@
 /* 组件：标签、按钮、提示条、确认卡、错误条。
    只引用变量，不出现颜色字面量。 */
 
+/* TASK-FIX17-U：全局按钮基线边界。原 --term-border（= --magpie-line #e3e3e8）
+   在浅色 --magpie-bg 上只有 1.16:1，过不了 WCAG 非文本对比度 3:1。
+   --term-line-3 实测浅色 3.09:1（vs bg）/ 3.39:1（vs card）、深色 4.42–4.99:1，
+   符合 F 批定下的控件边界惯例（见 .settings-block [data-role="update-check"]）。 */
 button,
 [data-role="tab"] {
   font: inherit;
   color: var(--term-fg);
   background: transparent;
-  border: 1px solid var(--term-border);
+  border: 1px solid var(--term-line-3);
   border-radius: var(--term-radius);
   padding: 2px 10px;
   cursor: pointer;
@@ -2727,7 +2731,7 @@ button[disabled] {
   align-items: center;
   gap: 4px;
   padding: 0 8px;
-  border: 1px solid var(--term-line-2);
+  border: 1px solid var(--term-line-3);
   border-radius: 5px;
   background: var(--term-panel-2);
   color: var(--term-fg);
