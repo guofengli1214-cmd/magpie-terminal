@@ -241,7 +241,11 @@ test("R3：fixed + 居中 + 浮球上方 96px + 宽 400 + 高度上限 + 窄窗�
   assert.ok(rootBlock.length > 0, "缺少 .approval-popover 规则");
   assert.match(rootBlock, /position:\s*fixed/);
   // 与浮球同一个水平基准（终端区中心 = 视口中心 + rail/2）。
-  assert.match(rootBlock, /left:\s*calc\(50% \+ var\(--term-rail-width\) \/ 2\)/);
+  assert.match(
+    rootBlock,
+    /left:\s*calc\(50% \+ \(var\(--term-rail-width\) - var\(--term-handle-width\)\) \/ 2\)/,
+    "与浮球同一水平基准：终端区中心 = 视口中心 + (rail - 把手带)/2（TASK-FIX17-F2 F-12）",
+  );
   assert.match(rootBlock, /bottom:\s*96px/);
   assert.match(rootBlock, /width:\s*min\(400px, calc\(100vw - 24px\)\)/);
   assert.match(rootBlock, /max-height:\s*min\(50vh, 420px\)/);

@@ -108,8 +108,8 @@ html, body {
   box-sizing: border-box;
   display: flex;
   align-items: stretch;
-  gap: 2px;
-  padding: 0 6px;
+  gap: var(--space-1);
+  padding: 0 var(--space-3);
   border-bottom: 1px solid var(--term-line);
   background: var(--term-bg);
   position: relative;
@@ -143,9 +143,16 @@ html, body {
   background: var(--term-bg);
 }
 
+/* TASK-FIX17-F2（F-12）：右侧常驻让出 --term-handle-width（24px）。
+   收起态把手正好铺在这条空带里，不再压住终端最右一列；
+   展开态抽屉覆盖终端右侧，这条空带被盖住，无副作用。
+   注意不能改成给 `[data-role="terminal-host"]` 加 padding：pane 是 inset:0
+   绝对定位，父级 padding 对它无效，只有改这里的 inset 才真正缩窄终端。
+   空带里露出的底色就是 host 的 --term-bg（terminal-surface.css 里 xterm 的
+   .xterm / .xterm-screen / .xterm-viewport 也取同一个变量），不会出现异色边。 */
 [data-role="terminal-host"] .terminal-pane {
   position: absolute;
-  inset: 0;
+  inset: 0 var(--term-handle-width) 0 0;
   min-width: 0;
   min-height: 0;
 }

@@ -165,8 +165,8 @@ button[disabled] {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 8px 0 6px;
+  gap: var(--space-1);
+  padding: var(--space-4) 0 var(--space-3);
   width: var(--term-rail-width);
   box-sizing: border-box;
   border-right: 1px solid var(--term-line);
@@ -941,7 +941,8 @@ button[disabled] {
   position: relative;
   flex: 0 0 auto;
   border-top: 1px solid var(--term-line);
-  padding: 9px 10px 8px;
+  /* TASK-FIX17-F2（F-13）：原来是非对称的 9/10/8；换成令牌后左右对称（刻意）。 */
+  padding: var(--space-4) var(--space-5) var(--space-4);
   background: var(--term-panel-bg);
 }
 
@@ -953,7 +954,7 @@ button[disabled] {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 0 6px;
+  padding: 0 0 var(--space-3);
   min-width: 0;
 }
 
@@ -961,10 +962,17 @@ button[disabled] {
 [data-role="ai-drawer"] .composer-box {
   position: relative;
   min-width: 0;
-  min-height: 0;
+  /* TASK-FIX17-F2（F-09）：textarea 单行只有 19.375px 高，低于 24px 的命中下限。
+     给外框一个 32px 的下限，让整个框（含 1px 边框与上下 padding）成为可点区。
+     不用 `display:flex; align-items:center` 去居中：那会把 textarea 的内容盒
+     钉死，多行时外框不再跟内容长高（autoGrow 写的是 textarea 的 style.height）。
+     上下 padding 取 5px 而不是 4px：5 + 19.375 + 5 + 2 = 31.375，离 32 只差
+     0.6px，单行时文字看起来就是垂直居中的（4px 时差 2.6px，明显偏上）；
+     两行起 textarea 自己就超过 min-height，外框继续跟着长。 */
+  min-height: 32px;
   box-sizing: border-box;
   display: block;
-  padding: 4px 8px;
+  padding: 5px 8px;
   /* TASK-FIX17-F（F-05）：输入框边界必须 ≥3:1（skill：control boundaries need 3:1）。
      修前 --term-line-2 在浅底只有 1.82:1、深底 2.61:1，输入框看起来“没有边”。
      --term-line-3 浅底 3.09:1、深底 4.73:1。 */
@@ -2545,7 +2553,8 @@ button[disabled] {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 0 8px 0 9px;
+  /* TASK-FIX17-F2（F-13）：原来是非对称的 8/9；换成令牌后左右对称（刻意）。 */
+  padding: 0 var(--space-4);
   border-bottom: 1px solid var(--term-line);
   min-width: 0;
 }
@@ -2561,7 +2570,12 @@ button[disabled] {
 .file-panel-path {
   flex: 1 1 auto;
   min-width: 60px;
-  height: 24px;
+  /* TASK-FIX17-F2（F-09）：24 → 28，与 .file-panel-icon-btn（已 28）对齐，
+     同时正好填满 28px 高的 .file-panel-slot（切换路径 / 批量时高度不变）。
+     输入框默认是 content-box：不写这一行时 28px 只是内容高，加上 1px 边框
+     实际占 30px，在 28px 的 slot 里上下各溢出 1px，「正好填满」就不成立。 */
+  box-sizing: border-box;
+  height: 28px;
   padding: 0 7px;
   /* TASK-FIX17-F（F-05）：路径输入框的边界在浅色下修前是 #e3e3e8（1.16:1），
      在深色下也是同一条线（1.15:1）—— 框看起来是“消失”的。line-3 是 3.09/4.73:1。 */
@@ -2581,11 +2595,11 @@ button[disabled] {
 }
 
 /* TASK-FIX17-C R1：定位按钮（常显内联 SVG，三态）。
-   注意不能用 `.file-panel-icon-btn` 的 28×28 —— 这个按钮要跟 24px 高的路径框
-   在同一行上不显眼地站起来，所以宽高都用 24px，图标居中。 */
+   TASK-FIX17-F2（F-09）：24 → 28，与路径框 / .file-panel-icon-btn 同高，
+   命中高度不再低于 24px 下限；图标字号不变，视觉上仍是一枚小按钮。 */
 .file-panel-locate {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border-radius: 5px;
   color: var(--term-muted);
 }
@@ -2639,11 +2653,13 @@ button[disabled] {
 .file-panel-batch {
   flex: 1 1 auto;
   min-width: 0;
-  height: 24px;
+  /* TASK-FIX17-F2（F-09）：24 → 28，与 .file-panel-path 同高 ——
+     两个分支都填满 28px 的 .file-panel-slot，切换时高度完全不变。 */
+  height: 28px;
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-1);
   padding: 0 2px 0 8px;
   border: 1px solid var(--term-accent-line);
   border-radius: 5px;
@@ -2663,11 +2679,11 @@ button[disabled] {
   text-overflow: ellipsis;
 }
 
-/* 批量条里的图标按钮：20×20，比工具栏默认的 28×28 小一档（行高只有 24px）。 */
+/* 批量条里的图标按钮：24×24，比工具栏默认的 28×28 小一档（行高 28px）。 */
 .file-panel-batch-btn,
 .file-panel-batch-cancel {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   border-radius: 4px;
   color: var(--term-accent);
   flex: 0 0 auto;
@@ -2705,7 +2721,8 @@ button[disabled] {
 }
 
 .file-panel-btn {
-  height: 24px;
+  /* TASK-FIX17-F2（F-09）：24 → 28。工具栏 34px 高，28px 控件上下各 2.5px，不裁切。 */
+  height: 28px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2790,7 +2807,9 @@ button[disabled] {
   grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
   grid-auto-rows: 74px;
   gap: 2px 4px;
-  padding: 6px 14px 8px 9px;
+  /* TASK-FIX17-F2（F-13）：6/14/8/9 → 令牌。右边距从 14 收到 12 是刻意的
+     （滚动条占位仍在，见下面 overflow-y）；左右两边现在对称，条目不再贴边。 */
+  padding: var(--space-3) var(--space-6) var(--space-4) var(--space-4);
   /* TASK-FIX-ACCEPT4：网格自己是滚动容器（滚动条高度按全量条目算，
      由渲染层的上下 spacer 撑住）。overflow-y:auto + overflow-x:hidden：
      横向永不滚动，纵向只滚这一块。 */
@@ -3725,6 +3744,11 @@ html[data-files-open="true"] [data-role="ai-handle"] {
   line-height: 1.5;
 }
 
+/* TASK-FIX17-F2（F-09）：轨道视觉 34×18 一点不能动（像素对位已验收），
+   但这个高度只有 18px，低于 24px 的命中下限。用透明 ::before 把命中盒补到
+   34×(18+6)=24px 高：上下各外扩 3px。开关在设置行里是孤立的（右侧没有邻接
+   可点目标，行高 34px > 24px），所以外扩不会盖住别人。
+   left/right 也各留 4px（就是卡片的命中宽 42px）—— 左右方向同样没有邻居。 */
 .settings-block [data-role="setting-show-effect"] {
   flex: 0 0 auto;
   position: relative;
@@ -3736,6 +3760,16 @@ html[data-files-open="true"] [data-role="ai-handle"] {
   background: var(--term-panel-2);
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.settings-block [data-role="setting-show-effect"]::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  right: -4px;
+  top: -3px;
+  bottom: -3px;
+  border-radius: inherit;
 }
 
 .settings-block [data-role="setting-show-effect"] .switch-knob {
@@ -4106,8 +4140,11 @@ html[data-files-open="true"] [data-role="ai-handle"] {
   /* 水平居中于**终端区**，不是视口：左侧 rail 固定占 --term-rail-width（48px），
      `.main`（终端所在格）从 rail 右边开始，所以终端区中心 = 视口中心 + rail/2。
      只写 left:50% 会偏左 24px（AC1 的 ≤2px 立刻不过），这里把 rail 那一半补上。
+     TASK-FIX17-F2（F-12）：终端右侧又常驻让出了 --term-handle-width（24px），
+     `[data-role="terminal-host"] .terminal-pane` 缩窄后终端区中心再左移一半，
+     所以还要减去把手宽的一半，否则整个浮球比终端实际中心偏右 12px。
      用 fixed 而不是 absolute：fixed 不参与任何文档流，绝不可能撑出滚动区。 */
-  left: calc(50% + var(--term-rail-width) / 2);
+  left: calc(50% + (var(--term-rail-width) - var(--term-handle-width)) / 2);
   /* 状态栏 26px + 18px 间距：球底边离状态栏还有 18px，展开成 40px 高的胶囊时也不压字。 */
   bottom: calc(var(--term-statusbar-height) + 18px);
   transform: translateX(-50%);
@@ -4308,8 +4345,9 @@ html[data-files-open="true"] [data-role="ai-handle"] {
 
 .approval-popover {
   position: fixed;
-  /* 与浮球同一个水平基准：终端区中心 = 视口中心 + rail/2（见 L2 的 .command-orb）。 */
-  left: calc(50% + var(--term-rail-width) / 2);
+  /* 与浮球同一个水平基准：终端区中心 = 视口中心 + (rail - 把手宽)/2
+     （见 L2 的 .command-orb；TASK-FIX17-F2 F-12 把把手让位带也算进来了）。 */
+  left: calc(50% + (var(--term-rail-width) - var(--term-handle-width)) / 2);
   /* 96px = 浮球底距（状态栏 26 + 18）+ 球高 38 + 间距 14。 */
   bottom: 96px;
   transform: translateX(-50%);

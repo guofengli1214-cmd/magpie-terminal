@@ -233,8 +233,8 @@ test("R7：收起 38px / 展开 360px / open-muted 只降 opacity 不收回宽�
   assert.match(rootBlock, /position:\s*fixed/);
   assert.match(
     rootBlock,
-    /left:\s*calc\(50% \+ var\(--term-rail-width\) \/ 2\)/,
-    "必须居中于终端区（视口中心 + rail 的一半），否则 AC1 会偏 24px",
+    /left:\s*calc\(50% \+ \(var\(--term-rail-width\) - var\(--term-handle-width\)\) \/ 2\)/,
+    "必须居中于终端区（视口中心 + rail/2 - 把手带/2），否则 AC1 会偏 12px（TASK-FIX17-F2 F-12）",
   );
   assert.match(rootBlock, /transform:\s*translateX\(-50%\)/);
   assert.match(rootBlock, /width:\s*38px/);

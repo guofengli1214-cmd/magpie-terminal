@@ -126,6 +126,16 @@
   --term-rail-icon-size: 34px;
   --term-radius: 6px;
   --term-gap: 8px;
+  /* TASK-FIX17-F2（F-13）：4/8 节奏 + 2px 亚节奏。
+     桌面紧凑 UI 的基线是 11–13px 字号，硬套 8 的整数倍会把工具栏撑开，
+     所以保留 2/6/10 三档细节奏；只用于「结构级」间距（工具栏 / 网格 / rail /
+     tabbar / composer），不做全仓替换。 */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 10px;
+  --space-6: 12px;
   --term-mono: ui-monospace, Menlo, Consolas, "Cascadia Mono", monospace;
   /* TASK-FIX17-B AC7：终端字号跟随 magpie 的 textSize。
      `--mt-font-scale` 由 app.js 写成 `textSize/100`（缺省 1）。

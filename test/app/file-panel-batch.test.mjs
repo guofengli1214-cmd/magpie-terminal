@@ -164,7 +164,7 @@ test("AC4：.file-panel-slot 与 .file-panel-batch 同高（切换不跳版）",
   const slot = blockOf(FILE_PANEL_CSS, ".file-panel-slot");
   const batch = blockOf(FILE_PANEL_CSS, ".file-panel-batch");
   assert.match(slot, /height:\s*28px/, "槽位高度必须写死，否则「有内容才有高度」会跳版");
-  assert.match(batch, /height:\s*24px/);
+  assert.match(batch, /height:\s*28px/, "批量条与路径框同高（TASK-FIX17-F2 F-09：24 → 28）");
   assert.match(slot, /display:\s*flex/);
 });
 
