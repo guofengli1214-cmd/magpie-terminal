@@ -262,6 +262,9 @@ export default function createTabBar(elements) {
       title.textContent = titleFor(session);
       if (session.status === "exited") title.textContent += "（已结束）";
       if (session.status === "error") title.textContent += "（错误）";
+      // F-10：标题宽过 210px 就会被省略号截断，鼠标悬停得能看到全文。
+      // 必须在上面那两行状态后缀**之后**赋值，否则 hover 看不到「（已结束）」。
+      title.title = title.textContent;
       tab.appendChild(title);
 
       const close = document.createElement("button");

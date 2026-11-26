@@ -39,7 +39,7 @@ import { isAbsolute } from "node:path";
 import { buildPolicy } from "./routes/policy.mjs";
 import { handleAiPost } from "./routes/ai.mjs";
 import { handleLocalFs, handleRemoteFs } from "./routes/fs.mjs";
-import { isStaticPath, readAppFile, sendStatic } from "./static.mjs";
+import { isStaticPath, readAppFile, sendIcon, sendStatic } from "./static.mjs";
 import { attachWebSocket } from "./ws.mjs";
 import { LOG_FILE_NAME, LOG_ROTATED_NAME, createLogWriter, formatLogLine } from "./logger.mjs";
 import { redactText } from "./log-redact.mjs";
@@ -1957,6 +1957,19 @@ export async function startServer(options = {}) {
       }
 
       writeJson(res, 404, { code: "NOT_FOUND", userText: "没有这个接口。" }, {}, cors);
+      return;
+    }
+
+    // 页面图标：`package.json` 的 `magpie.page.icon` 指向 `page/icon.svg`，
+    // 它不在 `app/` 下，静态分支的应用根管不到它，所以单开一条。
+    //
+    // 放在这里（静态分支**之前**、`/api/*` 分支之外）是故意的：图标是公开的
+    // 观感资源，不是接口，不带 token 也得能取——宿主、收藏夹、`<link rel=icon>`
+    // 都不会替我们带 `x-magpie-term-token`。路径是常量（`ICON_PATH`），
+    // 没有可拼的输入，因此不重开路径穿越的口子。
+    if (req.method === "GET" && pathname === "/icon.svg") {
+      const sent = await sendIcon(res, cors);
+      if (!sent) writeJson(res, 404, { code: "NOT_FOUND", userText: "资源不存在。" }, {}, cors);
       return;
     }
 

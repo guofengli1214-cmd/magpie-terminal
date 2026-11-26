@@ -265,10 +265,14 @@ export function formatTime(mtime) {
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/** 条目图标（与旧 file-tree.js 的语义一致：目录/链接/文件三态）。 */
+/** 条目图标（与旧 file-tree.js 的语义一致：目录/链接/文件三态）。
+ *
+ * `kind` 是**上色用的语义**：`[data-kind=…]` 负责 dir/accent、js|ts/warn、json|md/ok。
+ * `icon` 只是图形（ICONS 的键名）。两者故意分开：按扩展名分支的条目（js/ts/json/md/img）
+ * 共用同一张纸，但颜色不同；把图形名当 kind 会把这些颜色一并抹掉。 */
 function iconFor(entry) {
-  if (entry.type === "dir") return { kind: "dir", text: "📁" };
-  if (entry.type === "link") return { kind: "link", text: "🔗" };
+  if (entry.type === "dir") return { kind: "dir", icon: "folder" };
+  if (entry.type === "link") return { kind: "link", icon: "link" };
   const name = String(entry.name || "");
   const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
   const kind =
@@ -278,7 +282,7 @@ function iconFor(entry) {
     : ["md", "markdown"].includes(ext) ? "md"
     : ["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(ext) ? "img"
     : "file";
-  return { kind, text: "📄" };
+  return { kind, icon: "file" };
 }
 
 /**
@@ -304,6 +308,14 @@ const ICONS = {
   download: '<path d="M12 4v10.2"/><path d="M7.8 10.2 12 14.4l4.2-4.2"/><path d="M4.6 18.4h14.8"/>',
   // ✕：取消选择
   cancel: '<path d="M6.4 6.4l11.2 11.2M17.6 6.4 6.4 17.6"/>',
+  // 文件夹：顶部带折角的闭合轮廓（条目的结构图标，替掉原来的 emoji）
+  folder:
+    '<path d="M4 7.2A1.7 1.7 0 0 1 5.7 5.5h3.4l1.9 2.2h7.3A1.7 1.7 0 0 1 20 9.4v7.4a1.7 1.7 0 0 1-1.7 1.7H5.7A1.7 1.7 0 0 1 4 16.8Z"/>',
+  // 纸张 + 右下折角
+  file: '<path d="M6.5 4.5h7l4 4v11h-11Z"/><path d="M13.5 4.5v4h4"/>',
+  // 链接：斜向链条（与 folder/file 同一套 1.7px 描边、无填充）
+  link:
+    '<path d="M10.4 13.6a3.4 3.4 0 0 0 4.8 0l2.6-2.6a3.4 3.4 0 1 0-4.8-4.8l-1.3 1.3"/><path d="M13.6 10.4a3.4 3.4 0 0 0-4.8 0l-2.6 2.6a3.4 3.4 0 1 0 4.8 4.8l1.3-1.3"/>',
 };
 
 /**
@@ -1047,11 +1059,15 @@ export default function createFilePanel(elements) {
     });
     if (state.selected.has(entry.path)) card.setAttribute("data-selected", "true");
 
+    // 图标是内联 SVG（不引外部资源、不受平台 emoji 字体影响）。
+    // 注意不能交给 `el()` 的第三个参数：那里走 `textContent`，会把节点变成字符串。
+    // 颜色由 `[data-kind=…]` 的 `color` 通过 `currentColor` 传下来。
     const type = el("span", {
       className: "file-panel-ftype",
       "data-kind": icon.kind,
       "aria-hidden": "true",
-    }, icon.text);
+    });
+    type.appendChild(iconSvg(icon.icon, 14));
     card.appendChild(type);
 
     const name = el("span", { className: "file-panel-fname" }, entry.name);

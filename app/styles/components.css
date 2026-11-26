@@ -67,7 +67,16 @@ button[disabled] {
   align-self: center;
   width: 28px;
   height: 28px;
-  margin: 0 0 0 2px;
+  /* F-14：修的是一整个 2px 垂直偏差，不只是左边距。
+     实测（1600×1000，浅色/深色一致）：
+       [data-role=tab]      y 4 → 39，中心 y 21.5（它自己有 margin-top: 4px）
+       [data-role=tab-new]  原来的中心 y 19.5 → 差 **-2px**
+     原因：tabbar 是 40px 高 + 底部 1px 边框，内容盒 39px；tab 因为
+     margin-top: 4px 被压到 4…39，而 `align-self: center` 把 tab-new 在
+     39px 里居中 → 19.5。只改左右间距（2px→4px）/只改 height 都不解决这 2px，
+     所以给 tab-new 同样的 `margin-top: 4px`：margin 盒（4+28=32）在 39px 里居中
+     → 内容 y 7.5…35.5，中心 y 21.5，与 tab 完全对齐（复测 delta = 0）。 */
+  margin: 4px 0 0 4px;
   padding: 0;
   border: none;
   border-radius: var(--term-radius);
@@ -449,7 +458,7 @@ button[disabled] {
 }
 
 [data-role="agent-step"] .tool-time {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--term-dim);
   font-variant-numeric: tabular-nums;
 }
@@ -944,7 +953,7 @@ button[disabled] {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 2px 6px;
+  padding: 0 0 6px;
   min-width: 0;
 }
 
@@ -1070,7 +1079,9 @@ button[disabled] {
 
 [data-role="ai-drawer"] .model-caret {
   flex: 0 0 auto;
-  font-size: 9px;
+  /* F-15：9px → 11px。caret 是几何符号不是正文，11px 与旁边 12px 的模型名搭配
+     不显重（实拍核对过 composer 局部图），所以不降到 10px。 */
+  font-size: 11px;
   line-height: 1;
   color: var(--term-dim);
 }
@@ -2843,8 +2854,6 @@ button[disabled] {
   border-radius: 5px;
   display: grid;
   place-items: center;
-  font-size: 13px;
-  line-height: 1;
   color: var(--term-muted);
   background: var(--term-panel-2);
   flex: 0 0 auto;
@@ -2876,14 +2885,14 @@ button[disabled] {
 
 .file-panel-fmeta {
   width: 100%;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--term-dim);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-top: -3px;
+  margin-top: -2px;
 }
 
 /* L1-03：文件条目的「更多」入口常显（⋯），悬浮/选中时提亮。
@@ -3292,7 +3301,7 @@ html[data-files-open="true"] [data-role="ai-handle"] {
 }
 
 [data-role="ai-drawer"] [data-role="agent-sessions-toggle"] .sess-count {
-  font-size: 9.5px;
+  font-size: 11px;
   color: var(--term-dim);
   flex: 0 0 auto;
 }
@@ -3305,7 +3314,7 @@ html[data-files-open="true"] [data-role="ai-handle"] {
 }
 
 [data-role="ai-drawer"] [data-role="agent-sessions-toggle"] .sess-sub {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--term-dim);
   overflow: hidden;
   text-overflow: ellipsis;

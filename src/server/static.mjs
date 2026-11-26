@@ -88,6 +88,53 @@ export async function sendStatic(res, pathname, cors = {}) {
   return true;
 }
 
+/**
+ * 页面图标（`package.json` 的 `magpie.page.icon` = `page/icon.svg`）的绝对路径。
+ *
+ * 它**不在** `APP_ROOT`（`app/`）下，所以走不了 `resolveStatic`：那条路的职责是
+ * 把 URL 关进 `app/` 的边界里，为一个图标放宽边界会让「路径穿越防护」多一个入口。
+ * 这里改成写死一个常量路径 —— 只有这一个文件对外开放，没有可拼的输入。
+ */
+export const ICON_PATH = path.resolve(HERE, "..", "..", "page", "icon.svg");
+
+/**
+ * 直接把页面图标写进响应；文件不存在或读不出来返回 false（不写响应）。
+ *
+ * 头部与 `sendStatic` 保持一致（`no-store` + `nosniff` + CORS）：沙箱 iframe 里
+ * 取图标也是跨源请求，缺 `access-control-allow-origin` 会被浏览器拦下。
+ *
+ * @param {import("node:http").ServerResponse} res
+ * @param {Record<string,string>} [cors] `http.mjs` 的 `corsHeaders()` 结果，原样写进响应头
+ * @returns {Promise<boolean>} 是否已把响应写出去
+ */
+export async function sendIcon(res, cors = {}) {
+  let info;
+  try {
+    info = await stat(ICON_PATH);
+  } catch {
+    return false;
+  }
+  if (!info.isFile()) return false;
+
+  res.writeHead(200, {
+    "content-type": "image/svg+xml",
+    "content-length": info.size,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    ...cors,
+  });
+  await new Promise((resolve) => {
+    const stream = createReadStream(ICON_PATH);
+    stream.on("error", () => {
+      res.destroy();
+      resolve();
+    });
+    stream.on("end", resolve);
+    stream.pipe(res);
+  });
+  return true;
+}
+
 export async function readAppFile(relative) {
   const { readFile } = await import("node:fs/promises");
   const target = path.resolve(APP_ROOT, relative);
