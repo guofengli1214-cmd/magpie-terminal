@@ -125,7 +125,14 @@ test("AC1：/api/version 与 package.json 一致；本机裸路径 → local-pat
       assert.equal(body.installKind, "local-path");
       assert.equal(body.updateSupported, false);
     },
-    { plugins: { plugins: [{ spec: PLUGIN_ROOT }] } },
+    {
+      plugins: { plugins: [{ spec: PLUGIN_ROOT }] },
+      // 显式注入「没有 repository」的包信息：真 package.json 现在带 repository
+      // （公开发布必需），不能再靠它来表达「未配置仓库」这条分支。
+      server: {
+        packageInfo: { version: packageJson.version, name: packageJson.name, repository: undefined },
+      },
+    },
   );
 });
 
