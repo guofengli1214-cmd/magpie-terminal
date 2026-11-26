@@ -3,12 +3,14 @@
 // 用法（仓库根）：node scripts/probe-update.mjs [--json]
 //
 // 覆盖：
-//   AC1  真服务 /api/version：version 与 package.json 一致、本机裸路径 → local-path、
-//        无 repository、updateSupported:false。
-//   AC2  真 Chrome：设置页出现「关于 / 更新」block；版本 / 本地路径 / 未配置仓库；
-//        「检查更新」禁用并给出原因；「如何更新」含 git pull 与重启提示。
+//   AC1  真服务 /api/version：version / name 与 package.json 一致、裸路径 → local-path，
+//        repository 与 updateSupported 从 package.json.repository 推导（不写死）。
+//   AC2  真 Chrome：设置页出现「关于 / 更新」block；版本 / 本地路径 / 仓库链接；
+//        有 repository 时「检查更新」可点；「如何更新」含 git pull 与重启提示。
+//   AC2-无仓库  注入 packageInfo（repository:null）的隔离实例 → 未配置仓库地址、按钮禁用。
 //   AC3  registry + repository（注入 packageInfo，不改 package.json）→ 按钮可点，
 //        点击后走 /api/update/check（fetch 注入）显示「发现新版本」+ 发布页链接。
+//        mock 的 tag 固定为「当前 patch + 1」，随 package.json 版本自动上浮。
 //   AC4  同一个服务切到超时 → 点击后显示「检查失败：…超时」，不是「已是最新」。
 //   AC5  「如何更新」按 installKind 给不同命令（local-path / registry 都验）。
 //
@@ -22,7 +24,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { startServer } from "../src/server/http.mjs";
 import { PLUGINS_PATH_ENV, PLUGIN_ROOT } from "../src/config/install-kind.mjs";
 import { CONFIG_PATH_ENV } from "../src/config/store.mjs";
-import { UPDATE_CACHE_TTL_MS } from "../src/config/update-check.mjs";
+import { UPDATE_CACHE_TTL_MS, normalizeRepository } from "../src/config/update-check.mjs";
 import { openBrowser, sleep } from "./lib/cdp.mjs";
 
 const json = process.argv.includes("--json");
@@ -30,6 +32,34 @@ const evidenceDir = path.resolve(".dispatch/fix17-g/evidence");
 await mkdir(evidenceDir, { recursive: true });
 
 const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+
+/* ---------------------------------------------------------------- 期望值推导
+ * 探针以前把「没有 repository / 版本 0.1.0」写死在断言里，package.json 一旦
+ * 加上 repository（现在是 git+https://github.com/<owner>/<repo>.git）就集体过期。
+ * 现在所有期望值都从 package.json 推导：
+ *   - 仓库 URL 复用产品的 normalizeRepository()（不复制一份规则）；
+ *   - 更新检查 mock 的发布 tag 用「当前 patch + 1」，永远比当前版本新。 */
+const expectedRepoUrl = normalizeRepository(packageJson.repository)
+  ? normalizeRepository(packageJson.repository).url
+  : null;
+const expectedUpdateSupported = Boolean(expectedRepoUrl);
+
+/** 把 "0.2.2" 这类版本号解析成数字段；解析不出就返回 null（调用处会退到默认值）。 */
+function parseVersionParts(raw) {
+  const core = String(raw || "").trim().replace(/^v/i, "").split("+")[0].split("-")[0];
+  const parts = core.split(".").map((part) => Number.parseInt(part, 10));
+  if (parts.length === 0 || parts.some((part) => !Number.isFinite(part) || part < 0)) return null;
+  return { major: parts[0] ?? 0, minor: parts[1] ?? 0, patch: parts[2] ?? 0 };
+}
+
+const currentParts = parseVersionParts(packageJson.version) || { major: 0, minor: 0, patch: 0 };
+/** 比当前版本高的下一个 patch 版本，带 v 前缀（GitHub 发布 tag 的常见形态）。 */
+const nextTag = `v${currentParts.major}.${currentParts.minor}.${currentParts.patch + 1}`;
+/** 不带 v 的前缀版本号，与 settings-panel 里 `发现新版本 ${data.latest}` 的写法对齐。 */
+const nextVersion = nextTag.replace(/^v/, "");
+// AC3 专用：registry 安装 + 注入的假仓库，mock 的发布页链接就挂在这上面。
+const AC3_REPO_URL = "https://github.com/acme/magpie-terminal";
+const nextTagUrl = `${AC3_REPO_URL}/releases/tag/${nextTag}`;
 const results = [];
 const record = (name, pass, detail) => {
   results.push({ name, pass: Boolean(pass), detail });
@@ -208,14 +238,16 @@ try {
 
   const versionResponse = await fetch(`${service.base}/api/version`, { headers: service.headers });
   const version = await versionResponse.json();
+  // 期望值全部来自 package.json：仓库链接经 normalizeRepository() 归一，
+  // updateSupported 由「是否有仓库 + 安装方式是否未知」决定（http.mjs）。
   record(
-    "AC1 /api/version：version 与 package.json 一致、裸路径 → local-path、无 repository、updateSupported:false",
+    "AC1 /api/version：version / name 与 package.json 一致、裸路径 → local-path、repository 取自 package.json、updateSupported 随仓库存在与否",
     versionResponse.status === 200 &&
       version.version === packageJson.version &&
       version.name === packageJson.name &&
-      version.repository === null &&
+      version.repository === expectedRepoUrl &&
       version.installKind === "local-path" &&
-      version.updateSupported === false,
+      version.updateSupported === (expectedUpdateSupported && version.installKind !== "unknown"),
     version,
   );
 
@@ -228,16 +260,17 @@ try {
 
   const localAbout = await readAbout(browser);
   record(
-    "AC2 设置页出现「关于 / 更新」block，显示版本 0.1.0 / 本地路径 / 未配置仓库",
+    "AC2 设置页出现「关于 / 更新」block，显示当前版本 / 本地路径 / 仓库链接",
     localAbout.block === true &&
       localAbout.version.includes(packageJson.version) &&
       localAbout.installKind.includes("本地路径") &&
-      localAbout.repository.includes("未配置仓库地址"),
+      expectedRepoUrl !== null &&
+      localAbout.repository.includes(expectedRepoUrl),
     localAbout,
   );
   record(
-    "AC2 无 repository 时「检查更新」禁用，并显示原因",
-    localAbout.checkDisabled === true && localAbout.status.includes("未配置仓库地址"),
+    "AC2 有 repository 且安装方式非 unknown 时「检查更新」可点（local-path 也不置灰）",
+    localAbout.checkDisabled === false,
     { disabled: localAbout.checkDisabled, status: localAbout.status },
   );
   record(
@@ -269,7 +302,7 @@ try {
     darkClass === true &&
       darkAbout.block === true &&
       darkAbout.version.includes(packageJson.version) &&
-      darkAbout.checkDisabled === true,
+      darkAbout.repository.includes(expectedRepoUrl),
     { darkClass, about: darkAbout },
   );
   const darkShot = await shot(browser, "probe-update-ac2-local-dark.png");
@@ -285,6 +318,57 @@ try {
   await service.close();
   service = null;
 
+  /* ---------------- AC2-无仓库：注入 packageInfo 造一个没有 repository 的实例 ----------------
+   * 为什么另起一个隔离实例、而不是把 AC1/AC2 的 local 实例改注入：
+   * 上面那些断言验证的是「**真实 package.json** 下的正确行为」（现在有 repository，
+   * 就该显示链接、按钮可点）；它们必须继续跑在真 packageInfo 上，否则一旦有人
+   * 把 repository 从 package.json 删了，AC1/AC2 就会默默跟着变绿而不再测真东西。
+   * 所以「无仓库」的覆盖另起一个隔离实例，用 packageInfo 注入 repository:null，
+   * 两个语义各测一份，互不污染。 */
+  service = await startIsolated("norepo", {
+    plugins: { plugins: [{ spec: PLUGIN_ROOT }] },
+    packageInfo: {
+      version: packageJson.version,
+      name: packageJson.name,
+      repository: null,
+    },
+  });
+
+  const noRepoResponse = await fetch(`${service.base}/api/version`, { headers: service.headers });
+  const noRepoVersion = await noRepoResponse.json();
+  record(
+    "AC2-无仓库 /api/version：注入 repository:null → repository 为 null、updateSupported:false（installKind 仍是 local-path）",
+    noRepoResponse.status === 200 &&
+      noRepoVersion.version === packageJson.version &&
+      noRepoVersion.name === packageJson.name &&
+      noRepoVersion.repository === null &&
+      noRepoVersion.installKind === "local-path" &&
+      noRepoVersion.updateSupported === false,
+    noRepoVersion,
+  );
+
+  await browser.navigate(`${service.base}/?token=${service.handle.token}&theme=light`);
+  await sleep(1500);
+  await installErrorHooks(browser);
+  await openSettings(browser);
+  await scrollToAbout(browser);
+  const noRepoAbout = await readAbout(browser);
+  record(
+    "AC2-无仓库 设置页：仓库行显示「未配置仓库地址」、「检查更新」禁用并给出原因",
+    noRepoAbout.block === true &&
+      noRepoAbout.repository.includes("未配置仓库地址") &&
+      noRepoAbout.checkDisabled === true &&
+      noRepoAbout.status.includes("未配置仓库地址"),
+    { disabled: noRepoAbout.checkDisabled, repository: noRepoAbout.repository, status: noRepoAbout.status },
+  );
+  const noRepoShot = await shot(browser, "probe-update-ac2-norepo.png");
+  const noRepoErrors = await collectErrors(browser);
+  pageErrors.push(...noRepoErrors);
+  record("AC2-无仓库 查看关于块没有未捕获异常", noRepoErrors.length === 0, { errors: noRepoErrors });
+
+  await service.close();
+  service = null;
+
   /* ---------------- AC3 / AC4 / AC5：registry + 注入 repository ---------------- */
   let mode = "ok";
   let clock = 1000;
@@ -296,8 +380,9 @@ try {
     }
     return new Response(
       JSON.stringify({
-        tag_name: "v0.2.0",
-        html_url: "https://github.com/acme/magpie-terminal/releases/tag/v0.2.0",
+        // tag 不再写死：取「当前 patch + 1」，总是比 package.json 的版本高。
+        tag_name: nextTag,
+        html_url: nextTagUrl,
       }),
       { status: 200, headers: { "content-type": "application/json" } },
     );
@@ -308,7 +393,7 @@ try {
     packageInfo: {
       version: packageJson.version,
       name: packageJson.name,
-      repository: "https://github.com/acme/magpie-terminal",
+      repository: AC3_REPO_URL,
     },
     updateCheck: { fetchImpl, cache: new Map(), now: () => clock },
   });
@@ -319,7 +404,7 @@ try {
   record(
     "AC3 /api/version：registry + repository → 可点地址 + updateSupported:true",
     registryVersion.installKind === "registry" &&
-      registryVersion.repository === "https://github.com/acme/magpie-terminal" &&
+      registryVersion.repository === AC3_REPO_URL &&
       registryVersion.updateSupported === true,
     registryVersion,
   );
@@ -345,13 +430,14 @@ try {
   await clickCheck(browser);
   const success = await waitStatus(
     browser,
-    (about) => about.status.includes("发现新版本") && about.status.includes("0.2.0"),
-    "update success",
+    (about) => about.status.includes("发现新版本") && about.status.includes(nextVersion),
+    `update success (${nextTag})`,
   );
   record(
-    "AC3 点击「检查更新」→ 显示发现新版本 0.2.0 + 当前 0.1.0 + 发布页链接",
-    success.status.includes("当前 0.1.0") &&
-      success.statusHref === "https://github.com/acme/magpie-terminal/releases/tag/v0.2.0",
+    `AC3 点击「检查更新」→ 显示发现新版本 ${nextVersion} + 当前 ${packageJson.version} + 发布页链接`,
+    success.status.includes(`发现新版本 ${nextVersion}`) &&
+      success.status.includes(`当前 ${packageJson.version}`) &&
+      success.statusHref === nextTagUrl,
     { status: success.status, href: success.statusHref },
   );
   const successShot = await shot(browser, "probe-update-ac3-registry.png");
@@ -387,7 +473,14 @@ try {
     ok: results.every((item) => item.pass),
     results,
     pageErrors,
-    evidence: { local: localShot, localDark: darkShot, success: successShot, failure: failureShot },
+    evidence: {
+      local: localShot,
+      localDark: darkShot,
+      noRepo: noRepoShot,
+      success: successShot,
+      failure: failureShot,
+    },
+    derived: { expectedRepoUrl, nextTag, nextTagUrl },
     version,
     registryVersion,
   };

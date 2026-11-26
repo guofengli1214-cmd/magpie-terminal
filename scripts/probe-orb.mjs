@@ -267,7 +267,16 @@ async function orbMetrics(browser) {
     const input = q('[data-role="orb-input"]');
     const action = q('[data-role="orb-action"]');
     const main = q('[data-role="main"]');
-    const terminal = q('[data-role="terminal-host"]');
+    // AC1 要量的是**可见终端 pane**，不是 host：
+    // app/styles/layout.css 里 '[data-role="terminal-host"] .terminal-pane' 用
+    // 'inset: 0 var(--term-handle-width) 0 0' 缩窄了 24px，球（components.css 的
+    // 'left: calc(50% + (rail - handle) / 2)'）是按缩窄后的 pane 居中的，
+    // 拿 host 的 rect 会系统性地偏 12px。
+    // 非活动 pane 由 app/ui/terminal-view.js 的 'pane.hidden = !active' 隐藏
+    // （配合 layout.css 的 '.terminal-pane[hidden] { display: none }'），
+    // 所以 ':not([hidden])' 精准命中当前可见的那一个。
+    // 注意：xtermSize() 里那份 terminal-host 的 rect 是 AC2.2 的自比较基准，语义不同，不在本次改动范围。
+    const pane = q('[data-role="terminal-pane"]:not([hidden])');
     const ballStyle = ball ? cs(ball) : null;
     const formStyle = form ? cs(form) : null;
     return {
@@ -276,7 +285,8 @@ async function orbMetrics(browser) {
       busyAttr: el.getAttribute('data-busy'),
       rect: rect(el),
       mainRect: main ? rect(main) : null,
-      terminalRect: terminal ? rect(terminal) : null,
+      // 语义：可见终端 pane（F-12 缩窄后的实际终端区），供 AC1 计算水平中心。
+      paneRect: pane ? rect(pane) : null,
       width: rect(el).width,
       height: rect(el).height,
       opacity: Number(style.opacity),
@@ -361,8 +371,9 @@ try {
    * 收起态：38px 圆球，水平中心与终端区中心差 ≤2px，坐在状态栏之上。 */
   {
     const before = await orbMetrics(browser);
-    const terminal = before.terminalRect;
-    const terminalCenterX = terminal.x + terminal.width / 2;
+    // 用可见终端 pane 的中心做基准（球是按缩窄后的 pane 居中的）。
+    const pane = before.paneRect;
+    const terminalCenterX = pane ? pane.x + pane.width / 2 : Number.NaN;
     const orbCenterX = before.rect.x + before.rect.width / 2;
     const statusbarTop = await browser.evaluate(
       `document.querySelector('[data-role="statusbar"]').getBoundingClientRect().top`,
