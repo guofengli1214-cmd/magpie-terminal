@@ -1,6 +1,6 @@
 {
   "name": "magpie-terminal",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "A real terminal inside the magpie window, with a Chinese-speaking AI command assistant.",
   "license": "MIT",
   "author": "magpie-terminal contributors",
