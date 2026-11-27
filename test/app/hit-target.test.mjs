@@ -20,7 +20,9 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..", "..");
 
-const COMPONENTS_CSS = await readFile(path.join(REPO, "app", "styles", "components.css"), "utf8");
+const COMPONENTS_CSS = (
+  await readFile(path.join(REPO, "app", "styles", "components.css"), "utf8")
+).replace(/\r\n/g, "\n");
 
 /** 去掉注释，只为「在真实声明里 grep」而不是匹配到说明文字。 */
 const COMPONENTS = COMPONENTS_CSS.replace(/\/\*[\s\S]*?\*\//g, "");

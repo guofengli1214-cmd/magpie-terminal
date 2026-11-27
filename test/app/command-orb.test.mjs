@@ -19,7 +19,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..", "..");
 
 async function read(rel) {
-  return readFile(path.join(REPO, rel), "utf8");
+  // 同 approval-popover：CRLF 检出会让段头 marker 的 indexOf 恒为 -1。
+  const text = await readFile(path.join(REPO, rel), "utf8");
+  return text.replace(/\r\n/g, "\n");
 }
 
 const ORB_JS = await read("app/ui/command-orb.js");

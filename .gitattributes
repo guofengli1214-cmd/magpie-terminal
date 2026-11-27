@@ -7,3 +7,10 @@
 # picking either side (task state lives in task.json, not index.md). See
 # .trellis/spec/cli/backend/directory-structure.md for details.
 .trellis/workspace/*/journal-*.md merge=union
+
+# 文本文件统一按 LF 存进仓库、按 LF 检出（含 Windows）。没有这条时，
+# Windows 上 core.autocrlf=true 的检出会把工作区写成 CRLF，而仓库里有测试是
+# 直接读源文件按 `\n` 做精确字符串/正则断言的（app/styles/components.css 的段头
+# marker 等），CRLF 会让断言恒假 —— CI 的 windows-latest 就因此三格全红。
+# 仓库内没有 .bat/.cmd/.ps1/.vbs 等必须 CRLF 的脚本，所以全局 eol=lf 是安全的。
+* text=auto eol=lf

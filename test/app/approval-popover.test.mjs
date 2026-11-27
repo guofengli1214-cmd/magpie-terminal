@@ -30,7 +30,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..", "..");
 
 async function read(rel) {
-  return readFile(path.join(REPO, rel), "utf8");
+  // Windows 上 core.autocrlf=true 的检出会把源文件写成 CRLF，而本文件的段头/marker
+  // 是按 `\n` 做精确 indexOf 的 → CRLF 下恒为 -1（CI 的 windows-latest 就踩这个）。
+  const text = await readFile(path.join(REPO, rel), "utf8");
+  return text.replace(/\r\n/g, "\n");
 }
 
 const POPOVER_JS = await read("app/ui/approval-popover.js");
