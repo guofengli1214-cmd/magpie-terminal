@@ -1,6 +1,6 @@
 {
   "name": "magpie-terminal",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "A terminal for SSH hosts inside the magpie window, with a Chinese-speaking AI command assistant.",
   "license": "MIT",
   "author": "magpie-terminal contributors",
