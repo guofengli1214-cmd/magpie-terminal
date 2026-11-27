@@ -39,8 +39,24 @@ export const DESTRUCTIVE_HEADS = new Set([
   "clc",
 ]);
 
-/** 目标里出现这些字符时静态解析不出来（变量 / 通配符 / 家目录缩写）→ 按「读不出来」处理。 */
-const UNRESOLVABLE_TARGET_RE = /[*?$`%~]/;
+/**
+ * 目标里出现这些字符时静态解析不出来（变量 / 通配符）→ 按「读不出来」处理。
+ *
+ * 注意这里**不含 `~`**：`~` 只有出现在目标开头时才是家目录缩写（`~/tmp`、`~user/x`），
+ * 出现在中间时是普通的路径字符 —— Windows 的 8.3 短名（GitHub Actions runner 的
+ * `C:\Users\RUNNER~1\AppData\Local\Temp\...`）就带 `~`，把它一律当通配符会让整条
+ * 绝对路径被判成「读不出具体是哪些文件」，工作目录内外、对话里有没有提过这些
+ * 判断全部失效。家目录缩写由 TILDE_HOME_RE 单独判。
+ */
+const UNRESOLVABLE_TARGET_RE = /[*?$`%]/;
+
+/** 目标是否以家目录缩写开头（`~`、`~/x`、`~user/x`）。只有开头才算。 */
+const TILDE_HOME_RE = /^~/;
+
+/** 目标是否是「静态读不出具体文件」的那种（变量 / 通配符 / 家目录缩写）。 */
+function isUnresolvableTarget(target) {
+  return UNRESOLVABLE_TARGET_RE.test(target) || TILDE_HOME_RE.test(target);
+}
 
 /** 把路径折成比较用的形态：Windows 大小写不敏感，统一小写。 */
 function fold(p) {
@@ -116,7 +132,7 @@ export function extractDestructiveTargets(command) {
       }
       if (parsed.unresolved) unresolved = true;
       for (const target of parsed.targets) {
-        if (UNRESOLVABLE_TARGET_RE.test(target)) unresolved = true;
+        if (isUnresolvableTarget(target)) unresolved = true;
         targets.push(target);
       }
     }
@@ -191,7 +207,7 @@ export function guardTargets({ targets, cwd, historyText, targetsUnresolved } = 
     }
 
     // 通配符 / 变量：静态判不出范围，一律人工。
-    if (UNRESOLVABLE_TARGET_RE.test(target)) {
+    if (isUnresolvableTarget(target)) {
       // 用原始目标回报（`~` / `$TARGET` 解析成绝对路径后反而看不懂）。
       block(target, "unknown", target);
       continue;

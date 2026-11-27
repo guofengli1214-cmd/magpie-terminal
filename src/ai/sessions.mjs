@@ -392,7 +392,7 @@ export function createSessionStore(opts = {}) {
       const session = await readSession(id);
       if (session) sessions.push(session);
     }
-    sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+    sessions.sort((a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : 1));
     return sessions.map((session) => summarize(session, currentId));
   }
 

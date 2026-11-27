@@ -144,6 +144,45 @@ test("R4：通配符 / 变量 / 家目录缩写读不出目标 → targetsUnreso
   }
 });
 
+// 回归：`~` 只有出现在目标**开头**时才是家目录缩写。出现在中间是普通路径字符 ——
+// Windows 的 8.3 短名（GitHub Actions runner 的 C:\Users\RUNNER~1\AppData\Local\Temp\...）
+// 就带 `~`。早先的实现把 `~` 一律当通配符，于是 runner 上的每条临时目录路径都被判成
+// 「读不出具体是哪些文件」，工作目录内外、对话里有没有提过这些判断全部失效
+// （CI windows-latest 三格因此全红，本机因为临时目录不含 `~` 而测不出来）。
+test("R4：路径中间的 `~` 不算通配符（Windows 8.3 短名回归）", () => {
+  const tildeRoot = path.join(os.tmpdir(), "RUNNER~1-mt-guard");
+  fs.mkdirSync(tildeRoot, { recursive: true });
+  const tildeCwd = path.join(tildeRoot, "project");
+  fs.mkdirSync(path.join(tildeCwd, "empty-dir"), { recursive: true });
+  try {
+    // cwd 内 → 放行（不是「读不出目标」）
+    const inside = guard(`rm -rf "${path.join(tildeCwd, "empty-dir")}"`, { cwd: tildeCwd });
+    assert.equal(inside.targetsUnresolved, false, "含 ~ 的绝对路径不该被标成读不出目标");
+    assert.equal(inside.ok, true, `reason=${inside.reason}`);
+
+    // cwd 外 → 仍然 confirm，理由是「工作目录以外」而不是「含通配符或变量」
+    const outside = guard(`rm -rf "${path.join(tildeRoot, "elsewhere")}"`, { cwd: tildeCwd });
+    assert.equal(outside.targetsUnresolved, false, "含 ~ 的绝对路径不该被标成读不出目标");
+    assert.equal(outside.ok, false);
+    assert.match(outside.reason, /工作目录以外/);
+    assert.doesNotMatch(outside.reason, /通配符或变量/);
+  } finally {
+    try {
+      fs.rmSync(tildeRoot, { recursive: true, force: true });
+    } catch {
+      // 清理失败不影响断言结果。
+    }
+  }
+});
+
+test("R4：`~` 开头的家目录缩写仍然必须拦（`~` / `~/x` / `~user/x`）", () => {
+  for (const command of ["rm -rf ~", "rm -rf ~/tmp", "rm -rf ~user/x"]) {
+    const result = guard(command);
+    assert.equal(result.targetsUnresolved, true, `${command} 必须标成读不出目标`);
+    assert.equal(result.ok, false, `${command} 护栏必须拦下`);
+  }
+});
+
 /* ---------------------------------------------------------------- AC4 四条 */
 
 test("AC4：工作目录内的目标 → 放行", () => {

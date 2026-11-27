@@ -16,9 +16,18 @@ import {
   trimSession,
 } from "../../src/ai/sessions.mjs";
 
-async function withStore(fn) {
+/**
+ * 跑一段用例。
+ *
+ * `opts.now` 是 store 暴露给测试的注入点（src/ai/sessions.mjs 的 createSessionStore 的
+ * `opts.now`，注释写明「仅供测试」）。需要断言 updatedAt 先后顺序的用例必须用它，
+ * 不能靠 `setTimeout(12)` 等真实时钟：CI runner 上时钟可能被容器暂停/回拨，两个会话
+ * 会拿到同一个 `Date.now()`，排序退化成 readdir 顺序，用例随机变红
+ * （ubuntu-latest / node 24 上 46057939357 就是这样红过一次）。
+ */
+async function withStore(fn, opts = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "mt-ai-sessions-"));
-  const store = createSessionStore({ dir, log: () => {} });
+  const store = createSessionStore({ dir, log: () => {}, ...opts });
   return fn({ store, dir });
 }
 
@@ -93,9 +102,12 @@ test("写入后回读：消息、步骤、归属字段都在", async () => {
 });
 
 test("listSessions 只回摘要（不含 messages/steps），按 updatedAt 倒序，current 标记正确", async () => {
+  // 用固定步进的注入时钟，不依赖真实时间（setTimeout 在 CI 上会拿到并列 timestamp，
+  // 排序退化成 readdir 顺序 → 随机红）。这里让每次 now() 前进 1000ms，顺序确定可断言。
+  let clock = 1_000_000;
+  const stepNow = () => (clock += 1000);
   await withStore(async ({ store }) => {
     const a = await store.createSession({ terminalId: "t1", title: "A" });
-    await new Promise((resolve) => setTimeout(resolve, 12));
     const b = await store.createSession({ terminalId: "t1", title: "B" });
     await store.appendMessage(a.id, { role: "user", text: "你好" });
 
@@ -111,20 +123,22 @@ test("listSessions 只回摘要（不含 messages/steps），按 updatedAt 倒�
       assert.equal(item.steps, undefined);
     }
     assert.ok(b.id);
-  });
+  }, { now: stepNow });
 });
 
 test("findByTerminal 找该终端最近的会话，没有就 null", async () => {
+  // 同上：并列 timestamp 会让「最近」退化成 readdir 顺序，用注入时钟把顺序钉死。
+  let clock = 2_000_000;
+  const stepNow = () => (clock += 1000);
   await withStore(async ({ store }) => {
     assert.equal(await store.findByTerminal("t-x"), null);
     const first = await store.createSession({ terminalId: "t-x", title: "旧" });
-    await new Promise((resolve) => setTimeout(resolve, 12));
     const second = await store.createSession({ terminalId: "t-x", title: "新" });
     const found = await store.findByTerminal("t-x");
     assert.equal(found.id, second.id);
     assert.notEqual(found.id, first.id);
     assert.equal(await store.findByTerminal(""), null);
-  });
+  }, { now: stepNow });
 });
 
 test("renameSession 改标题，空标题与超长都归一", async () => {
