@@ -1,10 +1,10 @@
-// 远程会话注册表：方法签名与 `src/pty/session.mjs` 的 SessionManager 对齐
-// （create / write / resize / close / get / size），事件名也对齐
-// （session.created / pty.output / session.exited / session.failed）。
+// 远程会话注册表：本插件唯一的会话实现（本机 PTY 已删）。
+// 方法签名 create / write / resize / close / get / size，事件名
+// session.created / pty.output / session.exited / session.failed。
 //
-// 这样 ws.mjs 只需要「先查远程、再查本地」，帧的语义不用分叉。
+// ws.mjs 的帧语义只在这里落地，不再有本地/远程的分叉。
 //
-// 与本地 PTY 的差异（必须显式记住）：
+// 必须显式记住的几点：
 // - 建连是异步的：create() 同步返回一个 state="starting" 的会话壳，
 //   连上后才 emit session.created；失败走 session.failed。
 // - 写入归一化：前端发什么换行都行，这里统一成 CRLF（Windows sshd 用 cmd.exe 时
@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import { getHostRecord, lookupKnownHost, readSecret, touchHost } from "../config/store.mjs";
 import { connectClient, execCommand, mapSshError, openShell, probeHostKey } from "./client.mjs";
 import { listViaClient } from "./sftp.mjs";
-import { createOsc7Scanner, decodeOsc7 } from "../pty/osc7.mjs";
+import { createOsc7Scanner, decodeOsc7 } from "./osc7.mjs";
 
 export const MIN_COLS = 20;
 export const MIN_ROWS = 5;

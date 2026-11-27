@@ -17,23 +17,28 @@ import path from "node:path";
 /**
  * `target` 是否落在 `dir` 之内（含 dir 本身）。
  *
- * 用 `path.relative` 而不是字符串前缀：`C:\a\downloads2` 以 `C:\a\downloads`
+ * 用 `path.posix/win32.relative` 而不是字符串前缀：`C:\a\downloads2` 以 `C:\a\downloads`
  * 为前缀，但不是子路径 —— 前缀判断会把它放进来。
+ * 默认按宿主语义（`path` / `path.win32` / `path.posix` 里的宿主那个）；单测注入
+ * `platform` 才能验证另一平台的路径语义（与 `revealArgv` 的 platform 参数对齐）。
  *
  * @param {string} dir 已归一的绝对目录
  * @param {string} target 用户给的路径（相对路径视为不合法）
+ * @param {{platform?: string}} [opts]
  * @returns {boolean}
  */
-export function isPathInside(dir, target) {
+export function isPathInside(dir, target, opts = {}) {
   if (typeof dir !== "string" || dir.length === 0) return false;
   if (typeof target !== "string" || target.length === 0) return false;
-  if (!path.isAbsolute(target)) return false;
-  const base = path.resolve(dir);
-  const resolved = path.resolve(target);
-  const rel = path.relative(base, resolved);
+  // 默认宿主语义（真跑时 dir/target 都是本机真实路径）；单测注入 platform 才能验另一平台的语义。
+  const p = (opts.platform || process.platform) === "win32" ? path.win32 : path.posix;
+  if (!p.isAbsolute(target)) return false;
+  const base = p.resolve(dir);
+  const resolved = p.resolve(target);
+  const rel = p.relative(base, resolved);
   if (rel === "") return true;
   if (rel.startsWith("..")) return false;
-  return !path.isAbsolute(rel);
+  return !p.isAbsolute(rel);
 }
 
 /**

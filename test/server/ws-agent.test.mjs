@@ -15,6 +15,8 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { startServer } from "../../src/server/http.mjs";
+// Node 20 没有全局 WebSocket（22 才有），用 ws 包提供的实现，接口兼容。
+import { WebSocket } from "ws";
 
 async function freePort() {
   return new Promise((resolve, reject) => {

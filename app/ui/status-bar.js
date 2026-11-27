@@ -1,13 +1,13 @@
-// 状态栏：连接状态、shell / PTY 模式、当前 cwd。错误三要素里「怎么办」也走这里。
+// 状态栏：连接状态、shell、当前 cwd。错误三要素里「怎么办」也走这里。
 
 /**
- * 状态栏的 shell 文案（TASK-FIX-RECONNECT O1）。
+ * 状态栏的 shell 文案（TASK-FIX-RECONNECT O1，0.3.0 收窄）。
  *
- * 优先用当前活动会话真实的 shell（服务端 session.created 里带），
- * 没有会话时才退回 /api/health 的探测值。两者都没有就是「未知」。
+ * 只按当前活动会话真实的 shell（服务端 session.created 里带）显示；
+ * 没有活动会话就是「未知」（本机 PTY 已删，health 不再有 shell 字段）。
  * 纯函数：不碰 DOM，便于单测锁住文案。
  */
-export function shellLabel(snapshot, healthInfo) {
+export function shellLabel(snapshot) {
   const active =
     snapshot && Array.isArray(snapshot.sessions)
       ? snapshot.sessions.find((s) => s && s.id === snapshot.activeId)
@@ -15,15 +15,6 @@ export function shellLabel(snapshot, healthInfo) {
   if (active && typeof active.shell === "string" && active.shell.length > 0) {
     return `shell：${active.shell}`;
   }
-
-  const healthShell = healthInfo && healthInfo.shell ? healthInfo.shell : null;
-  if (healthShell) {
-    const name = typeof healthShell.name === "string" && healthShell.name.length > 0 ? healthShell.name : "未知";
-    const version = typeof healthShell.version === "string" ? healthShell.version.trim() : "";
-    const fallback = healthShell.fallback ? "（回退）" : "";
-    return version ? `shell：${name} ${version}${fallback}` : `shell：${name}${fallback}`;
-  }
-
   return "shell：未知";
 }
 
@@ -90,25 +81,21 @@ export default function createStatusBar(elements) {
     connection.textContent = statusText(snapshot);
     host.appendChild(connection);
 
-    if (healthInfo) {
-      const pty = document.createElement("span");
-      pty.setAttribute("data-role", "status-item");
-      pty.setAttribute("data-status", "pty");
-      pty.setAttribute("data-tone", healthInfo.pty === "native" ? "ok" : "warn");
-      pty.textContent =
-        healthInfo.pty === "native"
-          ? `PTY：原生（node-pty ${healthInfo.nodePtyVersion || "未知"}）`
-          : "PTY：降级（哨兵法）";
-      host.appendChild(pty);
+    // shell 一栏不再依赖 health：活动会话自己带 shell（O1）。
+    // 0.3.0 删掉本机 PTY 之后没有「全局 shell」这回事：没有活动会话（或会话没带
+    // shell）就整栏不渲染，不再挂一个 PTY 时代的「shell：未知」占位。
+    const activeSession = Array.isArray(snapshot.sessions)
+      ? snapshot.sessions.find((s) => s.id === snapshot.activeId)
+      : null;
+    const activeShell =
+      activeSession && typeof activeSession.shell === "string" ? activeSession.shell : "";
+    if (activeShell.length > 0) {
+      const shell = document.createElement("span");
+      shell.setAttribute("data-role", "status-item");
+      shell.setAttribute("data-status", "shell");
+      shell.textContent = shellLabel(snapshot);
+      host.appendChild(shell);
     }
-
-    // shell 一栏不再依赖 health：活动会话自己带 shell（O1）；
-    // health 还没回来时也能显示会话真实的 shell。
-    const shell = document.createElement("span");
-    shell.setAttribute("data-role", "status-item");
-    shell.setAttribute("data-status", "shell");
-    shell.textContent = shellLabel(snapshot, healthInfo);
-    host.appendChild(shell);
 
     // 任务一栏（TASK-V3-C §6.6）：显示当前 AI 任务状态：空闲 / 执行中 / 待确认 N。
     // 模型名已移到抽屉标题栏的下拉里，状态栏不再重复。

@@ -14,7 +14,6 @@ import {
   UNIQUE_MAX_TRIES,
   candidateName,
   resolveUniqueTarget,
-  saveLocalFile,
   saveRemoteFile,
   saveTextToDir,
   splitFileName,
@@ -63,110 +62,7 @@ test("resolveUniqueTarget：撞满 maxTries 次就报 TOO_MANY_DUPLICATES，不�
   assert.equal(UNIQUE_MAX_TRIES, 999);
 });
 
-/* ------------------------------ 本地保存 ------------------------------ */
-
-test("AC3：saveLocalFile 真落盘，字节数与 sha256 与源文件一致", async (t) => {
-  const work = await tempDir();
-  const out = await tempDir("mt-export-out-");
-  t.after(async () => {
-    await rm(work, { recursive: true, force: true });
-    await rm(out, { recursive: true, force: true });
-  });
-  const src = path.join(work, "报告.txt");
-  const body = Buffer.from("hello 下载目录\n".repeat(20), "utf8");
-  await writeFile(src, body);
-
-  const result = await saveLocalFile(src, out);
-  assert.equal(result.name, "报告.txt");
-  assert.equal(result.savedPath, path.join(out, "报告.txt"));
-  assert.equal(result.bytes, body.length);
-  const written = await readFile(result.savedPath);
-  assert.equal(written.length, body.length);
-  assert.equal(sha256(written), sha256(body));
-});
-
-test("AC4：同源连续保存三次 → x.txt / x (1).txt / x (2).txt", async (t) => {
-  const work = await tempDir();
-  const out = await tempDir("mt-export-out-");
-  t.after(async () => {
-    await rm(work, { recursive: true, force: true });
-    await rm(out, { recursive: true, force: true });
-  });
-  const src = path.join(work, "x.txt");
-  await writeFile(src, "same", "utf8");
-
-  const names = [];
-  for (let i = 0; i < 3; i += 1) names.push((await saveLocalFile(src, out)).name);
-  assert.deepEqual(names, ["x.txt", "x (1).txt", "x (2).txt"]);
-  assert.deepEqual((await readdir(out)).sort(), ["x (1).txt", "x (2).txt", "x.txt"]);
-});
-
-test("R2：源文件不存在 → 404 NOT_FOUND", async (t) => {
-  const out = await tempDir("mt-export-out-");
-  t.after(() => rm(out, { recursive: true, force: true }));
-  await assert.rejects(
-    () => saveLocalFile(path.join(out, "nope.txt"), out),
-    (err) => {
-      assert.equal(err.code, "NOT_FOUND");
-      return true;
-    },
-  );
-});
-
-test("R2：源是目录 → 400 IS_DIRECTORY（提示改用批量下载）", async (t) => {
-  const work = await tempDir();
-  const out = await tempDir("mt-export-out-");
-  t.after(async () => {
-    await rm(work, { recursive: true, force: true });
-    await rm(out, { recursive: true, force: true });
-  });
-  await mkdir(path.join(work, "sub"));
-  await assert.rejects(
-    () => saveLocalFile(path.join(work, "sub"), out),
-    (err) => {
-      assert.equal(err.code, "IS_DIRECTORY");
-      assert.match(err.userText, /批量下载/);
-      return true;
-    },
-  );
-});
-
-test("R2：下载目录不可写 → DOWNLOAD_DIR_UNWRITABLE（userText 带完整目录）", async (t) => {
-  const work = await tempDir();
-  const out = await tempDir("mt-export-out-");
-  t.after(async () => {
-    await rm(work, { recursive: true, force: true });
-    await rm(out, { recursive: true, force: true });
-  });
-  const src = path.join(work, "a.txt");
-  await writeFile(src, "a", "utf8");
-  const blocked = path.join(out, "blocked");
-  await assert.rejects(
-    () =>
-      saveLocalFile(src, blocked, {
-        mkdir: async () => {
-          const err = new Error("denied");
-          err.code = "EACCES";
-          throw err;
-        },
-      }),
-    (err) => {
-      assert.equal(err.code, "DOWNLOAD_DIR_UNWRITABLE");
-      assert.ok(err.userText.includes(blocked), "提示里要给出用户能照着改的完整目录");
-      return true;
-    },
-  );
-});
-
-test("R2：没设下载目录 → NO_DOWNLOAD_DIR", async () => {
-  await assert.rejects(
-    () => saveLocalFile("C:\\whatever.txt", null),
-    (err) => {
-      assert.equal(err.code, "NO_DOWNLOAD_DIR");
-      return true;
-    },
-  );
-});
+/* ------------------------------ 日志文本 ------------------------------ */
 
 test("R5：saveTextToDir 写日志文本，重名自动加序号", async (t) => {
   const out = await tempDir("mt-export-out-");
@@ -295,25 +191,6 @@ test("R3：远程没设下载目录 → NO_DOWNLOAD_DIR（不白跑一次 SSH）
     },
   );
   assert.equal(called, false);
-});
-
-test("R2：源文件是「敏感路径」时拒绝（保存接口不能当读敏感文件的旁路）", async (t) => {
-  const out = await tempDir("mt-export-out-");
-  t.after(() => rm(out, { recursive: true, force: true }));
-  const src = path.join(out, "id_rsa");
-  await writeFile(src, "secret", "utf8");
-  const info = await stat(src);
-  await assert.rejects(
-    () =>
-      saveLocalFile(src, out, {
-        stat: async () => info,
-        realpath: async () => path.join(os.homedir(), ".ssh", "id_rsa"),
-      }),
-    (err) => {
-      assert.equal(err.code, "FORBIDDEN_PATH");
-      return true;
-    },
-  );
 });
 
 test("R3：远端「没有这个路径」→ NOT_FOUND（sftp 的 wrapErr 会把 code 改成 NOT_FOUND）", async (t) => {

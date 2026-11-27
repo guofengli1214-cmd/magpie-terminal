@@ -29,6 +29,7 @@ const toastHost = document.querySelector('[data-role="toast-stack"]');
 const settingsHost = document.querySelector('[data-role="settings-host"]');
 const statusHost = document.querySelector('[data-role="statusbar"]');
 const filePanelHost = document.querySelector('[data-role="file-panel-host"]');
+const terminalEmptyHost = document.querySelector('[data-role="terminal-empty"]');
 
 const store = createSessionStore();
 // Agent 状态独立成 store（PROTOCOL-AGENT.md §7），视图订阅它而不是污染会话 store。
@@ -63,9 +64,6 @@ let commandOrb = null;
 let approvalPopover = null;
 // 远程会话建连中的 hostId → 等 session.created 时补上的元数据（用于建标签后同步面板）。
 let pendingRemoteHost = null;
-// 刚发出、还没收到 session.created 的 pty.create 数。命中这些帧时只建标签并 attach，
-// 绝不走恢复路径（不做 recentOutput replay）。
-let pendingCreateCount = 0;
 
 function showBanner(text) {
   banner.textContent = text;
@@ -276,32 +274,8 @@ export function resetThemeFingerprint() {
   lastThemeKey = null;
 }
 
-function createTab(frameOptions) {
-  const shellId =
-    frameOptions && typeof frameOptions.shellId === "string" ? frameOptions.shellId : null;
-  if (store.getSnapshot().sessions.length >= constants.TAB_LIMIT) {
-    showBanner(`标签数量已达上限（${constants.TAB_LIMIT}）。关掉一个再新建。`);
-    setTimeout(hideBanner, 5000);
-    return;
-  }
-  // 一次就以终端真实尺寸建 PTY：服务端不会按 80×24 建完再被 resize 触发 SIGWINCH，
-  // bash 少一次重画提示符（V4-E 第 6 步）。
-  const size = terminalView ? terminalView.proposeDimensions() : { cols: 80, rows: 24 };
-  const frame = { type: "pty.create", cols: size.cols, rows: size.rows };
-  // TASK-V4-F：只有显式指定时才带 shellId（不带 = 保持旧行为）。
-  if (shellId) frame.shellId = shellId;
-  const sent = wsClient.send(frame);
-  if (!sent) {
-    statusBar.setHealth(health);
-    showBanner("新建标签没发出去：连接还没就绪。点状态栏「重连」后重试。");
-    setTimeout(hideBanner, 5000);
-    return;
-  }
-  pendingCreateCount += 1;
-}
-
 /**
- * 建一个远程标签（TASK-V2-B §2.6）。
+ * 建一个远程标签（TASK-V2-B §2.6）。终端只有这一种（本机 PTY 已删）。
  * 帧带 hostId，服务端建连成功后才回 session.created（kind=remote）。
  */
 function createRemoteTab(host) {
@@ -317,7 +291,6 @@ function createRemoteTab(host) {
     setTimeout(hideBanner, 5000);
     return;
   }
-  pendingCreateCount += 1;
   pendingRemoteHost = host;
   if (statusBar) statusBar.setNotice(`正在连接 ${host.name}…`, "info");
 }
@@ -328,14 +301,13 @@ function sendResize(id, cols, rows) {
   store.patchSession(id, { cols, rows });
 }
 
-function healthPty() {
-  return health && typeof health.pty === "string" ? health.pty : null;
-}
-
+/**
+ * 标签上的 shell 文案：远程会话的 shell 名（`ssh u@h`），没有就给 `ssh`。
+ * 本机 PTY 已删，不再有 sentinel 降级分支。
+ */
 function shellSummary(info) {
-  if (!info) return "shell";
-  const name = info.shell && info.shell.name ? info.shell.name : "shell";
-  return info.pty === "sentinel" ? `${name}（降级）` : name;
+  const name = info && info.shell && info.shell.name ? info.shell.name : "";
+  return name || "ssh";
 }
 
 /** 远程会话的展示地址 `host:port`（端口是 22 就不写，卡片 D5：两行徒标不超过 120px）。 */
@@ -360,10 +332,7 @@ function dispatchFrame(frame) {
   switch (frame.type) {
     case "session.created": {
       const id = frame.id;
-      const isRemote = frame.kind === "remote";
-      // 这一帧是不是刚发出去的 pty.create 的回执？命中就绝不做恢复式 replay。
-      const isFreshCreate = pendingCreateCount > 0;
-      if (isFreshCreate) pendingCreateCount -= 1;
+      // 会话只有远程一种（本机 PTY 已删）。
       store.addSession({
         id,
         shell: shellSummary(frame),
@@ -372,10 +341,10 @@ function dispatchFrame(frame) {
         exitCode: null,
         cols: frame.cols || 80,
         rows: frame.rows || 24,
-        kind: isRemote ? "remote" : "local",
-        hostId: isRemote ? frame.hostId || null : null,
-        hostName: isRemote ? frame.hostName || frame.host || "远程主机" : null,
-        hostAddr: isRemote ? remoteAddrOf(frame) : null,
+        kind: "remote",
+        hostId: frame.hostId || null,
+        hostName: frame.hostName || frame.host || "远程主机",
+        hostAddr: remoteAddrOf(frame),
       });
       terminalView.ensure(id);
       store.patchSession(id, {
@@ -385,22 +354,16 @@ function dispatchFrame(frame) {
       if (!store.getSnapshot().activeId || store.getSnapshot().activeId === id) {
         store.setActive(id);
       }
-      if (isRemote) {
-        // 用户点主机就是为了用这条远程会话：建好后把焦点切过去
-        // （本地首个标签是自动建的，不能让远程标签默默藏在后面）。
-        if (pendingRemoteHost && pendingRemoteHost.id === (frame.hostId || null)) {
-          store.setActive(id);
-        }
-        pendingRemoteHost = null;
-        if (hostsPanel) hostsPanel.sync();
+      // 用户点主机就是为了用这条远程会话：建好后把焦点切过去。
+      if (pendingRemoteHost && pendingRemoteHost.id === (frame.hostId || null)) {
+        store.setActive(id);
       }
-      if (isFreshCreate) {
-        // 新会话：服务端已经在 pty.create 时按正确尺寸建好，不需要 attach 去换尺寸，
-        // 更没有 recentOutput 需要 replay。
-        if (store.getSnapshot().activeId === id) terminalView.attach(id);
-      } else {
-        attachActive();
-      }
+      pendingRemoteHost = null;
+      if (hostsPanel) hostsPanel.sync();
+      // 新会话：服务端已经在 pty.create 时按正确尺寸建好，不需要 attach 去换尺寸，
+      // 更没有 recentOutput 需要 replay。
+      if (store.getSnapshot().activeId === id) terminalView.attach(id);
+      else attachActive();
       return;
     }
     case "session.resumed": {
@@ -409,7 +372,6 @@ function dispatchFrame(frame) {
       const existing = store.getSession(id);
       if (!existing) {
         // 理论上不该发生（只有已知 id 才 attach），保守起见按新会话处理。
-        const isRemote = frame.kind === "remote";
         store.addSession({
           id,
           shell: shellSummary(frame),
@@ -418,13 +380,12 @@ function dispatchFrame(frame) {
           exitCode: null,
           cols: frame.cols || 80,
           rows: frame.rows || 24,
-          kind: isRemote ? "remote" : "local",
-          hostId: isRemote ? frame.hostId || null : null,
-          hostName: isRemote ? frame.hostName || frame.host || "远程主机" : null,
-          hostAddr: isRemote ? remoteAddrOf(frame) : null,
+          kind: "remote",
+          hostId: frame.hostId || null,
+          hostName: frame.hostName || frame.host || "远程主机",
+          hostAddr: remoteAddrOf(frame),
         });
       } else {
-        const isRemote = frame.kind === "remote" || existing.kind === "remote";
         store.patchSession(id, {
           shell: shellSummary(frame),
           cwd: frame.cwd || existing.cwd,
@@ -432,21 +393,14 @@ function dispatchFrame(frame) {
           exitCode: null,
           cols: frame.cols || existing.cols,
           rows: frame.rows || existing.rows,
-          kind: isRemote ? "remote" : "local",
-          hostId: isRemote ? frame.hostId || existing.hostId || null : null,
-          hostName: isRemote ? frame.hostName || existing.hostName || null : null,
-          hostAddr: isRemote ? remoteAddrOf(frame) || existing.hostAddr || null : null,
+          kind: "remote",
+          hostId: frame.hostId || existing.hostId || null,
+          hostName: frame.hostName || existing.hostName || null,
+          hostAddr: remoteAddrOf(frame) || existing.hostAddr || null,
         });
       }
       terminalView.ensure(id);
       terminalView.replay(id, frame.recentOutput || "");
-      if (typeof frame.pty === "string" && frame.pty !== healthPty()) {
-        showBanner(
-          frame.pty === "sentinel"
-            ? "降级模式：无 TTY，全屏程序不可用"
-            : "PTY 已恢复为原生模式。",
-        );
-      }
       if (!store.getSnapshot().activeId || store.getSnapshot().activeId === id) {
         store.setActive(id);
       }
@@ -511,13 +465,13 @@ function dispatchFrame(frame) {
         if (frame.id && store.getSession(frame.id)) {
           store.removeSession(frame.id);
           terminalView.dispose(frame.id);
-          showBanner("这个标签的会话已经结束，已移除该标签。点「+」新建一个。");
+          // 本机 PTY 已删：没有会话就停在这里，由空态提示用户去连主机。
+          showBanner("这个标签的会话已经结束，已移除该标签。");
           setTimeout(hideBanner, 6000);
-          if (store.getSnapshot().sessions.length === 0) createTab();
-          else attachActive();
+          if (store.getSnapshot().sessions.length > 0) attachActive();
           return;
         }
-        showBanner("服务端没有这个会话了。点「+」新建一个标签。");
+        showBanner("服务端没有这个会话了。");
         setTimeout(hideBanner, 6000);
         return;
       }
@@ -634,20 +588,17 @@ function handleWsStatus(status) {
     if (health) statusBar.setHealth(health);
 
     const snapshot = store.getSnapshot();
-    if (snapshot.sessions.length === 0) {
-      // 缺陷 A：打开页面必须自动有一个标签。WS 连上且 store 为空时立刻建一个，
-      // 不需要用户点「+」，也不依赖任何其他协议。
-      createTab();
-    } else {
-      // 重连：store 里还留着 id，说明是短暂断线（而不是刷新）。逐个认领，
-      // 让服务端取消孤儿回收定时器。刷新后的新页面 store 为空，永远不会走到这里。
-      for (const session of snapshot.sessions) {
-        if (session.status === "exited" || session.status === "error") continue;
-        if (resumePendingIds.has(session.id)) continue;
-        resumePendingIds.add(session.id);
-        const sent = wsClient.send({ type: "pty.attach", id: session.id });
-        if (!sent) resumePendingIds.delete(session.id);
-      }
+    // 0.3.0：打开页面**不再自动建标签**（终端只能连远程主机）。store 为空就维持
+    // 空态，由用户去「主机」里连一台。
+    //
+    // 重连：store 里还留着 id，说明是短暂断线（而不是刷新）。逐个认领，
+    // 让服务端取消孤儿回收定时器。
+    for (const session of snapshot.sessions) {
+      if (session.status === "exited" || session.status === "error") continue;
+      if (resumePendingIds.has(session.id)) continue;
+      resumePendingIds.add(session.id);
+      const sent = wsClient.send({ type: "pty.attach", id: session.id });
+      if (!sent) resumePendingIds.delete(session.id);
     }
     return;
   }
@@ -666,8 +617,9 @@ function setupKeyboard() {
   window.addEventListener("keydown", (event) => {
     if (!event.ctrlKey || !event.shiftKey) return;
     if (event.key === "T" || event.key === "t") {
+      // 不再自动建本地标签：让用户先去「主机」里选一台。
       event.preventDefault();
-      createTab();
+      if (hostsPanel) hostsPanel.open();
       return;
     }
     if (event.key === "W" || event.key === "w") {
@@ -862,7 +814,7 @@ function askAgent(payload, { openDrawer: shouldOpenDrawer = true } = {}) {
   }
   const active = store.getActive();
   if (!active) {
-    statusBar.setNotice("还没有可用的终端标签：先点「+」新建一个。", "warn");
+    statusBar.setNotice("还没有可用的主机终端：先在「主机」里连一台主机。", "warn");
     return "no-active";
   }
   const requestId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1202,24 +1154,45 @@ function startThemeSync() {
   return themeSync;
 }
 
+/**
+ * 终端区空态（0.3.0）：没有会话时显示「还没有连接任何主机」。
+ *
+ * 节点写在 app/index.html 里（`data-role="terminal-empty"`，位于 terminal-host 之后、
+ * file-panel-host 之前），这里只负责按「会话数是否为 0」切 hidden 并绑「添加主机」。
+ * 订阅 store：会话连上 / 关掉都自动跟着变，不需要各处手动调。
+ */
+function renderTerminalEmpty() {
+  if (!terminalEmptyHost) return;
+  const sync = (snapshot) => {
+    const empty = !snapshot || !Array.isArray(snapshot.sessions) || snapshot.sessions.length === 0;
+    terminalEmptyHost.hidden = !empty;
+    terminalEmptyHost.setAttribute("data-empty", empty ? "true" : "false");
+  };
+  const cta = terminalEmptyHost.querySelector('[data-role="terminal-empty-add"]');
+  if (cta) {
+    cta.addEventListener("click", () => {
+      if (hostsPanel) hostsPanel.open();
+    });
+  }
+  store.subscribe(sync);
+  sync(store.getSnapshot());
+}
+
 function init() {
   applyAiOpen(store.getSnapshot().aiOpen);
 
   tabBar = createTabBar({
     host: tabbarHost,
     store,
-    onCreate: (options) => createTab(options),
-    // 「+」菜单里的主机分组：连主机走同一个建连函数（不复制逻辑）。
+    // 「+」菜单里只有主机分组：连主机走同一个建连函数（不复制逻辑）。
     onConnectHost: (host) => createRemoteTab(host),
     onOpenHosts: () => {
       if (hostsPanel) hostsPanel.open();
     },
-    // 菜单数据：本机 shell 清单 + 已配置主机。任一边读不到都不抦整个菜单。
+    // 菜单数据：只有已配置主机（本机 shell 清单已删）。读不到就画空菜单。
     loadMenu: async () => {
-      const [shells, hosts] = await Promise.all([api.shells(), api.hosts()]);
+      const hosts = await api.hosts();
       return {
-        shells: shells.ok && shells.data && Array.isArray(shells.data.shells) ? shells.data.shells : [],
-        defaultShell: shells.ok && shells.data ? shells.data.default : null,
         hosts: hosts.ok && hosts.data && Array.isArray(hosts.data.hosts) ? hosts.data.hosts : [],
       };
     },
@@ -1271,13 +1244,13 @@ function init() {
     anchor: tabbarHost,
     bottomAnchors: [statusHost],
     onCreateSession: (host) => createRemoteTab(host),
-    // TASK-V4-F：主机面板顶部的「本机」条目点击 = 用当前默认 shell 新开一个标签。
-    onCreateLocal: (shellId) => createTab(shellId ? { shellId } : null),
     onNotice: (text, tone) => statusBar && statusBar.setNotice(text, tone),
     // TASK-FIX17-C R4：不再传 onOpenFiles（主机面板里的「文件面板」按钮已删，
     // 文件面板的唯一入口是左侧 rail 的 rail-files）。
   });
   hostsPanel.init();
+
+  renderTerminalEmpty();
 
   /* ---------------- AI 抽屉（V3 取代底部 AI 条） ---------------- */
 
@@ -1523,18 +1496,12 @@ function init() {
     }
     health = result.data;
     statusBar.setHealth(health);
-    if (health.pty === "sentinel") {
-      showBanner("降级模式：无 TTY，全屏程序不可用");
-    }
-    if (health.nodePtyVersion && health.nodePtyVersion !== "1.2.0-beta.15") {
-      showBanner(`node-pty 版本不符：期望 1.2.0-beta.15，实际 ${health.nodePtyVersion}`);
-    }
   });
 
   // 5 秒内没连上：明确给出可读错误，不无限转圈。
   setTimeout(() => {
     if (store.getSnapshot().connection !== "open") {
-      showBanner("连不上本地终端服务。确认服务在运行，然后点状态栏「重连」。");
+      showBanner("连不上本地服务。确认服务在运行，然后点状态栏「重连」。");
     }
   }, constants.CONNECT_TIMEOUT_MS);
 

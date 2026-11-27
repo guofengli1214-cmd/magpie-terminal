@@ -33,6 +33,15 @@ async function withPath(fn) {
   }
 }
 
+/* -------------------------------- 夹具 -------------------------------- */
+// downloadDir 是**本机**路径，语义跟宿主平台绑定，夹具也必须跟着平台走：
+// Windows 用盘符，POSIX 用 / 开头。写死 C:\... 的断言只能在 Windows 上成立。
+
+const IS_WIN = process.platform === "win32";
+// 「宿主自己的绝对路径」：Windows 用盘符，POSIX 用 / 开头。
+const ABS_DIR = IS_WIN ? "C:\\Users\\x\\Downloads\\magpie-terminal" : "/home/x/Downloads/magpie-terminal";
+const ABS_DIR_TRAILING = `${ABS_DIR}${IS_WIN ? "\\\\" : "/"}`;
+
 /* ------------------------------- 默认值 ------------------------------- */
 
 test("R1：DEFAULT_CONFIG.downloadDir 是 null（= 未设置，回落浏览器下载）", () => {
@@ -44,10 +53,7 @@ test("R1：publicConfig 总是带上 downloadDir，非法值归一成 null", () 
   assert.equal(publicConfig({}).downloadDir, null);
   assert.equal(publicConfig({ downloadDir: "relative\\dir" }).downloadDir, null);
   assert.equal(publicConfig({ downloadDir: 123 }).downloadDir, null);
-  assert.equal(
-    publicConfig({ downloadDir: "C:\\Users\\x\\Downloads\\magpie-terminal\\" }).downloadDir,
-    "C:\\Users\\x\\Downloads\\magpie-terminal",
-  );
+  assert.equal(publicConfig({ downloadDir: ABS_DIR_TRAILING }).downloadDir, ABS_DIR);
 });
 
 test("R1：defaultDownloadDir 用 os.homedir() 现算，不写死用户名", () => {
@@ -89,22 +95,36 @@ test("R1/AC2：空串与纯空白不是错误（会归一成 null）", () => {
   assert.equal(validateConfigPatch({ downloadDir: null }), null);
 });
 
-test("R1：绝对路径（Windows / POSIX）都通过校验", () => {
-  assert.equal(validateConfigPatch({ downloadDir: "C:\\Users\\x\\dl" }), null);
+test("R1：宿主平台的绝对路径通过校验（跨平台的绝对路径按宿主语义拒绝）", () => {
+  assert.equal(validateConfigPatch({ downloadDir: ABS_DIR }), null);
+  // POSIX 绝对路径在 POSIX 宿主上也必须通过（Windows 宿主上 path.isAbsolute("/tmp/x") 也 true）。
   assert.equal(validateConfigPatch({ downloadDir: path.resolve("/tmp/downloads") }), null);
+  if (!IS_WIN) {
+    // 行为锁：下载目录是**本机**路径，服务不会去操作别的平台的路径。
+    // POSIX 宿主上 C:\Users\x\dl 不是绝对路径（path.isAbsolute 为 false）→ 必须拒。
+    assert.equal(
+      validateConfigPatch({ downloadDir: "C:\\Users\\x\\dl" }).code,
+      "INVALID_DOWNLOAD_DIR",
+      "POSIX 宿主上 Windows 盘符路径不是本机绝对路径，必须拒",
+    );
+  }
 });
 
 /* ----------------------------- 归一化函数 ----------------------------- */
 
 test("R1：normalizeDownloadDir 去尾随分隔符，盘根与 POSIX 根保留", () => {
-  assert.equal(normalizeDownloadDir("  C:\\Users\\x\\dl\\  "), "C:\\Users\\x\\dl");
+  // 通用部分：所有平台都跑。
+  assert.equal(normalizeDownloadDir(`  ${ABS_DIR_TRAILING}  `), ABS_DIR);
   assert.equal(normalizeDownloadDir("/home/x/dl///"), "/home/x/dl");
-  assert.equal(normalizeDownloadDir("C:\\"), "C:\\", "盘根不能变成 C:（那是当前盘当前目录）");
-  assert.equal(normalizeDownloadDir("D:/"), "D:/");
   assert.equal(normalizeDownloadDir("/"), "/");
   assert.equal(normalizeDownloadDir("   "), null);
   assert.equal(normalizeDownloadDir("relative\\dir"), null);
-  assert.equal(normalizeDownloadDir(`C:\\${"a".repeat(DOWNLOAD_DIR_MAX)}`), null);
+  assert.equal(normalizeDownloadDir(`${ABS_DIR}${"a".repeat(DOWNLOAD_DIR_MAX)}`), null);
+  if (IS_WIN) {
+    // 盘根保留：只有 Windows 宿主才认盘符（POSIX 上 `C:\` 本来就不是绝对路径，按 null 处理）。
+    assert.equal(normalizeDownloadDir("C:\\"), "C:\\", "盘根不能变成 C:（那是当前盘当前目录）");
+    assert.equal(normalizeDownloadDir("D:/"), "D:/");
+  }
 });
 
 /* ------------------------------ 落盘往返 ------------------------------ */
@@ -122,7 +142,7 @@ test("AC2：PUT 形状的空白值最终落成 null（配置文件里也是 null
 
 test("R1：绝对路径落盘后尾随分隔符被去掉，读回来还是同一个目录", async () => {
   await withPath(async ({ file }) => {
-    const wanted = "C:\\Users\\x\\Downloads\\magpie-terminal";
+    const wanted = ABS_DIR;
     await updateConfig({ downloadDir: `${wanted}\\\\` });
     const raw = JSON.parse(await readFile(file, "utf8"));
     assert.equal(raw.downloadDir, wanted);

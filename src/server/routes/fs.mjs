@@ -1,34 +1,17 @@
 // /api/fs/* 与 /api/hosts/:id/fs/* 的路由（TASK-V4-G §5.3 / §5.4）。
 //
-// 这一层只做「解析参数 → 调 local.mjs / sftp 封装 → 写响应」；
+// 这一层只做「解析参数 → 调 guard.mjs / sftp 封装 → 写响应」；
 // token 门已经在 http.mjs 的 isApi 分支里过了，这里不再鉴权。
 //
-// 错误形状统一 `{code, userText}`，状态码按 code 映射（见 statusOf）。
-// POST /api/fs/mkdir、/rename、/move、/api/hosts/:id/fs/* 的 JSON body 上限沿用
-// http.mjs 的 64KB 读法（路径不长，够用）；PUT/上传走原始 body 的流式通道。
+// `/api/fs` 只剩 `POST /api/fs/reveal`（打开下载目录里的文件/文件夹）；
+// 文件读写全部走 `/api/hosts/:id/fs/*`（本机文件面板已删）。
 //
-// TASK-FIX17-C R3：新增 `POST /api/fs/move`（批量移动，逐项独立，汇总
-// `{moved, failed}`；跨盘 EXDEV 在 `local.mjs` 的 movePath 里降级）。
+// 错误形状统一 `{code, userText}`，状态码按 code 映射（见 statusOf）。
+// /api/hosts/:id/fs/* 的 JSON body 上限沿用 http.mjs 的 64KB 读法（路径不长，够用）；
+// PUT/上传走原始 body 的流式通道。
 
-import { createReadStream } from "node:fs";
-import path from "node:path";
-import {
-  MAX_UPLOAD_BYTES,
-  deletionBlockedReason,
-  guardPath,
-  listDirectory,
-  makeDirectory,
-  makeFile,
-  movePath,
-  openDownloadStream,
-  readTextFile,
-  removePath,
-  renamePath,
-  statPath,
-  writeFileAtomic,
-  writeStreamAtomic,
-} from "../../fs/local.mjs";
-import { saveLocalFile, saveRemoteFile } from "../../fs/export.mjs";
+import { guardPath, statPath } from "../../fs/guard.mjs";
+import { saveRemoteFile } from "../../fs/export.mjs";
 import { isPathInside, revealPath } from "../../fs/reveal.mjs";
 import {
   listRemoteDirectory,
@@ -41,6 +24,9 @@ import {
   downloadRemote,
   uploadRemote,
 } from "../../ssh/fs.mjs";
+
+/** 单文件上传上限（200 MB）；远程 write / upload 共用。 */
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 /** code → HTTP 状态码。没有列出来的走 400。 */
 export function statusOf(code) {
@@ -146,11 +132,6 @@ function baseName(p) {
  */
 export const MAX_MOVE_ITEMS = 500;
 
-/** 原始 body（非 JSON）按流拿去写盘；超过上限在 writeStreamAtomic 里抛 413。 */
-function rawBodyStream(req) {
-  return req; // Node 的 IncomingMessage 本身就是 async iterable
-}
-
 /**
  * 当前生效的下载目录（由 http.mjs 注入的惰性读取器）。
  *
@@ -178,43 +159,6 @@ function logEvent(ctx, entry) {
   } catch {
     // 日志是旁路：记不下来也不影响操作本身。
   }
-}
-
-/** `POST /api/fs/save`：源文件复制到 downloadDir（R2）。 */
-async function handleSave(req, res, cors, readBody, ctx) {
-  const body = parseJson(await readBody(req, res));
-  if (res.writableEnded) return true;
-  if (!body) {
-    writeJson(res, 400, { code: "BAD_BODY", userText: "请求体必须是 JSON 对象（{path}）。" }, cors);
-    return true;
-  }
-  const dir = await resolveDownloadDir(ctx);
-  if (!dir) {
-    // **200 不是错误**：前端拿这个 code 回落成原来的浏览器下载（AC5）。
-    writeJson(
-      res,
-      200,
-      { ok: false, code: "NO_DOWNLOAD_DIR", userText: "还没有设置下载目录" },
-      cors,
-    );
-    return true;
-  }
-  try {
-    const source = guardPath(body.path, { label: "源文件路径" });
-    const result = await saveLocalFile(source, dir, ctx.exportDeps || {});
-    logEvent(ctx, {
-      level: "info",
-      code: "EXPORT_SAVED",
-      msg: "file saved to download dir",
-      route: "POST /api/fs/save",
-      bytes: result.bytes,
-      name: result.name,
-    });
-    writeJson(res, 200, { ok: true, savedPath: result.savedPath, bytes: result.bytes, name: result.name }, cors);
-  } catch (err) {
-    sendError(res, cors, err);
-  }
-  return true;
 }
 
 /** `POST /api/fs/reveal`：在文件管理器里定位到下载目录里的那个文件（R6）。 */
@@ -263,145 +207,20 @@ async function handleReveal(req, res, cors, readBody, ctx) {
 /**
  * 处理 `/api/fs/*`。返回 true 表示已经处理（响应已写）。
  *
+ * 只剩 `POST reveal`（打开下载目录）；本机文件面板已删，其它 action 一律 404。
+ *
  * @param {{req, res, url, cors, readBody}} ctx
  */
 export async function handleLocalFs(ctx) {
   const { req, res, url, cors, readBody } = ctx;
   const action = url.pathname.slice("/api/fs".length).replace(/^\//, "");
 
-  // TASK-FIX17-L1 R2 / R6：下载落盘与「打开所在文件夹」。
-  // 放在最前面：这两个 action 与目录列表无关，不必走到后面的分支。
-  if (req.method === "POST" && action === "save") {
-    return handleSave(req, res, cors, readBody, ctx);
-  }
-
+  // TASK-FIX17-L1 R6：打开下载目录里的文件/文件夹。
   if (req.method === "POST" && action === "reveal") {
     return handleReveal(req, res, cors, readBody, ctx);
   }
 
-  if (req.method === "GET" && (action === "" || action === "list")) {
-    try {
-      const listing = await listDirectory(url.searchParams.get("path") || "");
-      writeJson(res, 200, listing, cors);
-    } catch (err) {
-      sendError(res, cors, err);
-    }
-    return true;
-  }
-
-  if (req.method === "GET" && action === "read") {
-    try {
-      const maxBytes = url.searchParams.get("maxBytes");
-      const result = await readTextFile(url.searchParams.get("path") || "", {
-        maxBytes: maxBytes ? Number(maxBytes) : undefined,
-      });
-      writeJson(res, 200, result, cors);
-    } catch (err) {
-      sendError(res, cors, err);
-    }
-    return true;
-  }
-
-  if (req.method === "GET" && action === "stat") {
-    try {
-      writeJson(res, 200, await statPath(url.searchParams.get("path") || ""), cors);
-    } catch (err) {
-      sendError(res, cors, err);
-    }
-    return true;
-  }
-
-  if (req.method === "GET" && action === "download") {
-    return handleDownload(req, res, cors, url.searchParams.get("path") || "", null);
-  }
-
-  if (req.method === "PUT" && action === "write") {
-    try {
-      const target = guardPath(url.searchParams.get("path") || "", { label: "目标路径" });
-      const result = await writeStreamAtomic(target, rawBodyStream(req), {
-        limit: MAX_UPLOAD_BYTES,
-      });
-      writeJson(res, 200, result, cors);
-    } catch (err) {
-      // 写失败前可能已经读了 body；这时不能再用 sendError 写 JSON 之外的补救。
-      sendError(res, cors, err);
-    }
-    return true;
-  }
-
-  if (req.method === "POST" && action === "mkdir") {
-    const body = parseJson(await readBody(req, res));
-    if (res.writableEnded) return true;
-    if (!body) {
-      writeJson(res, 400, { code: "BAD_BODY", userText: "请求体必须是 JSON 对象（{path}）。" }, cors);
-      return true;
-    }
-    try {
-      writeJson(res, 201, await makeDirectory(body.path), cors);
-    } catch (err) {
-      sendError(res, cors, err);
-    }
-    return true;
-  }
-
-  if (req.method === "POST" && action === "newfile") {
-    const body = parseJson(await readBody(req, res));
-    if (res.writableEnded) return true;
-    if (!body) {
-      writeJson(res, 400, { code: "BAD_BODY", userText: "请求体必须是 JSON 对象（{path}）。" }, cors);
-      return true;
-    }
-    try {
-      writeJson(res, 201, await makeFile(body.path), cors);
-    } catch (err) {
-      sendError(res, cors, err);
-    }
-    return true;
-  }
-
-  if (req.method === "POST" && action === "rename") {
-    const body = parseJson(await readBody(req, res));
-    if (res.writableEnded) return true;
-    if (!body) {
-      writeJson(res, 400, { code: "BAD_BODY", userText: "请求体必须是 JSON 对象（{from,to}）。" }, cors);
-      return true;
-    }
-    try {
-      writeJson(res, 200, await renamePath(body.from, body.to), cors);
-    } catch (err) {
-      sendError(res, cors, err);
-    }
-    return true;
-  }
-
-  if (req.method === "POST" && action === "move") {
-    const body = parseJson(await readBody(req, res));
-    if (res.writableEnded) return true;
-    const parsed = parseMoveBody(body);
-    if (!parsed.ok) {
-      writeJson(res, 400, { code: parsed.code, userText: parsed.userText }, cors);
-      return true;
-    }
-    const result = await runMoveItems(parsed.items, parsed.overwrite);
-    writeJson(res, 200, result, cors);
-    return true;
-  }
-
-  if (req.method === "POST" && action === "upload") {
-    return handleUpload(req, res, cors, url, null);
-  }
-
-  if (req.method === "DELETE" && action === "") {
-    const recursive = ["1", "true", "yes"].includes(String(url.searchParams.get("recursive") || ""));
-    try {
-      writeJson(res, 200, await removePath(url.searchParams.get("path") || "", { recursive }), cors);
-    } catch (err) {
-      sendError(res, cors, err);
-    }
-    return true;
-  }
-
-  writeJson(res, 404, { code: "NOT_FOUND", userText: "没有这个文件接口。" }, cors);
+  writeJson(res, 404, { code: "NOT_FOUND", userText: "没有这个文件接口（本机文件面板已删）。" }, cors);
   return true;
 }
 
@@ -441,42 +260,11 @@ export function parseMoveBody(body) {
   return { ok: true, items, overwrite: body.overwrite === true };
 }
 
-/**
- * 逐项移动：**单项失败不影响其它项**，汇总成 `{moved, failed}`。
- *
- * 为什么不整体 4xx/5xx：批量移动是「10 个里有 1 个撞名」的典型场景，
- * 一次就中断会让用户重试时前面成功的那些又得跳过。所以状态码固定 200，
- * 失败明细逐条给 code + 中文 userText，前端自己汇总提示。
- *
- * @param {Array<{from:string,to:string}>} items
- * @param {boolean} overwrite
- */
-export async function runMoveItems(items, overwrite) {
-  const moved = [];
-  const failed = [];
-  for (const item of items) {
-    try {
-      const result = await movePath(item.from, item.to, { overwrite: overwrite === true });
-      moved.push({ from: result.from, to: result.to, via: result.via });
-    } catch (err) {
-      failed.push({
-        from: item.from,
-        to: item.to,
-        code: err && typeof err.code === "string" ? err.code : "E_MOVE",
-        userText:
-          err && typeof err.userText === "string" && err.userText.length > 0
-            ? err.userText
-            : "移动失败（服务端没有给出原因）。",
-      });
-    }
-  }
-  return { moved, failed };
-}
-
 async function handleDownload(req, res, cors, target, remoteOpener) {
+  // 只服务远程下载（本机下载接口已删）。
   let opened;
   try {
-    opened = remoteOpener ? await remoteOpener() : await openDownloadStream(target);
+    opened = await remoteOpener();
   } catch (err) {
     sendError(res, cors, err);
     return true;
@@ -525,17 +313,7 @@ async function handleUpload(req, res, cors, url, remoteUploader) {
   }
   const dirRaw = url.searchParams.get("path") || "";
   try {
-    if (remoteUploader) {
-      const result = await remoteUploader(dirRaw, fileName, req);
-      writeJson(res, 201, result, cors);
-      return true;
-    }
-    const dir = guardPath(dirRaw, { label: "目标目录" });
-    const sep = dir.endsWith("/") || dir.endsWith("\\") ? "" : path.sep;
-    const target = guardPath(`${dir}${sep}${fileName}`, { label: "目标文件" });
-    const result = await writeStreamAtomic(target, rawBodyStream(req), {
-      limit: MAX_UPLOAD_BYTES,
-    });
+    const result = await remoteUploader(dirRaw, fileName, req);
     writeJson(res, 201, result, cors);
   } catch (err) {
     req.resume();
@@ -736,5 +514,3 @@ export async function handleRemoteFs(ctx) {
   writeJson(res, 404, { code: "NOT_FOUND", userText: "没有这个远程文件接口。" }, cors);
   return true;
 }
-
-export { createReadStream, deletionBlockedReason };

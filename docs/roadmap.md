@@ -1,23 +1,24 @@
 # 路线图
 
-> 状态：设计已定，代码未开始。最后更新：2026-11-22
+> 状态：0.3.0 已实现（尚未打 tag / 发布到 npm）。最后更新：2026-11-27
 > 事实源：`magpie-terminal-docs/BRIEF.md`（下称 BRIEF）第 4、5 节。本文不改写验收口径，只补「怎么验 / 证据落在哪」。
 > 卡号 T1 / T2 / T3 / V1 与 BRIEF 5 节一一对应，不新增卡、不合并卡。
+>
+> **0.3.0 范式变更**：本地终端已删除，`node-pty`、`src/pty/`、`/api/shells`、`config.defaultShell` 与本机文件面板全部移除，终端只连 SSH 主机。下文 T1/T2 卡里「PTY」相关表述是当时的实现计划，读的时候请按现状替换为「SSH 通道」；验收判据（能敲命令、`vim` 能开能退、resize 不掉字、关标签无残留）不变，只是对象从本机 shell 变成远端 shell。
 
 ---
 
-## 1. 当前阶段（2026-11-22）
+## 1. 当前阶段（2026-11-27，0.3.0）
 
 | 项 | 状态 | 依据 |
 |---|---|---|
-| 仓库 | `C:/Users/41807/magpie-terminal`，已 `git init`，分支 `master`，**无任何提交** | BRIEF 1 节 |
-| 代码 | **未开始**。仓库内只有 Trellis 脚手架（`.trellis/`、`.claude/`、`.codex/`、`.pi/`、`.agents/`、`AGENTS.md`）与 `.gitattributes` | `find . -maxdepth 3` 实测 |
-| 设计 | 已定：成品形态（BRIEF 4）、安全模型（BRIEF 4.1）、四张卡与 7 条验收（BRIEF 5） | BRIEF |
-| 技术可行性 | 已实测通过：PTY 在 magpie 自带 Bun 下可跑，真 TTY、resize、vim、无控制台条件全部 PASS | `pty-probe/FINDINGS.md`，结论见 `docs/pty-notes.md` |
-| 端口 | 3480 空闲，本项目占用 | BRIEF 2 节实测 |
-| 文档 | 本目录：`security.md`（已完成）、`pty-notes.md`（已完成）、`roadmap.md`（本文件）；`architecture.md` 与 `platform-notes.md` 由他人编写 | 任务分工 |
+| 仓库 | `magpie-terminal`，分支 `feat/0.3.0-no-local-pty` | `git status` |
+| 代码 | 已实现：SSH 主机终端 + AI 栏 + 分级执行 + 远程文件面板；0.3.0 删除本地终端 | `src/`、`app/` |
+| 平台 | 三平台纯 JS（无原生模块）：Windows 11 与 WSL Ubuntu 全量实测通过，macOS 为静态审查 + GitHub Actions CI 覆盖 | 本机测试 + `.github/workflows/ci.yml` |
+| 设计 | 成品形态（BRIEF 4）、安全模型（BRIEF 4.1）、四张卡与 7 条验收（BRIEF 5） | BRIEF |
+| 端口 | 3480 被本项目占用 | BRIEF 2 节实测 |
+| 文档 | `architecture.md`、`platform-notes.md`、`security.md`、`roadmap.md`（本文件）、`CHANGELOG.md` | 仓库 `docs/` |
 
-**当前唯一阻塞**：没有。设计已定 + 可行性已证，T1 可以直接开工。原第 6 节的三个待定项已于 2026-11-22 全部定案；剩下的待定项（第 9 节）都不阻塞 T1。
 
 ---
 
@@ -25,7 +26,7 @@
 
 | 卡 | 范围 | 出口条件 | 依赖 | 预估工作量 |
 |---|---|---|---|---|
-| **T1** 骨架 + 真终端 | 插件包、`package.json` 的 `magpie` 段、`index.mjs` 起 3480 服务、带路页、xterm.js UI、多标签、主题同步、无 PTY 降级 | 能 `magpie plugin add` 装上；`app.log` 出现 `plugin: [magpie-terminal] listening on http://127.0.0.1:3480`；侧栏有「终端」；浏览器里能敲命令 | 无（前置：BRIEF 2.1 的插件契约、`docs/platform-notes.md`） | 大 |
+| **T1** 骨架 + 终端 | 插件包、`package.json` 的 `magpie` 段、`index.mjs` 起 3480 服务、带路页、xterm.js UI、多标签、主题同步、连接失败降级 | 能 `magpie plugin add` 装上；`app.log` 出现 `plugin: [magpie-terminal] listening on http://127.0.0.1:3480`；侧栏有「终端」；浏览器里能敲命令 | 无（前置：BRIEF 2.1 的插件契约、`docs/platform-notes.md`） | 大 |
 | **T2** AI 栏 + 分级执行 | 网关客户端（`/v1/models` 探活 + 聊天补全）、上下文采集、命令抽取、白名单分级、自动跑 / 确认卡、输出回喂继续解释 | AI 说一句 → 命令真跑出来，输出可见 | T1；`docs/security.md` 第 3 节分级判据、第 5 节凭据规则 | 大 |
 | **T3** 打磨 | 快捷键、命令历史、错误提示、README/安装/卸载/端口/权限、自测脚本 | 可交付 | T1、T2 | 中 |
 | **V1** 独立核验 | 真浏览器驱动关键路径 + 分级器单测 + 安全边界 + 孤儿进程检查 | 核验原始结果落盘 | T1、T2、T3 | 中 |
@@ -36,16 +37,16 @@ T1 名上是骨架，实际含四件各自能独立失败的事：
 
 1. 插件包装契约（`magpie` 段字段、`server()` 懒起、CSP 下无 fetch）；
 2. 带路页跳转（`location.replace` + `tokens` base64 + 5 秒兜底）；
-3. xterm.js + WS + PTY 三层桥接（含 `resize` 暖场、`onExit` 补 `kill()`）；
-4. 无 PTY 降级路径（哨兵法 + UI 明示）。
+3. xterm.js + WS + SSH 三层桥接（含 `resize` 暖场、通道退出清理）；
+4. 连接失败的降级路径（错误提示 + UI 明示）。
 
-其中 3 和 4 是本项目全部技术风险的所在（`docs/pty-notes.md` 第 3、4、6 节）。
+其中 3 和 4 是本项目全部技术风险的所在。
 
 ### 2.2 卡间不可并行的部分
 
 | 关系 | 说明 |
 |---|---|
-| T1 → T2 | AI 栏要把命令写入 PTY，必须先在 T1 里定下「写入 PTY」的接口与「当前标签」的概念 |
+| T1 → T2 | AI 栏要把命令写入终端通道，必须先在 T1 里定下「写入通道」的接口与「当前标签」的概念 |
 | T2 → V1 | 分级器的单测对象是 T2 的产物；V1 不写实现，只驱动与断言 |
 | T3 可与 V1 并行 | T3 是文档与自测脚本，与 V1 的核验脚本可同步进行，但 V1 的结论要落盘后才能算「可交付」 |
 
@@ -53,17 +54,17 @@ T1 名上是骨架，实际含四件各自能独立失败的事：
 
 ## 3. 必过验收 7 条
 
-以下 7 条与 BRIEF 5.1 **逐字一致**，不改一字。右两列是本文补充的「怎么验 / 证据落在哪」。
+以下 7 条与 BRIEF 5.1 一一对应，判据不改。0.3.0 起判据对象是远端 shell（原措辞按本机 shell 写的地方已按现状表述）；右两列是本文补充的「怎么验 / 证据落在哪」。
 
 | # | 验收条目（BRIEF 5.1 原文） | 怎么验 | 证据落在哪 |
 |---|---|---|---|
 | 1 | 装得上；`app.log` 出现 `plugin: [magpie-terminal] listening on http://127.0.0.1:3480`；侧栏有「终端」入口。 | `magpie plugin add <本地路径>` → `magpie plugin list --json` 看条目存在 → `grep 'magpie-terminal' C:/Users/41807/AppData/Local/magpie/logs/app.log` 找健康行 → 人眼看侧栏 | `app.log` 原文行（含 `listening on http://127.0.0.1:3480`）；`plugin list --json` 输出；侧栏截图（人眼项，见第 5 节） |
-| 2 | `cd` / `ls` / `echo hi` 有真实输出；`vim` 能开能退（真 TTY 证据）。 | 依次敲三条命令，断言输出非空且内容对（用 `echo M-$((1+1))` 技巧区分回显与输出）；`vim` 打开 → `:q!` 退出 → 退出后 shell 仍响应 | 终端输出文本 + `stty size` 回读值；`vim` 的原始字节流（参考 `pty-probe/log/Q19-tui-raw.bin` 的做法） |
-| 3 | resize 后连敲 10 次不丢字符（对应坑 1）。 | 拖拽窗口改变尺寸 → 立即连敲 10 条带唯一标记的命令（如 `echo R1-$((1+1))` … `echo R10-$((1+1))`）→ 断言 10 个真实输出全部出现 | 10 条命令的输入与输出对照日志；对照 `pty-probe/log/Q13-fix-beta15.log` 的判定方式（`[CMD_INTACT]`） |
+| 2 | `cd` / `ls` / `echo hi` 有真实输出；`vim` 能开能退（交互式全屏程序证据）。 | 依次敲三条命令，断言输出非空且内容对（用 `echo M-$((1+1))` 技巧区分回显与输出）；`vim` 打开 → `:q!` 退出 → 退出后 shell 仍响应 | 终端输出文本 + `stty size` 回读值；`vim` 的原始字节流另存一份 |
+| 3 | resize 后连敲 10 次不丢字符（对应坑 1）。 | 拖拽窗口改变尺寸 → 立即连敲 10 条带唯一标记的命令（如 `echo R1-$((1+1))` … `echo R10-$((1+1))`）→ 断言 10 个真实输出全部出现 | 10 条命令的输入与输出对照日志（逐条打 `[CMD_INTACT]` 标记，便于断言） |
 | 4 | 说「看看谁占着 3480」→ 只读命令自动执行、输出可见。 | 在 AI 栏输入该句 → 观察是否**未经点击**自动执行 → 断言输出含监听 3480 的进程信息 | AI 栏请求/响应（脱敏后）+ 终端输出 + 分级器判定记录（`auto` 分支） |
 | 5 | AI 给出删除类命令 → 弹确认卡，不点不动。 | 输入「删掉 ~/tmp/aaa」→ 断言出现确认卡 → **不点**，等 5 秒 → 断言目标文件仍存在、终端无新输出 | 确认卡截图（人眼项）+ 文件 `stat` 前后对照（可程序化） |
 | 6 | 伪造 `Origin` / 错 `Host` / 缺 token 全部 403。 | 三条 `curl`：`-H 'Origin: http://evil.example'`、`-H 'Host: evil.example'`、不带 token；再用正确 token + 无 Origin 做正对照得 200 | `curl -w '%{http_code}'` 输出；完整矩阵见 `docs/security.md` 第 7.1 节 S1–S8 |
-| 7 | 关标签、刷新页面、退 magpie 后无孤儿 shell（pid 核验，对应坑 2）。 | ①关标签 → 等 ≥ 5 秒（直接 `kill()` 约 1.07s 才消失，shell 自退路径约 2.1–2.8s，1 秒内断言会假失败）→ 查 `bash.exe` 列表里无残留；②**刷新页面** → 等 ≥ 12 秒（`ORPHAN_GRACE_MS = 10000` + 1.07s）→ `/api/health` 的 `sessions` 回到 0、无残留 bash；③**短暂断线**（socket destroy 后 2 秒内新连接发 `pty.attach`）→ 会话必须还在并收 `session.resumed`（证明 ② 的回收不是「一断就杀」）；④退 magpie 后重复一次 | `Get-CimInstance Win32_Process` 的 pid/ppid 表；`/api/health` 的 `sessions` 数字变化；命令见 `docs/pty-notes.md` 第 8 节 |
+| 7 | 关标签、刷新页面、退 magpie 后远端无残留登录会话（对应坑 2）。 | ①关标签 → 等 ≥ 15 秒（`ORPHAN_GRACE_MS = 10000` 后才回收，1 秒内断言会假失败）→ 在远端 `w` / `who` 里看不到该登录会话；②**刷新页面** → 等 ≥ 15 秒 → `/api/health` 的 `sessions` 回到 0、远端同样无残留会话；③**短暂断线**（socket destroy 后 2 秒内新连接发 `pty.attach`）→ 会话必须还在并收 `session.resumed`（证明 ② 的回收不是「一断就杀」）；④退 magpie 后重复一次 | `/api/health` 的 `sessions` 数字变化；服务日志里的 `SESSION_ORPHANED` / `SESSION_ORPHAN_EXPIRED` / `SESSION_RESUMED`；远端 `w`、`who` 输出 |
 
 **验收 5 的陷阱**：确认卡「不点不动」要断言**两件事**——文件还在，且终端没有该命令的任何输出。只断言文件还在不够，因为命令可能执行了但被 shell 拒绝（权限/路径不存在），文件同样还在。
 
@@ -73,9 +74,9 @@ T1 名上是骨架，实际含四件各自能独立失败的事：
 
 ## 4. 非目标
 
-以下与 BRIEF 5.2 **逐字一致**：
+以下原为 BRIEF 5.2 的原文（保留以便追溯），其中第 1 条已被 0.3.0 的定位变更取代：
 
-- 不做多主机 SSH / 堡垒机。
+- ~~不做多主机 SSH / 堡垒机。~~ **0.3.0 起作废**：删除本地终端后，产品定位就是「连 SSH 主机的终端」，多主机管理是核心功能；堡垒机（跳板、集中审计）仍不在范围内。
 - 不发布到插件市场。
 - 会话不跨 magpie 重启保留。
 - 不做内联 Ghost text 命令推荐。
@@ -84,9 +85,9 @@ T1 名上是骨架，实际含四件各自能独立失败的事：
 
 | 非目标 | 为什么明确排除 |
 |---|---|
-| 多主机 SSH / 堡垒机 | 需要凭据管理、跳板、审计，与「本机终端」是两个产品；参考项目 Chaterm 做这块，本项目只借鉴交互形态（BRIEF 1 节） |
+| 堡垒机（跳板、集中审计） | 需要跳板链路与审计存储，超出单机插件范围；参考项目 Chaterm 做这块，本项目只借鉴交互形态（BRIEF 1 节）。多主机 SSH 本身在 0.3.0 已是核心功能，不再是非目标 |
 | 发布到插件市场 | BRIEF 1 节已定：npm 包名 `magpie-terminal`，用本地路径安装 |
-| 会话跨重启保留 | 保留会话需要持久化 PTY 状态或做 tmux 式守护进程，与「关标签即回收进程」（`docs/pty-notes.md` 第 4 节）的清理策略冲突 |
+| 会话跨重启保留 | 保留会话需要持久化终端状态或做 tmux 式守护进程，与「关标签即关闭 SSH 通道、远端登录会话随之结束」的清理策略冲突 |
 | 内联 Ghost text 推荐 | 需要与 xterm.js 的输入层深度耦合，且与「右侧 AI 栏 + 确认卡」的交互模型重复 |
 
 ---
@@ -112,22 +113,22 @@ BRIEF 5.3 原文：**页面在 magpie 窗口里是否真的画出来（WebView2 
 
 BRIEF 7 节列出的三个待定项已于 2026-11-22 全部定案；下面保留当时的 A/B 对比与推荐理由作为历史记录。
 
-> 现行结论：6.1 → bash 优先、PowerShell 回退（探测顺序见 `docs/architecture.md` 第 7 节）；6.2 → MIT；6.3 → 开发完成后再推 GitHub。
+> 现行结论：6.1 → **0.3.0 起作废**，本地终端与默认 shell 均已删除，shell 由远端 sshd 决定（见 `docs/architecture.md` 第 7 节）；6.2 → MIT；6.3 → 开发完成后再推 GitHub。
 
-### 6.1 默认 shell 优先级
+### 6.1 默认 shell 优先级（0.3.0 已作废）
 
-**已定（2026-11-22）：选 A，bash 优先，PowerShell 回退。** 探测顺序与校验见 `docs/architecture.md` 第 7 节。
+**0.3.0 结论：不存在「默认 shell」。** 本地终端删除后，终端必须连 SSH 主机，shell 由远端 sshd 按账号配置分配（`$SHELL` / `sshd_config` 的 `ForceCommand` / Windows 主机的默认 shell），插件不探测、不覆盖、也不提供 shell 选择器。见 `docs/architecture.md` 第 7 节。
 
-下表保留为历史记录（当时的 A/B 对比与推荐理由）：
+以下是 0.2.x 时代的 A/B 记录，仅作历史留存（当时的对象是本机 shell）：
 
 | 选项 | 内容 | 优点 | 代价 |
 |---|---|---|---|
-| **A** | `bash` 优先（msys / git-bash），找不到再退 PowerShell | FINDINGS 里**全部** PTY 证据都是 bash（`stty size`、`vim`、`Ctrl-C`、并发会话）；`bash.exe` 在本机 PATH 上实测可用（`pty-notes.md` 第 8 节的 pid 表就是 `bash.exe`）；哨兵法的 `printf '__DONE_%s__\n' "$?"` 也是 bash 语法 | 用户若习惯 PowerShell，复制粘贴的 PowerShell 命令（`Get-ChildItem`）在 bash 里跑不通；需要在 UI 上标明当前 shell |
+| **A** | `bash` 优先（msys / git-bash），找不到再退 PowerShell | FINDINGS 里**全部** PTY 证据都是 bash（`stty size`、`vim`、`Ctrl-C`、并发会话）；`bash.exe` 在本机 PATH 上实测可用（当时的 pid 表就是 `bash.exe`）；哨兵法的 `printf '__DONE_%s__\n' "$?"` 也是 bash 语法 | 用户若习惯 PowerShell，复制粘贴的 PowerShell 命令（`Get-ChildItem`）在 bash 里跑不通；需要在 UI 上标明当前 shell |
 | B | PowerShell 优先 | Windows 原生，用户不装 git 也能用 | 全部 PTY 实测证据需重跑一遍（`stty size` 在 PowerShell 下语义不同）；哨兵法要换成 `Write-Output` 式的哨兵；分级白名单要多一套 cmdlet |
 
-**推荐 A**。理由不是「bash 更好」，而是**实测证据全部建立在 bash 上**：选 B 等于把 `docs/pty-notes.md` 里所有数字的适用性打回未验证状态，T1 的出口条件要重测。代价（PowerShell 命令跑不通）可以用「标签页上标 shell 名 + 新建标签时可选 shell」缓解，不影响 T1。
+**当时的推荐是 A**。理由不是「bash 更好」，而是实测证据全部建立在 bash 上：选 B 等于把已有数字的适用性打回未验证状态。0.3.0 删除本地终端后，这个取舍连同「标签上标 shell 名 / 新建标签可选 shell」一起作废。
 
-> 待定（T2 范围）：新建标签时是否暴露 shell 选择器。若做，A/B 的争论降级为「默认值」问题；若不做，默认值就是唯一行为。此项归 T2 的 UI 决定，不在 T1 阻塞。
+> 已定（0.3.0）：不暴露 shell 选择器。新建标签时只选主机，shell 由远端账号决定。
 
 ### 6.2 许可证
 
@@ -135,7 +136,7 @@ BRIEF 7 节列出的三个待定项已于 2026-11-22 全部定案；下面保留
 
 | 选项 | 内容 | 优点 | 代价 |
 |---|---|---|---|
-| **A** | MIT | 最宽松、最短、生态默认；本项目含 node-pty（MIT）与 xterm.js（MIT），无传染性依赖 | 无 |
+| **A** | MIT | 最宽松、最短、生态默认；本项目依赖 ssh2 / ws / zod / ai 与 xterm.js（均 MIT），无传染性依赖 | 无 |
 | B | Apache-2.0 | 含专利授权条款 | 文本长；与「本地自用、不发布市场」的定位不匹配 |
 | C | 不写许可证 | 省事 | 无许可证 = 默认保留所有权利，任何第三方（含未来的 AI 会话）都不能合法复用；与「参考了 Chaterm 的产品形态但不移植代码」这一事实也缺少声明载体 |
 
@@ -202,7 +203,7 @@ T1 ──→ M1「能用」
  └──→ T2 ──→ T3 ──→ V1 ──→ M2「可交付」
 ```
 
-- M1 只看 T1 + 5 条验收，**不要求** AI 栏可用 —— 这是刻意的：真终端本身就有独立价值，不应该被 AI 栏的进度绑住。
+- M1 只看 T1 + 5 条验收，**不要求** AI 栏可用 —— 这是刻意的：能连上主机敲命令本身就有独立价值，不应该被 AI 栏的进度绑住。
 - M2 要求 7 条全过。其中验收 4、5 依赖 T2；验收 6、7 依赖 T1 但必须在 T2 之后**重跑**（AI 栏引入了新的请求路径与新的进程，可能破坏原本成立的边界）。
 
 ---
@@ -212,9 +213,9 @@ T1 ──→ M1「能用」
 | 风险 | 影响 | 缓解 | 触发时的判断依据 |
 |---|---|---|---|
 | WebView2 沙箱 iframe 故障（BRIEF 2.2） | 所有插件页都打不开，看起来像本项目坏了 | 按 BRIEF 2.2 的 workaround 处理；**不改插件文件、不重装** | 所有插件页同时坏 + magpie 自带页正常 + 宿主日志健康 |
-| `resize` 掉字节未修好 | 用户体验第一眼就受损（新标签第一条命令掉字） | 暖场流程 + 验收 3 的 10 连敲 | `docs/pty-notes.md` 第 3 节 |
-| `onExit` 漏 `kill()` | 每关一个标签漏一个常驻进程 | `onExit` 里无条件 `kill()` + 验收 7 的 pid 核验 | `docs/pty-notes.md` 第 4 节 |
-| Bun 静默装错 node-pty 版本 | 刷 `AttachConsole failed` 噪声，或行为与实测不符 | 锁本地依赖 + 启动断言版本 | `docs/pty-notes.md` 第 5 节 |
+| `resize` 掉字节未修好 | 用户体验第一眼就受损（新标签第一条命令掉字） | 先建会话再量尺寸（xterm 量好行列数后才发 `pty.create`）+ 验收 3 的 10 连敲 | 验收 3 的 10 条对照日志 |
+| 通道关闭漏清理 | 每关一个标签在远端漏一个登录会话 | WS 关闭 → 会话转 orphaned → `ORPHAN_GRACE_MS` 到期回收 + 验收 7 的远端 `w`/`who` 核验 | 验收 7 的 `sessions` 与日志 |
+| 原生模块带来的平台差异（0.2.x 的问题） | 换平台要重编 node-pty，装不上就整个终端不可用 | 0.3.0 已改为纯 JS（ssh2），依赖里没有原生模块；三平台 CI 兜底 | `.github/workflows/ci.yml` 的运行结果 |
 | 分级器被包装脚本绕过 | 危险命令被自动执行 | 黑名单收 `sh`/`bash`/`python -c` 等；确认卡展示与实际执行同一字符串 | `docs/security.md` 第 6.1 节 |
 | 网关模型数量变化 | 断言写死数量会假失败 | 只断言 `HTTP 200` + `data[]` 非空 | FINDINGS 6c 注：7 个 → 复查 6 个 |
 
@@ -224,6 +225,6 @@ T1 ──→ M1「能用」
 
 | 项 | 现状 | 处理 |
 |---|---|---|
-| 是否暴露 shell 选择器 | BRIEF 未提 | 归入 T2 的实现决定，见 6.1 末尾 |
-| 多标签上限 | BRIEF 未提 | 归入 T1；建议按「每个标签一个 PTY 进程」的实际内存开销定，不预设数字 |
+| 是否暴露 shell 选择器 | 已定：不暴露 | 0.3.0 删除本地终端后 shell 由远端账号决定，见 6.1 |
+| 多标签上限 | BRIEF 未提 | 归入 T1；建议按「每个标签一条 SSH 通道」的实际内存开销定，不预设数字 |
 | 标签崩溃后的恢复行为 | BRIEF 未提 | 归入 T3；默认行为定为「标成已结束 + 可重开」，不做自动重启（自动重启会掩盖崩溃） |

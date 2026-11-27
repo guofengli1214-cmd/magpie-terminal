@@ -16,7 +16,6 @@ import crypto from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { BUILTIN_SHELL_IDS, isValidShellId } from "../pty/shells.mjs";
 import { DEFAULT_BUILTIN_ALLOWLIST, builtinRulesFrom } from "../policy/allowlist.mjs";
 
 /** 环境变量覆盖路径：只给测试用，生产不设。 */
@@ -29,8 +28,7 @@ export const CONFIG_PATH_ENV = "MAGPIE_TERMINAL_CONFIG_PATH";
  * `hosts` 仍然不从这里走，它由下面的 `addHost/updateHost/removeHost` 直接
  * 读-改-写整份配置（未知字段本来就是原样保留的，所以两者不会互相踩）。
  *
- * TASK-V4-F §5.3 又加了 `defaultShell`（本机默认 shell 的 id，取值见
- * `src/pty/shells.mjs` 的 `isValidShellId`：格式校验，不是固定白名单）。
+ * 老配置里的「本机默认 shell」字段现在被静默忽略（未知字段原样保留，不报错）。
  */
 export const KNOWN_FIELDS = Object.freeze([
   "model",
@@ -38,7 +36,6 @@ export const KNOWN_FIELDS = Object.freeze([
   "allowlist",
   "reviewModel",
   "basePrompt",
-  "defaultShell",
   // TASK-V4-H §6：确认卡上常显 AI 的效果评估（默认关）。
   "showApprovalEffect",
   // TASK-FIX17-L1 R1：下载 / 导出目录（绝对路径；null = 用浏览器默认下载）。
@@ -104,8 +101,6 @@ export const DEFAULT_CONFIG = Object.freeze({
   allowlist: [],
   reviewModel: null,
   basePrompt: null,
-  // null = 不指定，按 MAGPIE_TERMINAL_SHELL → 自动探测（git bash 优先）。
-  defaultShell: null,
   // TASK-V4-H §6：确认卡上是否常显「执行后会发生什么」，默认关。
   showApprovalEffect: false,
   // TASK-FIX17-L1 R1：null = 未设置 → 下载/导出回落浏览器默认目录。
@@ -504,22 +499,6 @@ export function validateConfigPatch(patch) {
     }
   }
 
-  // TASK-V4-F §5.3 / TASK-FIX17-A：defaultShell 用**格式校验**（字符串、≤64、
-  // `[A-Za-z0-9:._-]`）而不是固定白名单。固定白名单会把 `cmd` / `wsl:Ubuntu-24.04` /
-  // `profile:<短名>` 这些运行时发现出来的 id 误杀。null = 回到自动探测。
-  // 存在但本机没装的 id 仍然收：换机器后配置应跟着走，不可用时由
-  // resolveShellForRequest 静默回落到自动探测（不报错）。
-  // 可选的 BUILTIN_SHELL_IDS 只是展示用的提示；校验本身不看它。
-  if (has("defaultShell")) {
-    const value = patch.defaultShell;
-    if (value !== null && !isValidShellId(value)) {
-      return {
-        code: "INVALID_SHELL",
-        userText: `defaultShell 必须是合法的 shell id（字符串、≤64 字符、只含字母数字与 : . _ -，例如 ${BUILTIN_SHELL_IDS.slice(0, 2).join(" / ")} / wsl:<发行版>）或 null。`,
-      };
-    }
-  }
-
   return null;
 }
 
@@ -551,10 +530,6 @@ function normalize(config) {
   } else if (typeof next.basePrompt !== "string" || next.basePrompt.length > BASE_PROMPT_MAX) {
     next.basePrompt = null;
   }
-
-  // defaultShell：非法值一律回落 null（不抛错，下次再选就好）。
-  // 与 validateConfigPatch 同一套格式校验（TASK-FIX17-A）：白名单已取消。
-  if (!isValidShellId(next.defaultShell)) next.defaultShell = null;
 
   // showApprovalEffect：非 boolean 一律回落 false（默认关）。
   if (typeof next.showApprovalEffect !== "boolean") next.showApprovalEffect = false;
@@ -589,7 +564,6 @@ export function publicConfig(config) {
     allowlist: normalized.allowlist,
     reviewModel: normalized.reviewModel,
     basePrompt: normalized.basePrompt,
-    defaultShell: normalized.defaultShell,
     showApprovalEffect: normalized.showApprovalEffect === true,
     downloadDir: normalized.downloadDir,
     conversationReasoning: normalized.conversationReasoning,

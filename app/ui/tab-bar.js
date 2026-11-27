@@ -1,9 +1,8 @@
 // 标签栏：渲染、切换、关闭、新建。只订阅 store，不直接连网络。
 //
-// TASK-V4-F §5.5：`+` 变成一个下拉菜单（本机三 shell + 已配置主机）。
+// 0.3.0：`+` 是一个下拉菜单（只有已配置主机；本机终端已删）。
 // 菜单数据由 app.js 注入的 `loadMenu()` 提供（它才知道 api / 主机面板），
-// 菜单项点击也只回调 app.js（onCreate({shellId}) / onConnectHost(host)），
-// 这里不复制任何建会话逻辑。
+// 菜单项点击也只回调 app.js（onConnectHost(host)），这里不复制任何建会话逻辑。
 
 /**
  * 标签短名（TASK-V4-F 遗留小修，V4-H §8 附带修）：
@@ -16,7 +15,7 @@
 export function shellShortName(shell) {
   const raw = String(shell || "shell").trim();
   if (!raw) return "shell";
-  // 本机 bash（含 git bash 的 "bash 5.2.37"）→ 统一叫 bash。
+  // bash（含 "bash 5.2.37"）→ 统一叫 bash。
   if (/^bash\b/i.test(raw)) return "bash";
   const pwsh = /^powershell\s*(\d+(?:\.\d+)?)?/i.exec(raw);
   if (pwsh) {
@@ -34,7 +33,6 @@ export function shellShortName(shell) {
 
 export default function createTabBar(elements) {
   const host = elements.host;
-  const onCreate = typeof elements.onCreate === "function" ? elements.onCreate : () => {};
   const onConnectHost =
     typeof elements.onConnectHost === "function" ? elements.onConnectHost : () => {};
   const onOpenHosts = typeof elements.onOpenHosts === "function" ? elements.onOpenHosts : () => {};
@@ -102,35 +100,6 @@ export default function createTabBar(elements) {
     menu.style.top = `${Math.round(rect.bottom + 4)}px`;
   }
 
-  /** 「未安装」的 shell 置灰但保留（让用户知道本机没有，而不是看不到）。 */
-  function renderShellItem(item) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.setAttribute("data-role", "tab-new-local");
-    button.setAttribute("data-shell-id", item.id);
-    if (item.available === false) {
-      button.disabled = true;
-      button.setAttribute("data-available", "false");
-    } else {
-      button.setAttribute("data-available", "true");
-    }
-    const name = document.createElement("span");
-    name.className = "tab-new-name";
-    name.textContent = item.name || item.id;
-    button.appendChild(name);
-    const meta = document.createElement("span");
-    meta.className = "tab-new-meta";
-    meta.textContent =
-      item.available === false ? "未安装" : `${item.id} ${item.version || ""}`.trim();
-    button.appendChild(meta);
-    button.addEventListener("click", () => {
-      if (item.available === false) return;
-      closeMenu();
-      onCreate({ shellId: item.id });
-    });
-    return button;
-  }
-
   function renderHostItem(item) {
     const button = document.createElement("button");
     button.type = "button";
@@ -153,29 +122,21 @@ export default function createTabBar(elements) {
 
   function fillMenu(data) {
     if (!menu) return;
-    const shells = Array.isArray(data && data.shells) ? data.shells : [];
     const hosts = Array.isArray(data && data.hosts) ? data.hosts : [];
-
-    const localGroup = document.createElement("div");
-    localGroup.className = "tab-new-group";
-    localGroup.setAttribute("data-group", "local");
-    localGroup.appendChild(createGroupLabel("本机"));
-    for (const item of shells) localGroup.appendChild(renderShellItem(item));
-    if (shells.length === 0) {
-      localGroup.appendChild(createHint("读不到本机 shell 清单。"));
-    }
-    menu.appendChild(localGroup);
 
     const hostGroup = document.createElement("div");
     hostGroup.className = "tab-new-group";
     hostGroup.setAttribute("data-group", "host");
-    hostGroup.appendChild(createGroupLabel("主机"));
+    // TASK-G U03：0.3.0 之后「+」菜单只剩主机这一个分组，再顶一行「主机」
+    // 分组标题就是「菜单 → 分组 → 条目」三层包一层空结构；菜单本身
+    // aria-label 已是「新建标签」，单分组不需要标题。多分组回来了再加。
     if (hosts.length === 0) {
-      hostGroup.appendChild(createHint("还没有配置主机"));
+      hostGroup.appendChild(createHint("还没有配置主机。"));
       const go = document.createElement("button");
       go.type = "button";
+      go.className = "tab-new-action";
       go.setAttribute("data-role", "tab-new-hosts-open");
-      go.textContent = "去添加";
+      go.textContent = "+ 添加主机";
       go.addEventListener("click", () => {
         closeMenu();
         onOpenHosts();
@@ -186,13 +147,6 @@ export default function createTabBar(elements) {
     }
     menu.appendChild(hostGroup);
     positionMenu();
-  }
-
-  function createGroupLabel(text) {
-    const label = document.createElement("div");
-    label.className = "tab-new-group-label";
-    label.textContent = text;
-    return label;
   }
 
   function createHint(text) {
@@ -219,7 +173,7 @@ export default function createTabBar(elements) {
     window.addEventListener("resize", closeMenu);
 
     if (!loadMenu) {
-      fillMenu({ shells: [], hosts: [] });
+      fillMenu({ hosts: [] });
       return;
     }
     let data = null;
@@ -231,7 +185,7 @@ export default function createTabBar(elements) {
     // 期间用户关掉 / 又开了一次：这份结果作废。
     if (!menuOpen || token !== menuToken) return;
     menu.textContent = "";
-    fillMenu(data || { shells: [], hosts: [] });
+    fillMenu(data || { hosts: [] });
   }
 
   function render(snapshot) {

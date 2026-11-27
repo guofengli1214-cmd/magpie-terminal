@@ -531,9 +531,9 @@ export default function createFilePanel(elements) {
   const state = {
     open: false,
     height: DEFAULT_HEIGHT,
-    // 面板绑定的会话（id / kind / hostId / cwd）
+    // 面板绑定的会话（id / kind / hostId / cwd）；无会话时 kind = null。
     sessionId: null,
-    kind: "local",
+    kind: null,
     hostId: null,
     termCwd: null,
     path: null,
@@ -892,6 +892,11 @@ export default function createFilePanel(elements) {
       return;
     }
     needsPaint = false;
+    // 空目录 / 无会话时的网格里只有一条 `.file-panel-empty` 提示，
+    // 由 render() / renderGridMessage 独占维护。这里必须早退：虚拟窗口在
+    // count=0 时会算出一个 columns>0 的空窗口，走进下面的「收尾清理」循环，
+    // 把那条提示当作残留节点 removeChild 掉（实测导致文件面板整块纯白）。
+    if (state.entries.length === 0) return;
     const win = computeWindow({ count: state.entries.length, ...metrics });
     const unchanged =
       !rebuild &&
@@ -1129,7 +1134,7 @@ export default function createFilePanel(elements) {
     const count = state.entries.length;
     const selectedCount = state.selected.size;
     const suffix = selectedCount > 0 ? ` · 已选 ${selectedCount} 项` : "";
-    statusLine.textContent = `${state.kind === "remote" ? "远程" : "本地"} · ${count} 项${suffix}`;
+    statusLine.textContent = `远程 · ${count} 项${suffix}`;
   }
 
   /**
@@ -2448,7 +2453,7 @@ export default function createFilePanel(elements) {
   function bindSession(session) {
     if (!session) {
       state.sessionId = null;
-      state.kind = "local";
+      state.kind = null;
       state.hostId = null;
       state.termCwd = null;
       state.manualPath = false;
@@ -2466,8 +2471,8 @@ export default function createFilePanel(elements) {
       session.kind !== state.kind ||
       (session.hostId || null) !== state.hostId;
     state.sessionId = session.id;
-    state.kind = session.kind === "remote" ? "remote" : "local";
-    state.hostId = session.kind === "remote" ? session.hostId || null : null;
+    state.kind = "remote";
+    state.hostId = session.hostId || null;
     state.termCwd = typeof session.cwd === "string" && session.cwd.length > 0 ? session.cwd : state.termCwd;
     if (changed) {
       // 换会话 = 重新跟随（用户上次的手动路径属于上一个会话）。
@@ -2488,12 +2493,15 @@ export default function createFilePanel(elements) {
       // 「away」，否则用户点一下无事发生，也不知道为什么）。
       renderLocateButton();
       renderToolbarSlots();
-      renderGridMessage("当前没有终端标签：先开一个标签，文件面板会跟着它的目录走。");
+      // TASK-G (U02)：终端区已经有整块空态（标题 + 说明 + 主按钮），这里再说一遍
+      // 「去主机里添加」就是同一条指令的第二份大字报。文件面板只留一行轻提示，
+      // 说明「为什么是空的」与「它将来跟谁走」。
+      renderGridMessage("没有主机会话，连上主机后这里会跟随它的目录。");
       renderStatus();
       return;
     }
     if (changed || force) {
-      const start = state.termCwd || (state.kind === "remote" ? "." : null);
+      const start = state.termCwd || ".";
       if (start) await load(start);
       else renderGridMessage("这个终端还没报告目录，等它出现第一个提示符。");
       renderLocateButton();

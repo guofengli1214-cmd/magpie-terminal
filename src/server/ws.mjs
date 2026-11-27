@@ -18,7 +18,6 @@ import { createAgentRunner } from "../ai/agent.mjs";
 import { createCommandRunner } from "../ai/runner.mjs";
 import { createSessionStore } from "../ai/sessions.mjs";
 import { readConfig } from "../config/store.mjs";
-import { resolveShellForRequest } from "../pty/shells.mjs";
 
 export const WS_PATH = "/ws";
 
@@ -43,14 +42,8 @@ const InputFrame = z.union([
     cols: z.number().int().optional(),
     rows: z.number().int().optional(),
     cwd: z.string().optional(),
-    // TASK-V2-B：带 hostId 就是远程会话；不带就是本地（行为与以前逐字一致）。
+    // TASK-V2-B：带 hostId 就是远程会话；终端只能连远程主机，不带 hostId 会被拒。
     hostId: z.string().max(64).optional(),
-    // TASK-V4-F：本机会话可以指定 shell（bash / pwsh / powershell）。
-    // 刻意不用 z.enum：非法值要回 session.failed + PTY_UNKNOWN_SHELL，
-    // 而不是被 zod 打成 BAD_FRAME（卡片 §5.2 / AC4）。合法性在 resolveShellForRequest 里判。
-    // TASK-FIX17-A：max(32) → max(64)，让 `wsl:Ubuntu-24.04` 与 WT profile 派生的
-    // `profile:<短名>` 都能过帧校验（id 长度上限与 shells.mjs 的 SHELL_ID_MAX 一致）。
-    shellId: z.string().max(64).optional(),
   }),
   z.object({ type: z.literal("pty.close"), id: z.string() }),
   z.object({ type: z.literal("pty.attach"), id: z.string() }),
@@ -144,14 +137,11 @@ export function hostAddrOf(session, kind) {
  * @param {import("node:http").Server} opts.server
  * @param {number} opts.port
  * @param {string} opts.token
- * @param {import("../pty/session.mjs").SessionManager} opts.sessions 本地 PTY
- * @param {import("../ssh/registry.mjs").RemoteRegistry} [opts.remote] 远程 SSH 会话
+ * @param {import("../ssh/registry.mjs").RemoteRegistry} [opts.remote] 远程 SSH 会话（唯一的会话来源）
  * @param {(entry:object)=>void} opts.log
  */
 export function attachWebSocket(opts) {
-  const { server, port, token, sessions, remote, log } = opts;
-  // TASK-V4-F：config.defaultShell 现取（PUT /api/config 后不重启也生效）。
-  const getDefaultShell = typeof opts.getDefaultShell === "function" ? opts.getDefaultShell : () => null;
+  const { server, port, token, remote, log } = opts;
   // TASK-V4-H §5.1：AI 会话存储（从外面传进来，REST 路由与 WS 共用同一个实例）。
   const aiSessions = opts.aiSessions || createSessionStore({ log });
   const wss = new WebSocketServer({ noServer: true });
@@ -164,7 +154,7 @@ export function attachWebSocket(opts) {
   const ownership = new Map();
 
   // agent 内核（TASK-V3-D）：runner 在用户真实 PTY 里执行命令，agent 跑多步循环。
-  const runner = createCommandRunner({ sessions, remote, log });
+  const runner = createCommandRunner({ remote, log });
   // resolver：agent 拿到的 sessionId 属于本地还是远程。
   runner.setSessionResolver((id) => {
     const hit = lookup(id);
@@ -180,26 +170,18 @@ export function attachWebSocket(opts) {
   });
   const agent = createAgentRunner({ log, runner, sessions: aiSessions });
 
-  // `sessions.create()` 是同步 emit `session.created` 的，早于我们能 setOwner。
-  // 用一个同作用域的临时变量把「正在创建的那个 socket」传给 onCreated。
-  // 远程 create() 是异步 emit 的（建连要时间），所以远程的 session.created 必须靠
-  // ownership 里的记录找到 socket —— 远程会话在 create() 返回后立刻 setOwner。
-  let creatingFor = null;
-
-  // 每个 socket 一个串行队列（TASK-V4-F）：handleMessage 要 await 配置读取。
+  // 每个 socket 一个串行队列（TASK-V4-F）：handleMessage 串行处理帧，保持到达顺序。
   const queues = new Map();
 
   /**
-   * 帧路由的唯一分叉点：远程注册表优先，其次本地。
-   * 两边都没有才由调用方回 SESSION_GONE。
+   * 帧路由的唯一来源：远程注册表（本机 PTY 已删）。
+   * 查不到才由调用方回 SESSION_GONE。
    */
   function lookup(id) {
     if (remote) {
       const found = remote.get(id);
       if (found) return { kind: "remote", session: found, registry: remote };
     }
-    const local = sessions.get(id);
-    if (local) return { kind: "local", session: local, registry: sessions };
     return null;
   }
 
@@ -282,8 +264,7 @@ export function attachWebSocket(opts) {
     });
 
     socket.on("message", (raw) => {
-      // TASK-V4-F：pty.create 现在要读 config.defaultShell（异步），所以 handleMessage
-      // 变成 async；为了不把原来的「帧按到达顺序处理」语义弄丢，按 socket 串行排队。
+      // 为了不把「帧按到达顺序处理」的语义弄丢，按 socket 串行排队。
       const previous = queues.get(socket) || Promise.resolve();
       const next = previous
         .then(() => handleMessage(socket, raw))
@@ -374,7 +355,7 @@ export function attachWebSocket(opts) {
             return;
           }
           // 远程 session.created 是异步来的：必须先登记 owner/target，
-          // 否则 onCreated 找不到该发给谁（帧会丢，前端永远转圈）。
+          // 否则 onRemoteCreated 找不到该发给谁（帧会丢，前端永远转圈）。
           setOwner(stub.id, socket);
           if (remote) pendingCreateSockets.set(stub.id, socket);
           log({
@@ -386,49 +367,14 @@ export function attachWebSocket(opts) {
           });
           return;
         }
-        let session = null;
-        // 解析本次会话要用的 shell（shellId → config.defaultShell → 自动探测）。
-        const resolution = resolveShellForRequest({
-          shellId: frame.shellId,
-          defaultShell: await getDefaultShell(),
+        // 本机 PTY 已删：不带 hostId 的 pty.create 明确拒绝，不静默。
+        send(socket, {
+          type: "pty.error",
+          id: "",
+          code: "HOST_REQUIRED",
+          userText: "终端只能连远程主机：先在主机面板里添加一台主机。",
         });
-        if (!resolution.ok) {
-          // 非法 / 不可用的 shellId：回 session.failed，不抛未捕获异常，不影响其它会话。
-          send(socket, {
-            type: "session.failed",
-            id: "",
-            code: resolution.code,
-            userText: resolution.userText,
-          });
-          log({
-            level: "warn",
-            code: resolution.code,
-            msg: "pty.create rejected: unknown shell",
-            shellId: frame.shellId,
-          });
-          return;
-        }
-        // sessions.create() 同步 emit session.created，onCreated 需要知道「该发给谁」。
-        creatingFor = socket;
-        try {
-          session = sessions.create({
-            cols: frame.cols,
-            rows: frame.rows,
-            cwd: frame.cwd,
-            shell: resolution.shell,
-          });
-        } finally {
-          creatingFor = null;
-        }
-        if (session) {
-          setOwner(session.id, socket);
-          log({
-            level: "info",
-            code: "SESSION_CREATED",
-            msg: "session created",
-            sessionId: session.id,
-          });
-        }
+        log({ level: "warn", code: "HOST_REQUIRED", msg: "pty.create without hostId rejected" });
         return;
       }
       case "pty.attach": {
@@ -511,7 +457,7 @@ export function attachWebSocket(opts) {
         path: session.shell.path,
         fallback: session.shell.fallback,
       },
-      pty: hit.kind === "remote" ? "remote" : session.mode === "sentinel" ? "sentinel" : "native",
+      pty: "remote",
       recentOutput: session.recentOutput || "",
     });
     log({ level: "info", code: "SESSION_RESUMED", msg: "session resumed", sessionId: id });
@@ -548,8 +494,8 @@ export function attachWebSocket(opts) {
     // 终端归属：会话列表按终端分组、徒标按本机/远程区分（卡片 §5.1 / AC4）。
     const hit = lookup(sessionId);
     const ptySession = hit ? hit.session : null;
-    const terminalKind =
-      context.terminalKind === "remote" || (hit && hit.kind === "remote") ? "remote" : "local";
+    // 终端归属恒为 remote（本机 PTY 已删）。
+    const terminalKind = "remote";
     const terminal = {
       id: sessionId,
       kind: terminalKind,
@@ -629,35 +575,6 @@ export function attachWebSocket(opts) {
   // （期间可能重连换过 socket）。这张表只用于 created 帧补 kind 之前的定位。
   const pendingCreateSockets = new Map();
 
-  // 把 PTY 会话事件翻成对外帧。
-  const onCreated = (info) => {
-    const record = ownerOf(info.id);
-    const target = creatingFor || (record && record.socket) || null;
-    // 本地帧：`{ type, ...info }` 一个字段都不多（A 卡与 T1/T2 的测试锁着这个形状）。
-    send(target, { type: "session.created", kind: "local", ...info });
-  };
-  const onOutput = (info) => {
-    const record = ownerOf(info.id);
-    // owner 已断（孤儿态）时不发：数据仍在 session.recentOutput 里，attach 时回给新页面。
-    if (!record || !record.socket) return;
-    send(record.socket, { type: "pty.output", id: info.id, data: info.data });
-  };
-  const onExited = (info) => {
-    const record = ownerOf(info.id);
-    const frame = { type: "pty.exit", id: info.id, exitCode: info.exitCode, signal: info.signal };
-    if (record && record.socket) send(record.socket, frame);
-    forgetOwner(info.id);
-    runner.dispose(info.id);
-  };
-  const onFailed = (info) => {
-    const record = ownerOf(info.id);
-    const target = (record && record.socket) || creatingFor || null;
-    const frame = { type: "pty.error", id: info.id, code: info.code, userText: info.userText };
-    send(target, frame);
-    forgetOwner(info.id);
-    runner.dispose(info.id);
-  };
-
   // TASK-V4-G §5.1：OSC 7 解析出来的当前目录 → `{type:"session.cwd", id, cwd}`。
   // 与 pty.output 同样遵守孤儿会话不发帧的规则（attach 时 session.resumed.cwd 兜底）。
   const onCwd = (info) => {
@@ -700,11 +617,6 @@ export function attachWebSocket(opts) {
     send(record.socket, { type: "pty.output", id: info.id, data: info.data });
   };
 
-  sessions.on("session.created", onCreated);
-  sessions.on("pty.output", onOutput);
-  sessions.on("session.exited", onExited);
-  sessions.on("session.failed", onFailed);
-  sessions.on("session.cwd", onCwd);
   if (remote) {
     remote.on("session.created", onRemoteCreated);
     remote.on("pty.output", onRemoteOutput);
@@ -721,11 +633,6 @@ export function attachWebSocket(opts) {
     } catch {
       // 忽略。
     }
-    sessions.off("session.created", onCreated);
-    sessions.off("pty.output", onOutput);
-    sessions.off("session.exited", onExited);
-    sessions.off("session.failed", onFailed);
-    sessions.off("session.cwd", onCwd);
     if (remote) {
       remote.off("session.created", onRemoteCreated);
       remote.off("pty.output", onRemoteOutput);

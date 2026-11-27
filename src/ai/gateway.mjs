@@ -334,7 +334,7 @@ export async function resolveReasoningEffort({ level, modelId, log, where } = {}
 /**
  * 探活 + 拉模型清单：GET /v1/models。
  *
- * 保留 `count` / `durationMs` 给现有调用方（test/pty/session.test.mjs）。
+ * 保留 `count` / `durationMs` 给现有调用方。
  * 新增 `models: [{id,label,contextLength,available,note}]` 与 `baseUrl`。
  *
  * 网关可达但清单为空 → 抛 GATEWAY_UNREACHABLE（与旧行为一致，现有测试依赖）。

@@ -376,8 +376,7 @@ function escapeRegExp(value) {
  * 创建命令执行器。
  *
  * @param {object} opts
- * @param {object} opts.sessions 本地 SessionManager（提供 on/off/write/get）
- * @param {object} [opts.remote] 远程 RemoteRegistry（同接口）
+ * @param {object} [opts.remote] 远程 RemoteRegistry（提供 on/off/write/get；唯一的会话来源）
  * @param {(entry:object)=>void} [opts.log]
  * @param {number} [opts.quietMs] 基础静默阈值（实际阈值 = quietMs * quietFactor）
  * @param {number} [opts.minWaitMs]
@@ -390,7 +389,6 @@ function escapeRegExp(value) {
  *        用于「输出里的伪造 endMark 先到、真实结束标记后到」的情形
  */
 export function createCommandRunner(opts = {}) {
-  const sessions = opts.sessions;
   const remote = opts.remote;
   const log = typeof opts.log === "function" ? opts.log : () => {};
   const envFactor = Number.parseFloat(process.env.MAGPIE_TERMINAL_QUIET_FACTOR || "");
@@ -441,10 +439,8 @@ export function createCommandRunner(opts = {}) {
   function registryFor(sessionId) {
     const kind = sessionResolver(sessionId);
     if (kind === "remote" && remote) return remote;
-    if (kind === "local" && sessions) return sessions;
     // resolver 没给答案时退化为「谁有这个会话就用谁」。
     if (remote && typeof remote.get === "function" && remote.get(sessionId)) return remote;
-    if (sessions && typeof sessions.get === "function" && sessions.get(sessionId)) return sessions;
     return null;
   }
 
@@ -457,7 +453,7 @@ export function createCommandRunner(opts = {}) {
     };
   }
 
-  /** 把命令写进 PTY：本地 sessions.write，远程 remote.write（PROTOCOL §4.1）。 */
+  /** 把命令写进 PTY：远程 remote.write（PROTOCOL §4.1）。 */
   function writeTo(sessionId, payload) {
     const registry = registryFor(sessionId);
     if (!registry || typeof registry.write !== "function") return false;

@@ -1,6 +1,6 @@
 # 编写期工作记录归档（sources）
 
-本目录是文档编写期的工作记录归档，**不是项目事实源**。事实源是 `docs/` 下的 5 份主文档（`architecture.md`、`platform-notes.md`、`pty-notes.md`、`roadmap.md`、`security.md`）与 `.trellis/spec/` 下的 15 份规范（backend 9 份、frontend 6 份）。
+本目录是文档编写期的工作记录归档，**不是项目事实源**（其中关于 node-pty / 本机 PTY 的实测记录属于 0.2.x 历史，0.3.0 已删除本地终端）。事实源是 `docs/` 下的 4 份主文档（`architecture.md`、`platform-notes.md`、`roadmap.md`、`security.md`）与 `.trellis/spec/` 下的 15 份规范（backend 9 份、frontend 6 份）。
 
 | 文件 | 内容 | 行数 |
 |---|---|---|

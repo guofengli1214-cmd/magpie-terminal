@@ -1,7 +1,7 @@
 {
   "name": "magpie-terminal",
   "version": "0.2.4",
-  "description": "A real terminal inside the magpie window, with a Chinese-speaking AI command assistant.",
+  "description": "A terminal for SSH hosts inside the magpie window, with a Chinese-speaking AI command assistant.",
   "license": "MIT",
   "author": "magpie-terminal contributors",
   "type": "module",
@@ -11,10 +11,11 @@
     "magpie-plugin",
     "magpie-page",
     "terminal",
-    "pty",
     "xterm",
     "ai",
-    "ssh"
+    "ssh",
+    "macos",
+    "linux"
   ],
   "repository": {
     "type": "git",
@@ -37,7 +38,6 @@
     "docs/architecture.md",
     "docs/platform-notes.md",
     "docs/security.md",
-    "docs/pty-notes.md",
     "docs/roadmap.md",
     "README.md",
     "LICENSE"
@@ -49,7 +49,6 @@
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.94",
     "ai": "7.0.179",
-    "node-pty": "1.2.0-beta.15",
     "ssh2": "1.17.0",
     "ws": "8.22.0",
     "zod": "4.6.7"
@@ -57,8 +56,8 @@
   "magpie": {
     "name": "magpie-terminal",
     "summary": {
-      "en": "A real terminal with an AI command assistant",
-      "zh": "带 AI 助手的真终端"
+      "en": "A terminal for your SSH hosts, with an AI command assistant.",
+      "zh": "连 SSH 主机用的终端（AI 助手）"
     },
     "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzExMTMxOCIvPgogIDxwYXRoIGQ9Ik0xNiAyMmwxMCAxMC0xMCAxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGFkZTgwIiBzdHJva2Utd2lkdGg9IjUiCiAgICAgICAgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPHJlY3QgeD0iMzIiIHk9IjQwIiB3aWR0aD0iMTYiIGhlaWdodD0iNSIgcng9IjIuNSIgZmlsbD0iIzRhZGU4MCIvPgo8L3N2Zz4K",
     "page": {

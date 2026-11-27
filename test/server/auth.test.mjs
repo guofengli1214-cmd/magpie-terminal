@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import net from "node:net";
 import crypto from "node:crypto";
 import { startServer } from "../../src/server/http.mjs";
+// Node 20 没有全局 WebSocket（22 才有），用 ws 包提供的实现，接口兼容。
+import { WebSocket } from "ws";
 
 function quiet() {
   return () => {};
@@ -396,51 +398,33 @@ test("WS 连上但什么都不发 → 500ms 后 sessions 不变（服务端不�
   client.close();
 });
 
-test("WS 只发 pty.create 才建会话；重连只发 pty.attach 不重复建", async () => {
+test("WS：不带 hostId 的 pty.create 被拒（HOST_REQUIRED），不建会话", async () => {
   const before = await sessionCount();
   const creator = await openWs();
-  creator.send({ type: "pty.create", cols: 80, rows: 24 });
+  try {
+    creator.send({ type: "pty.create", cols: 80, rows: 24 });
 
-  const created = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("session.created timeout")), 8000);
-    const iv = setInterval(() => {
-      const hit = creator.frames.find((f) => f.type === "session.created");
-      if (hit) {
-        clearInterval(iv);
-        clearTimeout(timer);
-        resolve(hit);
-      }
-    }, 25);
-  });
+    const rejected = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("pty.error HOST_REQUIRED timeout")), 8000);
+      const iv = setInterval(() => {
+        const hit = creator.frames.find((f) => f.type === "pty.error" && f.code === "HOST_REQUIRED");
+        if (hit) {
+          clearInterval(iv);
+          clearTimeout(timer);
+          resolve(hit);
+        }
+      }, 25);
+    });
 
-  assert.equal(await sessionCount(), before + 1);
-  const sessionId = created.id;
-
-  // 重连：只 attach，不 create。
-  creator.close();
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  const reconnect = await openWs();
-  reconnect.send({ type: "pty.attach", id: sessionId });
-
-  const resumed = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("session.resumed timeout")), 8000);
-    const iv = setInterval(() => {
-      const hit = reconnect.frames.find((f) => f.type === "session.resumed" && f.id === sessionId);
-      if (hit) {
-        clearInterval(iv);
-        clearTimeout(timer);
-        resolve(hit);
-      }
-    }, 25);
-  });
-
-  assert.equal(resumed.type, "session.resumed");
-  assert.equal(await sessionCount(), before + 1);
-  assert.equal(reconnect.frames.filter((f) => f.type === "session.created").length, 0);
-
-  reconnect.send({ type: "pty.close", id: sessionId });
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  reconnect.close();
+    assert.equal(rejected.type, "pty.error");
+    assert.equal(rejected.code, "HOST_REQUIRED");
+    // 被拒就不能建会话：
+    assert.equal(await sessionCount(), before);
+    assert.equal(creator.frames.filter((f) => f.type === "session.created").length, 0);
+  } finally {
+    // 断言失败也必须关 socket，否则这个文件的进程不退出（全量运行会卡死）。
+    creator.close();
+  }
 });
 
 test("pty.attach 不存在的 id → pty.error / SESSION_GONE", async () => {

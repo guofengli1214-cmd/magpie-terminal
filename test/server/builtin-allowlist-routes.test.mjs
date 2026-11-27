@@ -80,7 +80,7 @@ test("I-R1 GET /api/config 带 builtinAllowlist（默认清单）+ builtinAllowl
     assert.deepEqual(body.builtinAllowlist, [...DEFAULT_BUILTIN_ALLOWLIST]);
     assert.deepEqual(body.builtinAllowlistDefaults, [...DEFAULT_BUILTIN_ALLOWLIST]);
     // 不破坏既有响应形状：原有键都还在。
-    for (const key of ["model", "autonomy", "allowlist", "reviewModel", "basePrompt", "defaultShell", "downloadDir"]) {
+    for (const key of ["model", "autonomy", "allowlist", "reviewModel", "basePrompt", "downloadDir"]) {
       assert.ok(Object.prototype.hasOwnProperty.call(body, key), `缺少既有键 ${key}`);
     }
   });

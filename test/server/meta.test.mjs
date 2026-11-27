@@ -38,7 +38,7 @@ async function withServer(fn, options = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "fix17g-meta-"));
   const configFile = path.join(dir, "config.json");
   const pluginsFile = path.join(dir, "plugins.json");
-  await writeFile(configFile, JSON.stringify({ version: 1, defaultShell: null }), "utf8");
+  await writeFile(configFile, JSON.stringify({ version: 1 }), "utf8");
   if (options.plugins !== undefined) {
     await writeFile(pluginsFile, JSON.stringify(options.plugins), "utf8");
   }

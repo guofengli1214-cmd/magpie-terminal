@@ -337,6 +337,12 @@ export default function createAiDrawer(elements) {
     if (!ctxBar) return;
     ctxBar.textContent = "";
     const terminal = terminalMeta();
+    // 0.3.0：没有终端就没有"AI 在哪儿执行"可报。整条不渲染，不挂「本机」占位。
+    if (!terminal) {
+      ctxBar.hidden = true;
+      return;
+    }
+    ctxBar.hidden = false;
     const snapshot = agentStore.getSnapshot();
     const current = snapshot.sessions.find((item) => item.id === snapshot.currentSessionId) || null;
     const kind = current ? current.terminalKind : terminal && terminal.kind === "remote" ? "remote" : "local";
@@ -620,7 +626,7 @@ export default function createAiDrawer(elements) {
     const label = terminal && typeof terminal.label === "string" ? terminal.label : "";
     const headTitle = isRemote
       ? `ssh: ${(terminal && terminal.hostName) || "远程主机"}`
-      : label || "本机";
+      : label || "未连接主机";
     sessionsButton.__titleEl.textContent = headTitle;
     const count = snapshot.sessions.length;
     sessionsCount.textContent = `${count} 个会话`;

@@ -48,9 +48,6 @@ import { readMagpieSettings, normalizeAccent } from "../config/magpie-settings.m
 import { detectInstallKind } from "../config/install-kind.mjs";
 import { checkForUpdate, normalizeRepository } from "../config/update-check.mjs";
 import { TITLE_MAX, createSessionStore } from "../ai/sessions.mjs";
-import { detectShell, loadNodePty, LOCKED_NODE_PTY_VERSION } from "../pty/bridge.mjs";
-import { SessionManager } from "../pty/session.mjs";
-import { detectShells, resolveShellById, resolveShellForRequest } from "../pty/shells.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = "0.1.0";
@@ -300,7 +297,6 @@ function publicConfigPayload(view) {
     allowlist: view.allowlist,
     reviewModel: view.reviewModel,
     basePrompt: view.basePrompt,
-    defaultShell: view.defaultShell,
     showApprovalEffect: view.showApprovalEffect === true,
     downloadDir: view.downloadDir,
     // TASK-FIX17-L4 R1：推理强度（publicConfig() 已归一，这里只负责带出去）。
@@ -907,35 +903,9 @@ export async function startServer(options = {}) {
   const updateCheckOptions =
     options.updateCheck && typeof options.updateCheck === "object" ? options.updateCheck : {};
 
-  const shell = detectShell({ shell: options.shell });
-  const ptyLoad = loadNodePty();
-  const mode = ptyLoad.ok ? "native" : "sentinel";
-  // TASK-V4-F：默认 shell 仍由 detectShell() 决定（/api/health 不变）；
-  // 每个会话可以用 shellId 现取自己的 shell。
-  const sessions = new SessionManager({ shell, ptyLoad, mode, resolveShell: resolveShellById });
-  sessions.ensureExitHook();
-
-  // 远程 SSH 会话层（TASK-V2-B）。与本地 SessionManager 并存，互不影响。
+  // 远程 SSH 会话层（TASK-V2-B）：本插件唯一的会话来源（本机 PTY 已删）。
   const remote = new RemoteRegistry({ log });
   remote.ensureExitHook();
-
-  const nodePtyVersion = ptyLoad.ok ? ptyLoad.version : null;
-  if (mode === "sentinel") {
-    log({
-      level: "error",
-      code: "PTY_UNAVAILABLE",
-      msg: "native pty module unavailable, running in sentinel mode",
-      reason: ptyLoad.reason,
-    });
-  } else if (nodePtyVersion !== LOCKED_NODE_PTY_VERSION) {
-    log({
-      level: "error",
-      code: "PTY_VERSION_MISMATCH",
-      msg: "native pty module version mismatch",
-      expected: LOCKED_NODE_PTY_VERSION,
-      actual: nodePtyVersion,
-    });
-  }
 
   const server = http.createServer();
   let wsHandle = null;
@@ -1485,12 +1455,9 @@ export async function startServer(options = {}) {
           res,
           200,
           buildHealth({
-            version: VERSION,
+            version: packageInfo.version,
             port,
-            shell,
-            pty: mode,
-            nodePtyVersion,
-            sessions: sessions.size,
+            sessions: remote.size,
           }),
           {},
           cors,
@@ -1580,41 +1547,6 @@ export async function startServer(options = {}) {
           };
         }
         writeJson(res, 200, payload, {}, cors);
-        return;
-      }
-
-      // GET /api/shells：本机可用 shell 清单（TASK-V4-F §5.3，TASK-FIX17-A 扩成动态发现）。
-      // 与 /api/models 同级：走同一道 token 门，不做例外。
-      //
-      // 字段契约（AC10）：id / name / version / path / available 一个都不许改名或删除，
-      // 只允许新增。TASK-FIX17-A 新增 group（local|wsl|profile）与 detail（发行版/WT profile 名）。
-      if (req.method === "GET" && pathname === "/api/shells") {
-        const { config } = await readConfig();
-        const view = publicConfig(config);
-        const shells = detectShells().map((item) => ({
-          id: item.id,
-          name: item.name,
-          version: item.version,
-          path: item.path,
-          available: Boolean(item.available),
-          // ---- TASK-FIX17-A 新增（只增不改）----
-          group: item.group || "local",
-          ...(item.detail ? { detail: item.detail } : {}),
-        }));
-        const fallbackDefault = resolveShellForRequest({ defaultShell: null });
-        writeJson(
-          res,
-          200,
-          {
-            shells,
-            // 实际生效的默认（config.defaultShell 不可用时也回真实生效的那个）。
-            default: (view.defaultShell && resolveShellById(view.defaultShell) ? view.defaultShell : null) ||
-              (fallbackDefault.ok && fallbackDefault.shell ? fallbackDefault.shell.id : null),
-            configured: view.defaultShell,
-          },
-          {},
-          cors,
-        );
         return;
       }
 
@@ -2010,19 +1942,9 @@ export async function startServer(options = {}) {
     server,
     port,
     token,
-    sessions,
     remote,
     log,
     aiSessions,
-    // TASK-V4-F §5.2：每次 pty.create 现读 config.defaultShell（不重启就生效）。
-    getDefaultShell: async () => {
-      try {
-        const { config } = await readConfig();
-        return config && typeof config.defaultShell === "string" ? config.defaultShell : null;
-      } catch {
-        return null;
-      }
-    },
   });
 
   const handle = {
@@ -2031,24 +1953,13 @@ export async function startServer(options = {}) {
     token,
     tokenInfo: maskToken(token),
     server,
-    sessions,
     remote,
     aiSessions,
-    shell,
-    mode,
-    nodePtyVersion,
     log,
     close: async () => {
       wsHandle.close();
       try {
         remote.killAllSync();
-      } catch {
-        // 忽略。
-      }
-      // TASK-V4-F-FIX1：本地 PTY 也必须杀。node-pty 的原生句柄不随 server.close()
-      // 释放，漏杀会让 Node 进程永远退不出去（`node --test` 挂死的根因）。
-      try {
-        sessions.killAllSync();
       } catch {
         // 忽略。
       }
@@ -2061,8 +1972,6 @@ export async function startServer(options = {}) {
     code: "SERVER_STARTED",
     msg: "listening",
     port,
-    pty: mode,
-    nodePtyVersion,
     token: handle.tokenInfo,
     tokenBytes: TOKEN_BYTES,
   });

@@ -91,7 +91,7 @@
     setTimeout(function () {
       const box = said();
       if (!box) return;
-      box.textContent = "本地终端服务没有在运行（127.0.0.1:" + p + "）";
+      box.textContent = "本地服务没有在运行（127.0.0.1:" + p + "）";
       if (document.getElementById("boot-retry")) return;
       const btn = document.createElement("button");
       btn.id = "boot-retry";

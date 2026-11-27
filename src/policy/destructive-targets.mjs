@@ -71,10 +71,16 @@ export function isCwdOrAncestor(resolved, cwd) {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
-/** 盘根（`/`、`C:\`、`D:/`）。 */
+/**
+ * 盘根（`/`、`C:\`、`D:/`）。平台无关：AI 命令跑在远端主机上，远端可能是 Windows。
+ */
 export function isDriveRoot(resolved) {
-  const text = path.resolve(String(resolved));
-  return fold(path.parse(text).root) === fold(text);
+  const text = String(resolved);
+  // 远端主机可能是 Windows 而服务跑在 Linux/mac：先按形态认盘根，不依赖宿主 path。
+  if (/^[A-Za-z]:[\\/]?$/.test(text)) return true; // C:\ / D:/ / C:
+  if (text === "/" || text === "\\") return true;
+  const hostResolved = path.resolve(text);
+  return fold(path.parse(hostResolved).root) === fold(hostResolved);
 }
 
 /**
@@ -198,6 +204,12 @@ export function guardTargets({ targets, cwd, historyText, targetsUnresolved } = 
       continue;
     }
 
+    // 盘根：原始目标与解析结果都要判。远端可能是 Windows 而服务跑在 POSIX 上，
+    // 此时 resolveAgainst 会把 `C:\` 拼成 `<cwd>/C:\`，盘根形态只剩原始目标里还有。
+    if (isDriveRoot(target)) {
+      block(target, "root", target);
+      continue;
+    }
     if (isDriveRoot(resolved)) {
       block(target, "root", resolved);
       continue;

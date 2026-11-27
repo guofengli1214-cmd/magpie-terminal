@@ -1,6 +1,6 @@
 // PTY 执行通道的行为锁（PROTOCOL-AGENT.md §4，AC8 / AC9）。
 //
-// 全部用假的 sessions 对象喂 `pty.output` 事件，不碰真的 node-pty：
+// 全部用假的 remote 对象（接口与 RemoteRegistry 一致）喂 `pty.output` 事件，不碰真的 SSH：
 // 真终端的时序会让单测变 flaky。
 
 import test from "node:test";
@@ -31,8 +31,13 @@ import {
   truncateOutput,
 } from "../../src/ai/runner.mjs";
 
+// Linux 上 node:test 会在事件循环清空时判整轮结束，而 runner 的定时器全 unref（产品设计：命令执行不能拖住服务进程）。
+// 这个不 unref 的 interval 只负责把测试进程留住，after 钩子里清掉。
+const keepAlive = setInterval(() => {}, 1000);
+test.after(() => clearInterval(keepAlive));
+
 /**
- * 假 registry：与 SessionManager 的接口一致（on/off/write/get）。
+ * 假 registry：与 RemoteRegistry 的接口一致（on/off/write/get）。
  * `write` 只把 payload 记下来，由测试决定回什么输出。
  */
 class FakeRegistry extends EventEmitter {
@@ -74,14 +79,14 @@ function makeRunner(opts = {}) {
   const registry = new FakeRegistry();
   registry.add("s1");
   const runner = createCommandRunner({
-    sessions: registry,
+    remote: registry,
     quietMs: opts.quietMs === undefined ? 120 : opts.quietMs,
     maxQuietMs: opts.maxQuietMs,
     minWaitMs: opts.minWaitMs === undefined ? 20 : opts.minWaitMs,
     timeoutMs: opts.timeoutMs === undefined ? 2000 : opts.timeoutMs,
     log: () => {},
   });
-  runner.setSessionResolver((id) => (registry.get(id) ? "local" : null));
+  runner.setSessionResolver((id) => (registry.get(id) ? "remote" : null));
   return { registry, runner };
 }
 
@@ -617,13 +622,13 @@ test("日志不含完整命令（只打长度 + 前 40 字符）", async () => {
   const registry = new FakeRegistry();
   registry.add("s1");
   const runner = createCommandRunner({
-    sessions: registry,
+    remote: registry,
     quietMs: 80,
     minWaitMs: 20,
     timeoutMs: 1000,
     log: (entry) => logs.push(entry),
   });
-  runner.setSessionResolver((id) => (registry.get(id) ? "local" : null));
+  runner.setSessionResolver((id) => (registry.get(id) ? "remote" : null));
   autoProbe(registry);
   autoCommand(registry, "silent");
   const command = `echo ${"secret".repeat(40)}`;
@@ -689,7 +694,7 @@ test("修复1：quietFactor 可用构造参数改成 1（回到协议里 1000ms 
   const registry = new FakeRegistry();
   registry.add("s1");
   const runner = createCommandRunner({
-    sessions: registry,
+    remote: registry,
     quietMs: 150,
     quietFactor: 1,
     maxQuietMs: 150, // 钉住天花板，验证 150 × 1 = 150ms 的语义
@@ -697,7 +702,7 @@ test("修复1：quietFactor 可用构造参数改成 1（回到协议里 1000ms 
     timeoutMs: 3000,
     log: () => {},
   });
-  runner.setSessionResolver((id) => (registry.get(id) ? "local" : null));
+  runner.setSessionResolver((id) => (registry.get(id) ? "remote" : null));
   autoProbe(registry);
   autoCommand(registry, "silent");
   const startedAt = Date.now();
@@ -714,14 +719,14 @@ test("修复1：quietFactor 可用环境变量覆盖，非法值回落默认 3",
     const registry = new FakeRegistry();
     registry.add("s1");
     const runner = createCommandRunner({
-      sessions: registry,
+      remote: registry,
       quietMs: 100,
       maxQuietMs: 200, // 钉住天花板：100 × 2 = 200ms
       minWaitMs: 20,
       timeoutMs: 4000,
       log: () => {},
     });
-    runner.setSessionResolver((id) => (registry.get(id) ? "local" : null));
+    runner.setSessionResolver((id) => (registry.get(id) ? "remote" : null));
     autoProbe(registry);
     autoCommand(registry, "silent");
     const startedAt = Date.now();
@@ -735,14 +740,14 @@ test("修复1：quietFactor 可用环境变量覆盖，非法值回落默认 3",
     const registry2 = new FakeRegistry();
     registry2.add("s1");
     const runner2 = createCommandRunner({
-      sessions: registry2,
+      remote: registry2,
       quietMs: 100,
       maxQuietMs: 300, // 钉住天花板：非法值回落默认 3 → 100 × 3 = 300ms
       minWaitMs: 20,
       timeoutMs: 4000,
       log: () => {},
     });
-    runner2.setSessionResolver((id) => (registry2.get(id) ? "local" : null));
+    runner2.setSessionResolver((id) => (registry2.get(id) ? "remote" : null));
     autoProbe(registry2);
     autoCommand(registry2, "silent");
     const startedAt2 = Date.now();
@@ -761,13 +766,13 @@ test("修复1：慢启动命令（1.5s 后才出第一段输出）不会被静�
   registry.add("s1");
   // quietMs=600 × 3 = 1800ms 阈值；第一段输出在 1500ms 才来 → 旧实现 300+600=900ms 就切了。
   const runner = createCommandRunner({
-    sessions: registry,
+    remote: registry,
     quietMs: 600,
     minWaitMs: 300,
     timeoutMs: 8000,
     log: () => {},
   });
-  runner.setSessionResolver((id) => (registry.get(id) ? "local" : null));
+  runner.setSessionResolver((id) => (registry.get(id) ? "remote" : null));
   autoProbe(registry);
   registry.on("write", ({ id, data }) => {
     const marks = /__MT_S_([0-9a-f]+)__/.exec(data);
@@ -789,13 +794,13 @@ test("修复1：输出中途停 1 秒以上（每秒一行）不会被静默切�
   const registry = new FakeRegistry();
   registry.add("s1");
   const runner = createCommandRunner({
-    sessions: registry,
+    remote: registry,
     quietMs: 500, // ×3 = 1500ms，故意大于 1.2s 的输出空窗
     minWaitMs: 300,
     timeoutMs: 8000,
     log: () => {},
   });
-  runner.setSessionResolver((id) => (registry.get(id) ? "local" : null));
+  runner.setSessionResolver((id) => (registry.get(id) ? "remote" : null));
   autoProbe(registry);
   registry.on("write", ({ id, data }) => {
     const marks = /__MT_S_([0-9a-f]+)__/.exec(data);
@@ -875,8 +880,8 @@ test("修复3：只有伪造 endMark、真实结束标记还没到时 finished=f
 test("修复3：命令输出里含本命令 nonce 的 endMark+数字时，仍拿真实 exitCode（F8 验收原样）", async () => {
   const registry = new FakeRegistry();
   registry.add("s1");
-  const runner = createCommandRunner({ sessions: registry, quietMs: 120, minWaitMs: 20, timeoutMs: 3000, log: () => {} });
-  runner.setSessionResolver((id) => (registry.get(id) ? "local" : null));
+  const runner = createCommandRunner({ remote: registry, quietMs: 120, minWaitMs: 20, timeoutMs: 3000, log: () => {} });
+  runner.setSessionResolver((id) => (registry.get(id) ? "remote" : null));
   autoProbe(registry);
   registry.on("write", ({ id, data }) => {
     const marks = /__MT_S_([0-9a-f]+)__/.exec(data);

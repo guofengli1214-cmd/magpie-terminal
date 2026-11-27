@@ -1,6 +1,6 @@
 # 平台笔记：magpie 页面插件（magpie-terminal）
 
-> 状态：设计已定，代码未开始。本文记录 **magpie 平台** 的硬事实与本项目的对接约定，全部来自本机实测（2026-11-22）。写代码前先读这一份，能省掉大半试错。
+> 状态：0.3.0 已实现。本文记录 **magpie 平台** 的硬事实与本项目的对接约定，平台事实来自本机实测（2026-11-22）。读代码前先读这一份，能省掉大半试错。
 
 术语统一见 README：「宿主」= magpie 本体，「插件宿主」= `magpie-bun.exe` 进程，「应用服务」= 本项目在 `127.0.0.1:3480` 上的 HTTP+WS。
 
@@ -26,8 +26,8 @@
 | `plugins.json` | 已安装插件清单，结构 `{"plugins":[{"spec":"<pkg>@latest"}, …]}`，当前 7 条 | `magpie plugin add` 写这里；`plugin list --json` 读这里 |
 | `plugins.yml` | 内置插件的开关与配置（`preset: all`、`settled: 1`） | 与页面插件无关，不要改 |
 | `plugins/package.json` | 插件宿主的依赖清单（Bun 视角的「workspace 根」） | 本项目的依赖解析落在这个 `node_modules` 下 |
-| `plugins/bun.lock` | 上面那份依赖的锁文件 | 决定实际装到的 node-pty 版本 |
-| `plugins/node_modules/` | 已存在 `node-pty@1.2.0-beta.15`、`ws@8.22.0`、`zod@4.6.7`、`ignore@7.0.14`、`node-addon-api@7.1.1`、`@agentclientprotocol/sdk` 与 7 个 `@magpie-community/*` 插件 | **复用，不重装**（重装会触发坑 3） |
+| `plugins/bun.lock` | 上面那份依赖的锁文件 | 决定宿主侧装到的依赖版本；本项目改用自带 `node_modules`（纯 JS 包，见 `package.json`） |
+| `plugins/node_modules/` | 已存在 `node-pty@1.2.0-beta.15`、`ws@8.22.0`、`zod@4.6.7`、`ignore@7.0.14`、`node-addon-api@7.1.1`、`@agentclientprotocol/sdk` 与 7 个 `@magpie-community/*` 插件 | 宿主自己的依赖。0.3.0 起本项目不再依赖其中的 `node-pty`，自带 `node_modules`（纯 JS 包） |
 | `plugins/dist/*.tgz` | 各插件的打包产物 | 与本项目无关（本地路径安装不经过 tgz） |
 | `gateway.json` | `{"addr":"[::]:3425","pid":18560,"serves":"tray","version":"0.1.4015",…}` | 网关端口的**唯一**来源 |
 | `settings.json` | 主题、语言、托盘、redact、lan 等 UI/行为设置 | **里面没有 port 字段**；不要以为能从这读到网关端口 |
@@ -170,7 +170,7 @@ export default {
 | **`server()` 首次调用才懒起服务** | 单纯 `import` 模块不该占端口；`started` 单例保证只起一次 |
 | `server()` 的 `options` 就是 `magpie.options` 的合并结果 | 端口从这里读，别去读 `settings.json`（里面没有 port） |
 | 宿主**从不调用 `stop()`**，把返回值当 OpenCode hooks | 所以不能靠 `stop()` 做清理，返回值保持 `{}` |
-| 宿主关 stdin 后直接 `process.exit()` | 不要在 PTY 里等优雅关闭；退出兜底要同步做（`kill()` 子进程） |
+| 宿主关 stdin 后直接 `process.exit()` | 没有优雅关闭窗口；退出兜底要同步做（`close()` 打开的 SSH 连接与 WS） |
 | **不要注册 `SIGINT`/`SIGTERM`** | 宿主直接 `process.exit()`，信号处理器不会被走到，写了只会造成「以为清了其实没清」的错觉 |
 | 端口被上一个宿主占着时不要抛错阻塞启动 | page-chat 的做法：`info.ready.then(...)` 后台等它松手，宿主先起来 |
 

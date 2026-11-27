@@ -1214,7 +1214,7 @@ export default function createSettingsPanel(elements) {
       type: "text",
       "data-role": "download-dir",
       className: "settings-download-input",
-      placeholder: "例如 C:\\Users\\你\\Downloads\\magpie-terminal",
+      placeholder: "例如：下载目录的绝对路径",
       autocomplete: "off",
       spellcheck: "false",
       maxlength: "512",

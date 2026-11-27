@@ -2006,6 +2006,17 @@ button[disabled] {
   min-height: 0;
   overflow: auto;
   padding: 6px;
+  /* TASK-G U04：把 body 变成 flex 列，让 host-list 撑满、空态在里面垂直居中。
+     列表非空时 host-list 也只是「撑满 + 顶部排」，视觉不变。 */
+  display: flex;
+  flex-direction: column;
+}
+
+[data-role="hosts-panel"] [data-role="host-list"] {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 [data-role="hosts-panel"] .hosts-footer {
@@ -2018,10 +2029,58 @@ button[disabled] {
   width: 100%;
 }
 
+/* TASK-G U04：主机面板空态。原来只有一行 12px 灰字贴在 body 顶部，而
+   「+ 添加主机」按钮在面板最底部（实测相隔约 630px），文案里的「点下面」
+   在空间上失效；最弱的一行字又承担了最重要的信息。改成 body 内整体居中
+   的「标题 + 一句说明 + 主按钮」，提示与动作在一起。 */
 .hosts-empty {
-  margin: 8px 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  /* body 有确定高度（flex: 1 1 auto）→ 百分比 min-height 能解析，空态在整块
+     可用高度里居中，而不是贴在顶部、按钮留在 600px 之外的面板底部。 */
+  min-height: 100%;
+  padding: var(--space-4) var(--space-3);
+  box-sizing: border-box;
+  text-align: center;
+}
+
+.hosts-empty-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--term-fg);
+}
+
+.hosts-empty-hint {
+  margin: 0;
+  max-width: 26ch;
   font-size: 12px;
+  line-height: 1.6;
   color: var(--term-muted);
+}
+
+.hosts-empty-cta {
+  margin-top: var(--space-1);
+  border: 1px solid var(--term-accent);
+  background: var(--term-accent);
+  color: var(--term-accent-fg);
+  font-size: 12px;
+  font-weight: 600;
+  padding: var(--space-2) var(--space-4);
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.hosts-empty-cta:hover {
+  background: var(--term-fg-2);
+  border-color: var(--term-fg-2);
+  color: var(--term-bg);
+}
+
+.hosts-empty-cta:focus-visible {
+  border-color: var(--term-fg);
 }
 
 /* 主机列表项：默认只显示 name + addr；工具按钮 hover / focus / 右键时出现。 */
@@ -2327,82 +2386,9 @@ button[disabled] {
 }
 
 /* ------------------------------------------------------------------ *
- * TASK-V4-F：本机条目 + shell 下拉 + 「+」新建菜单
+ * 「+」新建菜单（0.3.0：只剩主机分组，本机条目与 shell 下拉已删）
  * 只引用变量；置灰的「未安装」项靠 [disabled] 的既有样式（opacity）。
  * ------------------------------------------------------------------ */
-
-[data-role="host-local"] {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-bottom: 5px;
-  padding-bottom: 5px;
-  border-bottom: 1px solid var(--term-border);
-}
-
-[data-role="host-local"] [data-role="host-local-open"] {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 6px;
-  border: none;
-  border-radius: var(--term-radius);
-  text-align: left;
-  background: transparent;
-}
-
-[data-role="host-local"] [data-role="host-local-open"] .host-item-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  /* 与 [data-role="host-item"] 一致：名称一行、版本一行（
-   * 不然「本机」和 shell 版本会挤在同一行，视觉上少一个空格）。 */
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-[data-role="host-local"] .host-name {
-  font-size: 12.5px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-[data-role="host-local"] .host-addr {
-  font-size: 11px;
-  color: var(--term-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-[data-role="host-local"]:hover [data-role="host-local-open"],
-[data-role="host-local"] [data-role="host-local-open"]:focus-visible {
-  background: var(--term-selection);
-}
-
-.host-local-icon {
-  flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--term-accent);
-}
-
-[data-role="host-local-shell-select"] {
-  flex: 0 0 auto;
-  width: 100%;
-  max-width: 100%;
-  font: inherit;
-  font-size: 11.5px;
-  padding: 3px 4px;
-  color: var(--term-fg);
-  background: var(--term-bg);
-  /* TASK-FIX17-F（F-05）：下拉框边界 ≥3:1（原 --term-border 只有 1.16:1）。 */
-  border: 1px solid var(--term-line-3);
-  border-radius: var(--term-radius);
-}
 
 /* 「+」下拉：body 级浮层（tabbar 是 overflow-x:auto，裁不了它） */
 [data-role="tab-new-menu"] {
@@ -2437,10 +2423,24 @@ button[disabled] {
   border-top: 1px solid var(--term-border);
 }
 
-.tab-new-group-label {
-  padding: 2px 6px;
-  font-size: 11px;
-  color: var(--term-muted);
+/* TASK-G U03：单分组时不再输出「主机」分组标题（.tab-new-group-label 已随
+   createGroupLabel 一起删掉，那条规则留给将来多分组时恢复用不到就不留），
+   无主机时的「+ 添加主机」是菜单里的兜底动作，不是一条主机条目 ——
+   给它显式按钮外观，别和上面的说明文字糊成三行一样的东西。 */
+[data-role="tab-new-menu"] .tab-new-action {
+  justify-content: center;
+  gap: 0;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--term-line-3);
+  background: var(--term-panel-2);
+  color: var(--term-fg);
+  font-weight: 600;
+}
+
+[data-role="tab-new-menu"] button.tab-new-action:hover:not([disabled]) {
+  background: var(--term-selection);
+  border-color: var(--term-focus);
 }
 
 [data-role="tab-new-menu"] button {
@@ -3707,6 +3707,11 @@ html[data-files-open="true"] [data-role="ai-handle"] {
   overflow: hidden;
 }
 
+/* 0.3.0：无终端时整条隐藏。display:flex 特异性高于 [hidden]，必须显式兜底。 */
+[data-role="ai-drawer"] .ai-ctx[hidden] {
+  display: none;
+}
+
 [data-role="ai-drawer"] .ai-ctx b {
   color: var(--term-fg-2);
   font-weight: 600;
@@ -4116,6 +4121,94 @@ html[data-files-open="true"] [data-role="ai-handle"] {
 .file-panel-saved-reveal:focus-visible {
   background: var(--term-raise);
   color: var(--term-fg-2);
+}
+
+/* ------------------------------------------------------------------ *
+ * 终端空态（0.3.0）：没有主机会话时占住终端区。
+ *
+ * 本机 PTY 已删，所以「打开页面必须自动有一个标签」不再成立：空态要顶住
+ * 主区，明确告诉用户终端只能连远程主机。
+ * 约束（有测试锁）：颜色只用 var(--term-*)，间距只用 var(--space-*)。
+ * 居中用 flex，不写死高度，所以不会撑出滚动条。
+ *
+ * 垂直居中（TASK-G U01）：terminal-host 里只有绝对定位的 pane，没有静态内容，
+ * 但它也是 flex: 1 1 auto —— 空态可见时两者会平分剩余高度，把空态压到下半区
+ * （实测 1280×820：空态中心 y≈572，主区中心 y≈400，偏下 ~170px）。
+ * 所以空态可见时把 terminal-host 收成 0 高，让空态独占终端区。
+ * 不支持 :has 的环境退回上面那条老规则的行为（偏下但不破版）。
+ * ------------------------------------------------------------------ */
+[data-role="main"]:has(> .terminal-empty:not([hidden])) > [data-role="terminal-host"] {
+  flex: 0 0 0;
+  min-height: 0;
+}
+
+.terminal-empty {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  background: var(--term-bg);
+  color: var(--term-fg);
+  text-align: center;
+  overflow: hidden;
+}
+
+.terminal-empty[hidden] {
+  display: none;
+}
+
+.terminal-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--term-fg);
+}
+
+.terminal-empty-hint {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--term-muted);
+}
+
+.terminal-empty-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+}
+
+.terminal-empty-cta {
+  appearance: none;
+  /* TASK-G U01：唯一主操作必须是**主**按钮。原来的 accent-soft 底在两套主题下
+     都渲成近似中性灰（实测浅色 srgb .891/.891/.897），和说明文字抢不到注意力，
+     读起来像「次要按钮」。实心 accent + accent-fg 是仓里既有的主按钮写法
+     （components.css 的 .composer-action / .orb-action），两套主题的配对由
+     tokens.css 的 --term-accent / --term-accent-fg 保证。 */
+  border: 1px solid var(--term-accent);
+  border-radius: var(--term-radius);
+  background: var(--term-accent);
+  color: var(--term-accent-fg);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: var(--space-3) var(--space-6);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.terminal-empty-cta:hover {
+  background: var(--term-fg-2);
+  border-color: var(--term-fg-2);
+  color: var(--term-bg);
+}
+
+.terminal-empty-cta:focus-visible {
+  border-color: var(--term-fg);
 }
 
 /* =====================================================================

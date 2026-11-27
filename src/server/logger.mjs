@@ -1,4 +1,4 @@
-// 插件自有日志文件（TASK-FIX17-E R2）：写 %LOCALAPPDATA%\magpie\logs\show-terminal.log。
+// 插件自有日志文件（TASK-FIX17-E R2）：写平台标准日志目录。
 //
 // 为什么不用宿主的 app.log：那是所有插件共用的一个文件（实测已数 MB），
 // 出问题时要在一堆别人的行里捞自己那几行；而且我们没有清理它的权限。
@@ -10,7 +10,8 @@
 //   ③ **轮转只留一份**：单文件 2MB，超出后改名 `.1`，旧 `.1` 直接覆盖
 //      （不做时间轮转：只需要「别把磁盘写满」）。
 //
-// 路径用 `LOCALAPPDATA` 现算（不写死用户名），测试/探针可用
+// 路径按平台现算（Windows 用 `LOCALAPPDATA`、macOS 用 `~/Library/Logs`、
+// Linux 用 `$XDG_STATE_HOME`），不写死用户名；测试/探针可用
 // `MAGPIE_TERMINAL_LOG_DIR` 指到临时目录，避免污染用户的真实日志。
 
 import {
@@ -31,18 +32,35 @@ import { redact } from "./log-redact.mjs";
 export const LOG_FILE_NAME = "show-terminal.log";
 export const LOG_ROTATED_NAME = `${LOG_FILE_NAME}.1`;
 export const MAX_LOG_BYTES = 2 * 1024 * 1024;
-/** 测试与探针用：不设时不生效（生产永远走 LOCALAPPDATA）。 */
+/** 测试与探针用：不设时不生效（生产永远走平台标准目录）。 */
 export const LOG_DIR_ENV = "MAGPIE_TERMINAL_LOG_DIR";
 
-/** `%LOCALAPPDATA%\magpie\logs`（非 Windows 回落家目录，仅为可单测）。 */
+/**
+ * 平台标准日志目录：
+ * - `MAGPIE_TERMINAL_LOG_DIR` 优先；
+ * - Windows：`%LOCALAPPDATA%\magpie\logs`（没有 LOCALAPPDATA 回落家目录）；
+ * - macOS：`~/Library/Logs/magpie`；
+ * - 其它（Linux 等）：`$XDG_STATE_HOME/magpie/logs`，XDG 未设则 `~/.local/state/magpie/logs`。
+ */
 export function defaultLogDir() {
   const override = process.env[LOG_DIR_ENV];
   if (typeof override === "string" && override.length > 0) return override;
-  const base =
-    typeof process.env.LOCALAPPDATA === "string" && process.env.LOCALAPPDATA.length > 0
-      ? process.env.LOCALAPPDATA
-      : os.homedir();
-  return path.join(base, "magpie", "logs");
+  const home = os.homedir();
+  if (process.platform === "win32") {
+    const base =
+      typeof process.env.LOCALAPPDATA === "string" && process.env.LOCALAPPDATA.length > 0
+        ? process.env.LOCALAPPDATA
+        : home;
+    return path.join(base, "magpie", "logs");
+  }
+  if (process.platform === "darwin") {
+    return path.join(home, "Library", "Logs", "magpie");
+  }
+  const xdg =
+    typeof process.env.XDG_STATE_HOME === "string" && process.env.XDG_STATE_HOME.length > 0
+      ? process.env.XDG_STATE_HOME
+      : path.join(home, ".local", "state");
+  return path.join(xdg, "magpie", "logs");
 }
 
 function safeStat(file) {

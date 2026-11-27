@@ -1,6 +1,6 @@
 // 插件入口：只负责懒起服务。顶层零副作用。
 // 宿主从不调用任何关闭回调，因此这里不提供关闭方法，也不注册进程信号。
-// 唯一清理点是 SessionManager 里的 process.on("exit") 同步 kill。
+// 唯一清理点是 RemoteRegistry 里的 process.on("exit") 同步 kill。
 
 let started = null;
 
@@ -15,7 +15,7 @@ async function start(options) {
   const port = options && Number.isFinite(Number(options.port)) ? Number(options.port) : 3480;
   for (let attempt = 1; ; attempt += 1) {
     try {
-      const handle = await startServer({ port, shell: options && options.shell });
+      const handle = await startServer({ port });
       console.log(`[magpie-terminal] listening on http://127.0.0.1:${handle.port}`);
       return handle;
     } catch (err) {

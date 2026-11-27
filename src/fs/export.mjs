@@ -2,8 +2,7 @@
 //
 // 为什么单独一个模块而不是塞进 routes/fs.mjs：
 // - 重名策略（`name (1).ext`）是**纯逻辑**，必须能脱离 HTTP 单测；
-// - 本地复制与远程 sftp 的差异只在「怎么拿到源」，其余（建目录 / 撞名 /
-//   原子收尾 / 错误映射）一模一样，放一处才不会两边漂移。
+// - 本模块现在只服务远程 sftp 下载：写入下载目录、撞名与错误映射。
 //
 // 三条硬约束：
 //   ① **绝不覆盖已有文件**：`name` 被占用就退到 `name (1).ext`，最多 999 次；
@@ -16,13 +15,12 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 
 import { downloadRemote } from "../ssh/fs.mjs";
-import { realPathOf, sensitiveBlockedReason } from "./local.mjs";
 
 /** 撞名时最多试到 `name (999).ext`；再撞就报错，不无限循环。 */
 export const UNIQUE_MAX_TRIES = 999;
 
 /**
- * 造一个带 `code` / `userText` 的错误（与 `src/fs/local.mjs` 的 fsError 同形）。
+ * 造一个带 `code` / `userText` 的错误（与 `src/fs/guard.mjs` 的 fsError 同形）。
  * @param {string} code
  * @param {string} userText
  * @param {object} [extra]
@@ -131,49 +129,6 @@ function requireDir(downloadDir) {
     throw noDownloadDirError();
   }
   return downloadDir;
-}
-
-/**
- * 本地文件保存到下载目录（R2）。
- *
- * @param {string} src 源文件绝对路径
- * @param {string} downloadDir 下载目录（绝对路径）
- * @param {{stat?, copyFile?, mkdir?, exists?, realpath?}} [deps]
- * @returns {Promise<{savedPath:string, bytes:number, name:string}>}
- */
-export async function saveLocalFile(src, downloadDir, deps = {}) {
-  const dir = requireDir(downloadDir);
-  const statImpl = deps.stat || stat;
-  const copyImpl = deps.copyFile || copyFile;
-  const mkdirImpl = deps.mkdir || mkdir;
-  const realpathImpl = deps.realpath || realPathOf;
-
-  const source = path.resolve(String(src || ""));
-  let info;
-  try {
-    info = await statImpl(source);
-  } catch {
-    throw exportError("NOT_FOUND", "找不到这个文件。");
-  }
-  if (info.isDirectory()) {
-    throw exportError("IS_DIRECTORY", "目录不能直接下载，请用批量下载。");
-  }
-  // 与 /api/fs/download 同一道护栏：保存接口不能变成「读敏感路径」的旁路。
-  const blocked = sensitiveBlockedReason(await realpathImpl(source));
-  if (blocked) throw exportError("FORBIDDEN_PATH", blocked);
-
-  await ensureDownloadDir(dir, mkdirImpl);
-  const { target, name } = await resolveUniqueTarget(dir, path.basename(source), deps);
-  try {
-    await copyImpl(source, target);
-  } catch (err) {
-    const mapped = asDirError(err, dir);
-    if (mapped) throw mapped;
-    throw exportError("TRANSFER_FAILED", "复制到下载目录失败（源文件可能被占用）。", {
-      reason: err && err.code ? String(err.code) : "E_COPY",
-    });
-  }
-  return { savedPath: target, bytes: Number(info.size) || 0, name };
 }
 
 /** 远程错误 → 本接口的形状：连不上统一 502 HOST_UNREACHABLE，其余原样（404 之类）。 */

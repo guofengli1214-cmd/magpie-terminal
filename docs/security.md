@@ -1,19 +1,19 @@
 # 安全模型
 
-> 状态：设计已定，代码未开始。最后更新：2026-11-22
-> 事实源：本仓库 `docs/architecture.md`、`docs/pty-notes.md`、`docs/platform-notes.md` 与 `.trellis/spec/`；PTY 侧原始数据来源见 `docs/pty-notes.md` 第 2 节。
+> 状态：0.3.0 已实现（终端只连 SSH 主机）。最后更新：2026-11-27
+> 事实源：本仓库 `docs/architecture.md`、`docs/platform-notes.md` 与 `.trellis/spec/`。
 > 本文的收紧项均为本仓库自有约束；标注「附加约束」的条目是本文新增的收紧项。
 
 ---
 
 ## 1. 威胁模型
 
-本项目的攻击面不是「公网服务」，而是**一个能执行任意本地命令的 HTTP 服务，恰好跑在用户自己的机器上**。因此威胁全部来自本机与浏览器侧，而不是远程扫描器。
+本项目的攻击面不是「公网服务」，而是**一个能驱动已保存 SSH 主机、在其上执行任意命令的 HTTP 服务，恰好跑在用户自己的机器上**（0.3.0 起不再执行本地命令：本地终端已删除）。因此威胁全部来自本机与浏览器侧，而不是远程扫描器。
 
 | # | 威胁 | 攻击者能做到什么 | 对应防线 | 残余风险 |
 |---|---|---|---|---|
 | 1 | 本机其他进程伪造请求 | 任何同用户进程都可以 `fetch http://127.0.0.1:3480/api/...`，如果服务没有鉴权，等于给全机进程开了一个命令执行接口 | 每个 `/api/*` 与 WebSocket 升级都要求 32 字节 hex token，`timingSafeEqual` 比对（见第 2 节） | 同用户进程可读 `caller-keys.json`、可读插件目录、理论上可读进程内存；token 挡的是「不知道 token 的进程」，不是「同用户恶意进程」 |
-| 2 | 别的网页经浏览器借道 | 用户用同一个浏览器打开任意网页，该网页脚本向 `127.0.0.1:3480` 发请求（简单请求无需预检）。若服务无 Origin/Token 校验，网页即可驱动本机终端 | `Origin` 白名单 + 每请求 token；浏览器侧网页拿不到 token（token 只出现在应用页 HTML 里，跨源读不到） | 若 token 曾出现在 URL，会经 Referer / 历史泄漏（本文禁止，见第 5 节） |
+| 2 | 别的网页经浏览器借道 | 用户用同一个浏览器打开任意网页，该网页脚本向 `127.0.0.1:3480` 发请求（简单请求无需预检）。若服务无 Origin/Token 校验，网页即可驱动已保存主机的终端 | `Origin` 白名单 + 每请求 token；浏览器侧网页拿不到 token（token 只出现在应用页 HTML 里，跨源读不到） | 若 token 曾出现在 URL，会经 Referer / 历史泄漏（本文禁止，见第 5 节） |
 | 3 | DNS 重绑定 | 攻击者控制的域名解析到 `127.0.0.1`，页面同源策略被绕过，脚本对本地服务发起「同源」请求，读响应 | `Host` 头必须等于 `127.0.0.1:3480` 或 `localhost:3480`；重绑定后浏览器发出的 `Host` 是攻击者域名，直接 403 | 无（Host 校验是该攻击的标准解） |
 | 4 | 恶意命令被 AI 自动执行 | 模型给出 `rm -rf ~`、`curl … \| sh`、`npm i` 之类命令，UI 不弹确认直接跑，用户来不及看 | 命令分级 fail-closed（见第 3 节）：只有「切得开 + 每段命令头在只读白名单 + 无重定向」才自动执行，其余一律弹确认卡 | 分级器只做字符串级判断，包装脚本可绕过（见第 6 节，已知限制） |
 | 5 | 日志 / 凭据泄漏 | 凭据被写进日志、URL、异常栈、HTTP 响应，随后被 `app.log` 或浏览器历史带走 | secret 只在内存中读，绝不写日志、绝不进 URL、绝不出现在任何响应；token 只在内存与页面 HTML 里，不落盘（见第 5 节） | 本机任何同用户进程可直接读 `caller-keys.json`（实测可读），这条防不住，只能不复制、不外发 |
@@ -138,7 +138,7 @@ Origin === "http://localhost:3480"
 | git 只读子命令 | `git status`、`git log`、`git diff`、`git show`、`git branch`（**无位置参数**且参数 ⊆ `{-a,-r,-v,-vv,-l,--list,--show-current,--contains,--merged,--no-merged,--points-at}`）、`git remote`（只放 `-v/--verbose`）、`git tag`（只放 `-l/--list/-n/--contains/--points-at/--merged/--no-merged`）、`git rev-parse`、`git describe`、`git blame`、`git stash list` | `git remote` / `git tag` / `git branch` 只要带**位置参数**就确认（那就是写仓库：`git remote add`、`git tag v1.0`、`git branch newbranch`）。见下方「为什么按命令头判定就必须排除某些命令」与 3.4 |
 | docker 只读子命令 | `docker ps`、`docker images`、`docker image ls`、`docker container ls`、`docker volume ls`、`docker network ls`、`docker system df`、`docker compose ps`、`docker compose logs`、`docker version`、`docker info`、`docker stats`、`docker logs`、`docker inspect`、`docker port`、`docker top`、`docker history`、`docker diff`、`docker search` | 子命令按**最长匹配**（`volume ls` 与 `volume rm` 能区分）。写操作仍确认：`docker run`、`docker rmi`、`docker volume rm`、`docker compose up` |
 | npm 只读子命令 | `npm -v`、`npm ls`、`npm list`、`npm outdated` | **`npm run` 绝不加**：会执行 `package.json` 里的任意脚本 |
-| PowerShell 只读 | `Get-ChildItem`、`Get-Content`、`Get-Process`、`Get-NetTCPConnection`、`Select-String` | 默认 shell 为 bash；仅在回退到 PowerShell 时启用这一组（见 `docs/architecture.md` 第 7 节） |
+| PowerShell 只读 | `Get-ChildItem`、`Get-Content`、`Get-Process`、`Get-NetTCPConnection`、`Select-String` | 远端主机是 Windows 时用得上；不进内置白名单，由用户按需添加 |
 
 **为什么按命令头判定就必须排除某些命令**（这是本设计最容易写错的地方）：
 
@@ -272,11 +272,11 @@ Windows 大小写不敏感比较。`C:\Windows\..\Windows` 必须先 resolve 再
 | 通道 | 路径 | 是否需要分级 |
 |---|---|---|
 | AI 建议的命令 | AI 栏 → 分级器 → 自动执行或确认卡 | 是 |
-| 用户手敲的命令 | xterm.js → WebSocket → PTY 写入 | 否，直接执行 |
+| 用户手敲的命令 | xterm.js → WebSocket → SSH 通道写入 | 否，直接执行 |
 
-**为什么这个不对称是合理的**：手敲时，用户本人就是授权者 —— 这个终端的全部意义是「用户自己的 shell」，他在键盘上敲的每个字符都是他自己的意图，再插一层确认只是在骚扰他（`rm` 在交互式 shell 里本来就有 shell 自己的确认/无确认语义）。分级器防的不是「危险命令」，而是「**模型生成、用户没逐字看过就被自动执行**的命令」。两者的授权主体不同，所以规则不同。
+**为什么这个不对称是合理的**：手敲时，用户本人就是授权者 —— 这个终端的全部意义是「用户自己在远端主机上的 shell」，他在键盘上敲的每个字符都是他自己的意图，再插一层确认只是在骚扰他（`rm` 在交互式 shell 里本来就有 shell 自己的确认/无确认语义）。分级器防的不是「危险命令」，而是「**模型生成、用户没逐字看过就被自动执行**的命令」。两者的授权主体不同，所以规则不同。
 
-**边界情况**：AI 栏「执行」按钮把命令**写入 PTY** 而不是另开进程 —— 因此 AI 命令和手敲命令共用同一个 shell 状态（cwd、环境变量）。这意味着 AI 命令的副作用会累积到用户手敲的会话里，确认卡必须让用户意识到这一点（卡片上标「将在当前标签执行」）。
+**边界情况**：AI 栏「执行」按钮把命令**写入当前 SSH 通道**而不是另开会话 —— 因此 AI 命令和手敲命令共用同一个远端 shell 状态（cwd、环境变量）。这意味着 AI 命令的副作用会累积到用户手敲的会话里，确认卡必须让用户意识到这一点（卡片上标「将在当前标签执行」）。
 
 ---
 
@@ -306,7 +306,7 @@ Windows 大小写不敏感比较。`C:\Windows\..\Windows` 必须先 resolve 再
 | 存放 | 只在进程内存 + 页面 HTML 里 | 落盘（临时文件、`page/session.js`、localStorage 持久化）等于给同用户进程一个长期可用的凭证 |
 | 不进 URL | 禁止 query string、禁止 fragment | URL 会进浏览器历史、Referer、代理日志、`app.log` 的请求行 |
 | 不进日志 | 请求日志只记 `method` + `path`（去掉 query）+ 状态码 | 日志是最常见的凭据泄漏渠道 |
-| 不进 env | 不把 token 塞进 PTY 子进程的环境变量 | 子进程里 `env` / `set` 就能打印出来，而 PTY 输出会被回喂给 AI |
+| 不进 env | 不把 token 塞进任何子进程环境变量，也不随命令发往远端 | 子进程或远端 shell 里 `env` / `set` 就能打印出来，而终端输出会被回喂给 AI |
 
 > 待定：带路页 → 应用服务的 token 交接方式。选项 A：`server()` 在响应页面 HTML 时把 token 注入内存中的字符串（不写文件）；选项 B：仿 page-agent-console，把 gate key 写进 `page/session.js`（`docs/platform-notes.md` 第 3 节记载该插件用 gate 进程做 302 令牌交接）。推荐 A，理由是 B 会落盘且需要额外的清理逻辑。此项不影响第 2 节的校验规则，只影响交接实现。
 
@@ -391,7 +391,7 @@ Windows 大小写不敏感比较。`C:\Windows\..\Windows` 必须先 resolve 再
 |---|---|---|---|
 | S24 | `netstat -ano \| grep 3480` | 只有 `127.0.0.1:3480`，没有 `0.0.0.0:3480` 或 `[::]:3480` | 2.1 的绑定约束 |
 | S25 | 在另一台同 LAN 机器上执行 `curl -m 3 http://<LAN_IP 由下条命令取得>:3480/api/health`（本机先用 `ipconfig \| grep -i "IPv4"` 取地址） | 连接失败 / 超时（预期 curl exit 7 或 28），不是 403、不是 200 | 同上，反向证明未监听网卡 |
-| S26 | 关标签 / 退出 magpie 后，按 `docs/pty-notes.md`「孤儿进程排查」里的 `Get-CimInstance Win32_Process` 命令核 `bash.exe` 的 `ParentProcessId` | 无残留 `bash.exe`（父 shell 已退且子进程已随之消失） | 验收 7 |
+| S26 | 关标签 / 退出 magpie 后，在服务日志里确认该标签的 SSH 通道已 `close`，并在远端 `w` / `who` 里确认该登录会话消失 | 远端无残留会话（通道与登录会话一并结束） | 验收 7 |
 
 ---
 

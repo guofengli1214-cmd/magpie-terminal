@@ -336,6 +336,44 @@ test("远程注册表组", async (t) => {
     assert.equal(registry.size, 0);
   });
 
+  await t.test("OSC 7 接线：远端 OSC 7 → session.cwd 更新 + session.cwd 事件（POSIX / Windows / 负例 / 同值去重）", async () => {
+    const host = await makeHost();
+    const fake = fakeShell();
+    const registry = new RemoteRegistry({
+      openShell: async () => ({ client: fake.client, stream: fake.stream }),
+      probeRemoteCwd: async () => "/home/probe",
+    });
+    const createdPromise = once(registry, "session.created");
+    const stub = registry.create({ hostId: host.id });
+    await createdPromise;
+
+    const cwdFrames = [];
+    registry.on("session.cwd", (info) => cwdFrames.push(info));
+
+    // POSIX 远端：走真实数据通路（stream data → handleOutput → handleOsc7）。
+    fake.stream.emit("data", Buffer.from("\x1b]7;file://probe-host/home/deploy/app\x07"));
+    assert.equal(cwdFrames.length, 1, "OSC 7 必须触发一次 session.cwd");
+    assert.deepEqual(cwdFrames[0], { id: stub.id, cwd: "/home/deploy/app" });
+    assert.equal(registry.get(stub.id).cwd, "/home/deploy/app");
+
+    // 同值去重：同一条路径再来一次，不许重复 emit。
+    fake.stream.emit("data", Buffer.from("\x1b]7;file://probe-host/home/deploy/app\x07"));
+    assert.equal(cwdFrames.length, 1, "同值不应重复 emit session.cwd");
+
+    // Windows 远端：file://HOST/C:/Users/x → C:\Users\x
+    fake.stream.emit("data", Buffer.from("\x1b]7;file://probe-host/C:/Users/x\x07"));
+    assert.equal(cwdFrames.length, 2);
+    assert.equal(cwdFrames[1].cwd, String.raw`C:\Users\x`);
+    assert.equal(registry.get(stub.id).cwd, String.raw`C:\Users\x`);
+
+    // 负例：不含 OSC 7 的普通输出 → cwd 不变，也不许多 emit。
+    fake.stream.emit("data", Buffer.from("plain output\r\n"));
+    assert.equal(cwdFrames.length, 2, "普通输出不应产生 session.cwd");
+    assert.equal(registry.get(stub.id).cwd, String.raw`C:\Users\x`);
+
+    registry.close(stub.id);
+  });
+
   await t.test("killAllSync 清空会话（进程退出用）", async () => {
     const host = await makeHost();
     const fake = fakeShell();

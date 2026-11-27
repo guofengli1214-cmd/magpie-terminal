@@ -10,8 +10,7 @@ import assert from "node:assert/strict";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import crypto from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { CONFIG_PATH_ENV, defaultDownloadDir } from "../../src/config/store.mjs";
 import { startServer, makeLogger } from "../../src/server/http.mjs";
 
@@ -27,8 +26,6 @@ async function freePort() {
     });
   });
 }
-
-const sha256 = (buffer) => crypto.createHash("sha256").update(buffer).digest("hex");
 
 /**
  * 起一个隔离服务。`log` 用静默 sink + 真 writer（日志文件落在临时目录）。
@@ -144,107 +141,6 @@ test("AC2：PUT 一个绝对路径 → 200，读回来是同一个目录（尾�
   });
 });
 
-/* ============================== AC3 ================================= */
-
-test("AC3：设置目录后 POST /api/fs/save 真落盘，字节数与 sha256 与源文件相同", async () => {
-  await withService(async ({ api, putConfig, workDir, downloadDir }) => {
-    const src = path.join(workDir, "报告.txt");
-    const payload = Buffer.from("第一行\n第二行\n".repeat(50), "utf8");
-    await writeFile(src, payload);
-    assert.equal((await putConfig({ downloadDir })).status, 200);
-
-    const response = await api("/api/fs/save", { method: "POST", body: JSON.stringify({ path: src }) });
-    assert.equal(response.status, 200);
-    const body = await response.json();
-    assert.equal(body.ok, true);
-    assert.equal(body.ok === true && body.name, "报告.txt");
-    assert.equal(body.savedPath, path.join(downloadDir, "报告.txt"));
-    const written = await readFile(body.savedPath);
-    assert.equal(body.bytes, payload.length);
-    assert.equal(written.length, payload.length);
-    assert.equal(sha256(written), sha256(payload));
-  });
-});
-
-/* ============================== AC4 ================================= */
-
-test("AC4：同名连续保存三次 → x.txt / x (1).txt / x (2).txt（真 HTTP）", async () => {
-  await withService(async ({ api, putConfig, workDir, downloadDir }) => {
-    const src = path.join(workDir, "x.txt");
-    await writeFile(src, "same", "utf8");
-    await putConfig({ downloadDir });
-    const names = [];
-    for (let i = 0; i < 3; i += 1) {
-      const response = await api("/api/fs/save", { method: "POST", body: JSON.stringify({ path: src }) });
-      assert.equal(response.status, 200);
-      names.push((await response.json()).name);
-    }
-    assert.deepEqual(names, ["x.txt", "x (1).txt", "x (2).txt"]);
-    assert.deepEqual((await readdir(downloadDir)).sort(), ["x (1).txt", "x (2).txt", "x.txt"]);
-  });
-});
-
-/* =========================== NO_DOWNLOAD_DIR ========================= */
-
-test("AC5（服务端）：未设置目录时 POST /api/fs/save → 200 {ok:false, code:NO_DOWNLOAD_DIR}", async () => {
-  await withService(async ({ api, workDir }) => {
-    const src = path.join(workDir, "a.txt");
-    await writeFile(src, "a", "utf8");
-    const response = await api("/api/fs/save", { method: "POST", body: JSON.stringify({ path: src }) });
-    assert.equal(response.status, 200, "200 不是错误：前端据此回落浏览器下载");
-    const body = await response.json();
-    assert.equal(body.ok, false);
-    assert.equal(body.code, "NO_DOWNLOAD_DIR");
-    assert.match(body.userText, /下载目录/);
-  });
-});
-
-test("R2：源不存在 → 404 NOT_FOUND；源是目录 → 400 IS_DIRECTORY；目录不可写 → 400 DOWNLOAD_DIR_UNWRITABLE", async () => {
-  await withService(async ({ api, putConfig, workDir, downloadDir }) => {
-    await putConfig({ downloadDir });
-    const missing = await api("/api/fs/save", {
-      method: "POST",
-      body: JSON.stringify({ path: path.join(workDir, "nope.txt") }),
-    });
-    assert.equal(missing.status, 404);
-    assert.equal((await missing.json()).code, "NOT_FOUND");
-
-    await mkdir(path.join(workDir, "sub"));
-    const isDir = await api("/api/fs/save", {
-      method: "POST",
-      body: JSON.stringify({ path: path.join(workDir, "sub") }),
-    });
-    assert.equal(isDir.status, 400);
-    const isDirBody = await isDir.json();
-    assert.equal(isDirBody.code, "IS_DIRECTORY");
-    assert.match(isDirBody.userText, /批量下载/);
-
-    // 下载目录指向一个**文件**：mkdir 必然失败 → DOWNLOAD_DIR_UNWRITABLE。
-    const blocker = path.join(workDir, "not-a-dir");
-    await writeFile(blocker, "x", "utf8");
-    await putConfig({ downloadDir: blocker });
-    const src = path.join(workDir, "a.txt");
-    await writeFile(src, "a", "utf8");
-    const unwritable = await api("/api/fs/save", { method: "POST", body: JSON.stringify({ path: src }) });
-    assert.equal(unwritable.status, 400);
-    const unwritableBody = await unwritable.json();
-    assert.equal(unwritableBody.code, "DOWNLOAD_DIR_UNWRITABLE");
-    assert.ok(unwritableBody.userText.includes(blocker), "提示里要有完整目录");
-  });
-});
-
-test("R2：请求体不是 JSON 对象 → 400 BAD_BODY；路径是相对路径 → 400 INVALID_PATH", async () => {
-  await withService(async ({ api, putConfig, downloadDir }) => {
-    await putConfig({ downloadDir });
-    const bad = await api("/api/fs/save", { method: "POST", body: "not-json" });
-    assert.equal(bad.status, 400);
-    assert.equal((await bad.json()).code, "BAD_BODY");
-    const relative = await api("/api/fs/save", { method: "POST", body: JSON.stringify({ path: "a.txt" }) });
-    assert.equal(relative.status, 400);
-    assert.equal((await relative.json()).code, "INVALID_PATH");
-  });
-});
-
 /* ============================ R3（远程） ============================= */
 
 test("R3：远程保存未设置目录 → 200 {ok:false, NO_DOWNLOAD_DIR}（不白连一次 SSH）", async () => {
@@ -343,17 +239,27 @@ test("AC8：POST /api/fs/reveal —— 范围内交给注入的 spawn（`/select
   };
   await withService(
     async ({ api, putConfig, workDir, downloadDir }) => {
-      const src = path.join(workDir, "r.txt");
-      await writeFile(src, "r", "utf8");
+      // 0.3.0：本机 /api/fs/save 已删 —— 直接在下载目录里放一个文件当「已保存的结果」。
+      await mkdir(downloadDir, { recursive: true });
+      const savedPath = path.join(downloadDir, "r.txt");
+      await writeFile(savedPath, "r", "utf8");
       await putConfig({ downloadDir });
-      const saved = await (await api("/api/fs/save", { method: "POST", body: JSON.stringify({ path: src }) })).json();
 
-      const ok = await api("/api/fs/reveal", { method: "POST", body: JSON.stringify({ path: saved.savedPath }) });
+      const ok = await api("/api/fs/reveal", { method: "POST", body: JSON.stringify({ path: savedPath }) });
       assert.equal(ok.status, 200);
       assert.deepEqual(await ok.json(), { ok: true, revealed: true });
       assert.equal(calls.length, 1);
-      assert.equal(calls[0].command, "explorer.exe");
-      assert.deepEqual(calls[0].args, [`/select,${saved.savedPath}`], "文件要用 /select, 前缀");
+      // 期望 argv 按**宿主平台**算：路由不注入 platform，走真实 process.platform。
+      const expectCmd =
+        process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
+      assert.equal(calls[0].command, expectCmd);
+      if (process.platform === "win32") {
+        assert.deepEqual(calls[0].args, [`/select,${savedPath}`], "文件要用 /select, 前缀");
+      } else if (process.platform === "darwin") {
+        assert.deepEqual(calls[0].args, ["-R", savedPath]);
+      } else {
+        assert.deepEqual(calls[0].args, [path.dirname(savedPath)], "xdg-open 只能开目录");
+      }
 
       // 目录本身：用目录路径（不带 /select,）。
       const asDir = await api("/api/fs/reveal", { method: "POST", body: JSON.stringify({ path: downloadDir }) });

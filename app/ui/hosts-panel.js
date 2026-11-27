@@ -96,9 +96,6 @@ export default function createHostsPanel(elements) {
   const onNotice = typeof elements.onNotice === "function" ? elements.onNotice : () => {};
   // TASK-FIX17-C R4：`onOpenFiles` 形参已删（主机面板不再跳文件面板，
   // 文件面板的唯一入口是 rail-files）。
-  // TASK-V4-F：点「本机」条目 = 用当前默认 shell 新开一个本机标签（不给 shellId）。
-  const onCreateLocal =
-    typeof elements.onCreateLocal === "function" ? elements.onCreateLocal : () => {};
   // 面板从「标签栏下方」开始，到「AI 条 / 状态栏上方」结束：只覆盖终端区。
   // 不盖标签栏（否则用户点不到自己的标签），不盖 AI 条，也不盖状态栏。
   const anchor = elements.anchor || null;
@@ -115,101 +112,6 @@ export default function createHostsPanel(elements) {
   let hosts = [];
   let currentSessionId = null;
   let opened = false;
-
-  /* ---------------- 本机条目 + shell 下拉（TASK-V4-F §5.4） ---------------- */
-
-  // /api/shells 的缓存：只在打开面板 / 切换后刷新。
-  let shellsInfo = null;
-  let shellBusy = false;
-
-  async function refreshShells() {
-    const result = await api.shells();
-    if (!result.ok) {
-      shellsInfo = null;
-      return null;
-    }
-    shellsInfo = result.data || null;
-    return shellsInfo;
-  }
-
-  /** 当前生效的 shell（下拉的 value）：配置值优先，否则服务端给的 default。 */
-  function currentShellId() {
-    if (!shellsInfo) return null;
-    const configured = shellsInfo.configured;
-    if (typeof configured === "string" && configured.length > 0) return configured;
-    return typeof shellsInfo.default === "string" ? shellsInfo.default : null;
-  }
-
-  function shellRecordById(id) {
-    if (!shellsInfo || !Array.isArray(shellsInfo.shells)) return null;
-    return shellsInfo.shells.find((item) => item.id === id) || null;
-  }
-
-  /** 「bash 5.2.37」这样的展示文字（一律用实测版本，不自吹）。 */
-  function shellSummaryText() {
-    const id = currentShellId();
-    const record = shellRecordById(id);
-    if (!record) return "正在读取…";
-    if (record.available === false) return `${record.id}（未安装）`;
-    return `${record.id} ${record.version || "unknown"}`;
-  }
-
-  function renderLocalRow() {
-    const row = el("div", { "data-role": "host-local", "data-shell-id": currentShellId() || "" });
-
-    const main = el("button", { type: "button", className: "host-item-main", "data-role": "host-local-open" });
-    const icon = el("span", { className: "host-local-icon", "aria-hidden": "true" }, "▣");
-    main.appendChild(icon);
-    const text = el("span", { className: "host-item-text" });
-    text.appendChild(el("span", { className: "host-name" }, "本机"));
-    text.appendChild(el("span", { className: "host-addr", "data-role": "host-local-shell" }, shellSummaryText()));
-    main.appendChild(text);
-    main.addEventListener("click", () => {
-      onCreateLocal(null);
-    });
-    row.appendChild(main);
-
-    const select = el("select", {
-      "data-role": "host-local-shell-select",
-      "aria-label": "本机默认 shell",
-      title: "本机默认 shell（只影响之后新开的标签）",
-    });
-    const list = shellsInfo && Array.isArray(shellsInfo.shells) ? shellsInfo.shells : [];
-    const selected = currentShellId();
-    for (const item of list) {
-      const label = item.available === false ? `${item.name || item.id}（未安装）` : `${item.name || item.id} ${item.version || ""}`.trim();
-      const option = el("option", { value: item.id }, label);
-      if (item.available === false) option.disabled = true;
-      if (item.id === selected) option.selected = true;
-      select.appendChild(option);
-    }
-    if (list.length === 0) select.disabled = true;
-    select.addEventListener("change", () => {
-      void changeDefaultShell(select.value, select);
-    });
-    row.appendChild(select);
-    return row;
-  }
-
-  async function changeDefaultShell(shellId, select) {
-    if (shellBusy) return;
-    shellBusy = true;
-    if (select) select.disabled = true;
-    try {
-      const result = await api.saveConfig({ defaultShell: shellId });
-      if (!result.ok) {
-        onNotice(result.userText || `切换默认 shell 失败（${result.code}）`, "warn");
-        return;
-      }
-      await refreshShells();
-      // 只影响之后新开的标签：不重建已有会话（卡片 §5.4）。
-      onNotice(`本机默认 shell 已改为 ${shellId}。只影响之后新开的标签。`, "ok");
-    } finally {
-      shellBusy = false;
-      if (select) select.disabled = false;
-      render();
-    }
-  }
 
   /** 面板范围 = 标签栏底边 → 状态栏顶边（覆盖层，但绝不遮这两条）。 */
   function syncPanelTop() {
@@ -327,7 +229,7 @@ export default function createHostsPanel(elements) {
       "data-role": "host-key-path",
       autocomplete: "off",
       spellcheck: "false",
-      placeholder: "C:/Users/me/.ssh/id_ed25519",
+      placeholder: "~/.ssh/id_ed25519",
     });
     keyPathInput.value = editingHost && editingHost.privateKeyPath ? editingHost.privateKeyPath : "";
     const browse = el("button", { type: "button", "data-role": "host-key-browse" }, "浏览…");
@@ -698,7 +600,21 @@ export default function createHostsPanel(elements) {
     const list = el("div", { "data-role": "host-list" });
 
     if (hosts.length === 0) {
-      const empty = el("p", { className: "hosts-empty" }, "还没有主机。点下面「+ 添加主机」建一条。");
+      // TASK-G U04：空列表不再是一行字贴在 body 顶部、按钮在 600px 之外的面板底部
+      // （「点下面」在空间上失效）。改成一个**整体居中**的空态：标题 + 一句说明 +
+      // 主按钮，三者在一起，用户看到提示就能直接动手。
+      const empty = el("div", { className: "hosts-empty" });
+      empty.appendChild(el("p", { className: "hosts-empty-title" }, "还没有主机"));
+      empty.appendChild(
+        el("p", { className: "hosts-empty-hint" }, "添加一台 SSH 主机，连上之后终端才会出现在这里。")
+      );
+      const emptyAdd = el(
+        "button",
+        { type: "button", className: "hosts-empty-cta", "data-role": "host-add-empty" },
+        "+ 添加主机"
+      );
+      emptyAdd.addEventListener("click", () => openHostForm(null));
+      empty.appendChild(emptyAdd);
       list.appendChild(empty);
       return list;
     }
@@ -760,12 +676,18 @@ export default function createHostsPanel(elements) {
     if (!opened) return;
     const snapshot = store.getSnapshot();
     panel.textContent = "";
+    // TASK-G U04：空列表时同一个「添加主机」动作不要摆三遍（头部「+ 添加」、
+    // 空态主按钮、底部整宽按钮）。空态自带主按钮 → 头部与底部都收起来，
+    // 面板里只剩一个入口；有主机时再恢复「头部快捷 + 底部常驻」。
+    const isEmpty = hosts.length === 0;
 
     const header = el("div", { className: "hosts-header" });
     header.appendChild(el("strong", { className: "hosts-title" }, "主机"));
-    const addButton = el("button", { type: "button", "data-role": "host-add" }, "+ 添加");
-    addButton.addEventListener("click", () => openHostForm(null));
-    header.appendChild(addButton);
+    if (!isEmpty) {
+      const addButton = el("button", { type: "button", "data-role": "host-add" }, "+ 添加");
+      addButton.addEventListener("click", () => openHostForm(null));
+      header.appendChild(addButton);
+    }
     const closeButton = el("button", { type: "button", "data-role": "hosts-close", "aria-label": "收起主机面板" }, "×");
     closeButton.addEventListener("click", () => close());
     header.appendChild(closeButton);
@@ -778,16 +700,16 @@ export default function createHostsPanel(elements) {
     // 连同 `.hosts-tabs` 容器一起去掉 —— 它里面只剩这一个按钮，留着就是一个空条。
 
     const body = el("div", { className: "hosts-body" });
-    // 固定在最顶上的「本机」条目（TASK-V4-F §5.4）。
-    body.appendChild(renderLocalRow());
     body.appendChild(renderHostList(snapshot));
     panel.appendChild(body);
 
-    const footer = el("div", { className: "hosts-footer" });
-    const addHost = el("button", { type: "button", "data-role": "host-add-footer" }, "+ 添加主机");
-    addHost.addEventListener("click", () => openHostForm(null));
-    footer.appendChild(addHost);
-    panel.appendChild(footer);
+    if (!isEmpty) {
+      const footer = el("div", { className: "hosts-footer" });
+      const addHost = el("button", { type: "button", "data-role": "host-add-footer" }, "+ 添加主机");
+      addHost.addEventListener("click", () => openHostForm(null));
+      footer.appendChild(addHost);
+      panel.appendChild(footer);
+    }
   }
 
   function syncCurrentSession(snapshot) {
@@ -816,10 +738,6 @@ export default function createHostsPanel(elements) {
       panel.setAttribute("data-open", "true");
       syncPanelTop();
       syncCurrentSession(store.getSnapshot());
-      // 先拉 shell 清单再画，避免下拉先空后填的抖动；拉不到也要把面板画出来。
-      void refreshShells().then(() => {
-        if (opened) render();
-      });
       render();
       void refreshHosts();
       document.addEventListener("mousedown", onDocumentPointerDown, true);
@@ -830,8 +748,6 @@ export default function createHostsPanel(elements) {
       else this.open();
     },
     refreshHosts,
-    /** TASK-V4-F：shell 清单可能变了（装了 pwsh / 改了配置），打开面板前刷一次。 */
-    refreshShells,
     /** 远程标签建立 / 关闭后由 app.js 调用：刷新绿点与文件树绑定。 */
     sync() {
       if (opened) syncPanelTop();
